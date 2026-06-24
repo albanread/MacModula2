@@ -1,0 +1,34 @@
+(* Core Graphics (Quartz 2D) drawing — a thin Modula-2 surface over the
+   CGContext* C functions. The macOS analogue of the Windows GDI/Direct2D layer.
+
+   These are plain C entry points in CoreGraphics.framework; on macOS the JIT
+   resolves them via dlsym and the AOT link binds them from the framework, so an
+   EXTERNAL declaration with no FROM clause is all that is needed.
+
+   CGRect / CGPoint / CGSize are passed by value: on arm64 a CGRect is four
+   CGFloat (REAL) registers, a CGPoint two — which is exactly what listing the
+   coordinates as separate REAL parameters produces. *)
+
+DEFINITION MODULE CG;
+
+FROM SYSTEM IMPORT ADDRESS;
+
+TYPE Context = ADDRESS;   (* a CGContextRef *)
+
+PROCEDURE SetRGBFillColor   ["CGContextSetRGBFillColor" EXTERNAL]   (c: Context; r, g, b, a: REAL);
+PROCEDURE SetRGBStrokeColor ["CGContextSetRGBStrokeColor" EXTERNAL] (c: Context; r, g, b, a: REAL);
+PROCEDURE SetLineWidth      ["CGContextSetLineWidth" EXTERNAL]      (c: Context; width: REAL);
+
+(* rect arguments are a CGRect by value: (x, y, w, h) *)
+PROCEDURE FillRect          ["CGContextFillRect" EXTERNAL]          (c: Context; x, y, w, h: REAL);
+PROCEDURE StrokeRect        ["CGContextStrokeRect" EXTERNAL]        (c: Context; x, y, w, h: REAL);
+PROCEDURE FillEllipseInRect ["CGContextFillEllipseInRect" EXTERNAL] (c: Context; x, y, w, h: REAL);
+PROCEDURE StrokeEllipseInRect["CGContextStrokeEllipseInRect" EXTERNAL](c: Context; x, y, w, h: REAL);
+
+(* path building (CGPoint by value: (x, y)) *)
+PROCEDURE MoveToPoint       ["CGContextMoveToPoint" EXTERNAL]       (c: Context; x, y: REAL);
+PROCEDURE AddLineToPoint    ["CGContextAddLineToPoint" EXTERNAL]    (c: Context; x, y: REAL);
+PROCEDURE StrokePath        ["CGContextStrokePath" EXTERNAL]        (c: Context);
+PROCEDURE FillPath          ["CGContextFillPath" EXTERNAL]          (c: Context);
+
+END CG.

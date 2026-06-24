@@ -1922,7 +1922,16 @@ fn link_executable(
     }
     cmd.arg(&runtime_lib);
     cmd.args(["-lSystem", "-lc", "-lm", "-liconv", "-lc++"]);
-    cmd.args(["-framework", "CoreFoundation", "-framework", "Security"]);
+    // System frameworks. CoreFoundation/Security back Rust std; the rest let an
+    // M2 program call the macOS UI/graphics/imaging stack directly (the analogue
+    // of the Windows build linking kernel32/user32/gdi32/...). Unused frameworks
+    // are lazily bound, so linking them unconditionally is harmless.
+    for fw in [
+        "CoreFoundation", "Security", "Cocoa", "AppKit", "Foundation",
+        "CoreGraphics", "QuartzCore", "ImageIO", "Metal", "CoreText",
+    ] {
+        cmd.args(["-framework", fw]);
+    }
     cmd.args(["-arch", "arm64"]);
 
     let output = cmd
