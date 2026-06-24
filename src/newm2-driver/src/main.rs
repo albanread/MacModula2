@@ -21,6 +21,9 @@ use newm2_runtime::HEAP_STATS;
 use newm2_sema::{check_module_graph, export_interface, format_module_interface, format_sema};
 use rusqlite::{Connection, params};
 
+// The resident compiler daemon speaks over a Windows named pipe. A macOS-native
+// Unix-domain-socket daemon is a later milestone; gate the module for now.
+#[cfg(windows)]
 mod server;
 
 const COMMANDS: &[&str] = &[
@@ -362,7 +365,16 @@ fn main() -> ExitCode {
 
     // The resident compiler service runs its own arg parse + server loop.
     if command == "daemon" {
-        return server::run_daemon(&rest);
+        #[cfg(windows)]
+        {
+            return server::run_daemon(&rest);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = &rest;
+            eprintln!("newm2: the `daemon` service is not yet available on this platform");
+            return ExitCode::from(2);
+        }
     }
 
     let options = match DriverOptions::parse(&rest) {

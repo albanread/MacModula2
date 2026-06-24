@@ -70,6 +70,12 @@ pub mod crash;
 #[cfg(feature = "gc")]
 pub mod safepoint;
 
+/// macOS-native shims for the Win32 primitives the M2 runtime library calls
+/// directly (mmap-backed `VirtualAlloc`, etc.). Windows resolves these from
+/// system DLLs instead.
+#[cfg(not(windows))]
+pub mod win32_compat;
+
 /// No-op `SYSTEM.COLLECT` / `SYSTEM.GCREPORT` for the manual-memory build.
 #[cfg(not(feature = "gc"))]
 mod gc_stubs;

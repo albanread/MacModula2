@@ -393,13 +393,18 @@ mod imp {
     const PREFIX: usize = 16;
     const ALIGN: usize = 16;
 
-    fn layout(total: usize) -> Layout {
-        Layout::from_size_align(total, ALIGN).unwrap()
+    fn layout(total: usize) -> Option<Layout> {
+        Layout::from_size_align(total, ALIGN).ok()
     }
 
     pub fn alloc(size: u64) -> *mut u8 {
-        let total = PREFIX + size as usize;
-        let base = unsafe { alloc_zeroed(layout(total)) };
+        let Some(total) = (size as usize).checked_add(PREFIX) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = layout(total) else {
+            return std::ptr::null_mut();
+        };
+        let base = unsafe { alloc_zeroed(layout) };
         if base.is_null() {
             return std::ptr::null_mut();
         }
@@ -413,7 +418,13 @@ mod imp {
         unsafe {
             let base = ptr.sub(PREFIX);
             let size = (base as *const u64).read() as usize;
-            dealloc(base, layout(PREFIX + size));
+            // Defensive: a stale/garbage header (e.g. an aliased double-free,
+            // which Win32 HeapFree tolerates) must not abort the process via a
+            // Layout panic. If the recorded size can't form a valid layout,
+            // leak the block rather than dealloc with a bogus size.
+            let Some(total) = size.checked_add(PREFIX) else { return };
+            let Some(layout) = layout(total) else { return };
+            dealloc(base, layout);
         }
     }
 

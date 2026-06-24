@@ -15,7 +15,8 @@ newm2-ir = { path = "../newm2-ir" }
 newm2-sema = { path = "../newm2-sema" }
 newm2-runtime = { path = "../newm2-runtime" }
 
-inkwell = { version = "=0.9.0", default-features = false, features = ["llvm22-1", "target-x86"] }
+# macOS arm64 port: AArch64 target backend (was "target-x86" for x86_64-pc-windows-msvc).
+inkwell = { version = "=0.9.0", default-features = false, features = ["llvm22-1", "target-aarch64"] }
 # llvm-sys piggy-backs on inkwell's LLVM build. Used directly for
 # LLVMCreateMCJITCompilerForModule (custom memory manager for SEH/unwind)
 # and LLVMAddGlobalMapping (bind runtime helper symbols).

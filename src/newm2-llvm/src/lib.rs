@@ -16,6 +16,10 @@
 //! - [`run_module`] - JIT-compile and execute `ModuleBody` / main.
 
 pub mod codegen;
+// `jit_mm` registers Windows SEH unwind tables (`RtlAddFunctionTable`) for JIT'd
+// frames. On macOS the stock ORC/RTDyld object layer already registers DWARF
+// `.eh_frame` via `__register_frame`, so the custom layer is Windows-only.
+#[cfg(windows)]
 pub mod jit_mm;
 
 use std::ffi::CStr;
@@ -493,6 +497,7 @@ fn emit_aot_driver_with_order<'ctx>(
 /// The llvm-sys binding for `…WithMCJITMemoryManagerLikeCallbacks` is wrong (it
 /// omits `CreateContextCtx` and types `CreateContext` as returning `()` instead
 /// of `void*`), so we declare the function ourselves with the correct ABI.
+#[cfg(windows)]
 mod orc_seh {
     use crate::jit_mm;
     use llvm_sys::execution_engine::{
@@ -587,13 +592,19 @@ pub fn run_modules_orc(
     // Create the LLJIT with the SEH-registering RTDyld object layer (jit_mm).
     let mut jit: LLVMOrcLLJITRef = std::ptr::null_mut();
     let builder = unsafe { LLVMOrcCreateLLJITBuilder() };
-    let mm_ctx = jit_mm::new_context();
-    unsafe {
-        llvm_sys::orc2::lljit::LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator(
-            builder,
-            orc_seh::obj_layer_creator,
-            mm_ctx,
-        );
+    // Windows: install the SEH-registering RTDyld object layer (jit_mm). macOS:
+    // leave the default LLJIT object layer in place — it registers DWARF
+    // `.eh_frame` for JIT'd frames, which is the native unwind mechanism here.
+    #[cfg(windows)]
+    {
+        let mm_ctx = jit_mm::new_context();
+        unsafe {
+            llvm_sys::orc2::lljit::LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator(
+                builder,
+                orc_seh::obj_layer_creator,
+                mm_ctx,
+            );
+        }
     }
     let err = unsafe { LLVMOrcCreateLLJIT(&mut jit, builder) };
     let orc_err = |what: &str, err: LLVMErrorRef| -> String {
@@ -764,7 +775,12 @@ pub fn run_modules(
         );
     }
     jit_opts.OptLevel = opts.opt_level;
-    jit_opts.MCJMM = unsafe { jit_mm::make_mm() };
+    // Windows uses the custom SEH-registering memory manager; on macOS leave
+    // MCJMM null so MCJIT uses its default (which registers `.eh_frame`).
+    #[cfg(windows)]
+    {
+        jit_opts.MCJMM = unsafe { jit_mm::make_mm() };
+    }
 
     let mut engine: LLVMExecutionEngineRef = std::ptr::null_mut();
     let mut err_msg: *mut std::ffi::c_char = std::ptr::null_mut();
@@ -1456,8 +1472,10 @@ fn resolve_external_function_address_impl(name: &str, dll: Option<&str>) -> Opti
 }
 
 #[cfg(not(windows))]
-fn resolve_external_function_address_impl(_name: &str, _dll: Option<&str>) -> Option<*const ()> {
-    None
+fn resolve_external_function_address_impl(name: &str, _dll: Option<&str>) -> Option<*const ()> {
+    // macOS has no Win32 DLLs; resolve the small set of Win32 imports the
+    // runtime library layer calls directly to native (mmap-backed) shims.
+    newm2_runtime::win32_compat::resolve(name)
 }
 
 fn patch_vtables(
