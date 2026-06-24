@@ -301,6 +301,9 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.NSString".to_string(), "nm2_objc_nsstring"));
         v.push(("ObjC.Pump".to_string(), "nm2_objc_pump"));
         v.push(("ObjC.SnapshotView".to_string(), "nm2_cocoa_snapshot_view"));
+        v.push(("ObjC.AllocateClass".to_string(), "nm2_objc_allocate_class"));
+        v.push(("ObjC.AddMethod".to_string(), "nm2_objc_add_method"));
+        v.push(("ObjC.RegisterClass".to_string(), "nm2_objc_register_class"));
     }
 
     v
@@ -1197,6 +1200,9 @@ fn for_each_runtime_binding(
         bind("ObjC.NSString", newm2_runtime::objc::nm2_objc_nsstring as *const ());
         bind("ObjC.Pump", newm2_runtime::objc::nm2_objc_pump as *const ());
         bind("ObjC.SnapshotView", newm2_runtime::objc::nm2_cocoa_snapshot_view as *const ());
+        bind("ObjC.AllocateClass", newm2_runtime::objc::nm2_objc_allocate_class as *const ());
+        bind("ObjC.AddMethod", newm2_runtime::objc::nm2_objc_add_method as *const ());
+        bind("ObjC.RegisterClass", newm2_runtime::objc::nm2_objc_register_class as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());

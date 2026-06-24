@@ -50,4 +50,20 @@ PROCEDURE Pump (seconds: REAL);
    without a window server, so a Cocoa UI can be captured to a file. *)
 PROCEDURE SnapshotView (view: Id; path: ARRAY OF CHAR): BOOLEAN;
 
+(* Define an Objective-C class at runtime, so UI controls (target/action,
+   delegates) can call back into Modula-2. A method's implementation is a
+   module-level Modula-2 procedure of type Method1 below, taken as an ADDRESS;
+   an Obj-C IMP is just a C function whose first two arguments are the receiver
+   and the selector. typeEncoding is the Obj-C signature string, e.g. "v@:@" for
+   a void method taking one object argument.
+       cls := AllocateClass(GetClass("NSObject"), "MyHandler");
+       ok  := AddMethod(cls, Selector("onClick:"), CAST(ADDRESS, OnClick), "v@:@");
+       RegisterClass(cls);
+*)
+TYPE Method1 = PROCEDURE (Id, SEL, Id);   (* IMP for a -(void)foo:(id sender) method *)
+
+PROCEDURE AllocateClass (super: Class; name: ARRAY OF CHAR): Class;
+PROCEDURE AddMethod (cls: Class; sel: SEL; imp: ADDRESS; typeEncoding: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE RegisterClass (cls: Class);
+
 END ObjC.

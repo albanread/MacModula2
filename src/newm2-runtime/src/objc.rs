@@ -144,6 +144,62 @@ pub extern "C-unwind" fn nm2_objc_nsstring(name: *const u16, high: u64) -> *mut 
     send(cls, sel, c.as_ptr())
 }
 
+/// `ObjC.AllocateClass(super, name)` — begin defining a new Objective-C class
+/// (`objc_allocateClassPair`). Add methods, then `RegisterClass`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_allocate_class(
+    superclass: *mut c_void,
+    name: *const u16,
+    high: u64,
+) -> *mut c_void {
+    bootstrap();
+    let Some(c) = wide_to_cstring(name, high) else {
+        return std::ptr::null_mut();
+    };
+    let f = sym_or_null("objc_allocateClassPair");
+    if f.is_null() {
+        return std::ptr::null_mut();
+    }
+    let f: extern "C" fn(*mut c_void, *const i8, usize) -> *mut c_void =
+        unsafe { std::mem::transmute(f) };
+    f(superclass, c.as_ptr(), 0)
+}
+
+/// `ObjC.AddMethod(cls, sel, imp, typeEncoding)` — install a method whose
+/// implementation is `imp` (a plain C-ABI function — a module-level Modula-2
+/// procedure works directly, since an Obj-C IMP is `ret (*)(id self, SEL _cmd, …)`).
+/// `typeEncoding` is the Obj-C type string, e.g. "v@:@" for `-(void)act:(id)x`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_add_method(
+    cls: *mut c_void,
+    sel: *mut c_void,
+    imp: *mut c_void,
+    types: *const u16,
+    high: u64,
+) -> i32 {
+    let Some(c) = wide_to_cstring(types, high) else {
+        return 0;
+    };
+    let f = sym_or_null("class_addMethod");
+    if f.is_null() {
+        return 0;
+    }
+    let f: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i8) -> i8 =
+        unsafe { std::mem::transmute(f) };
+    f(cls, sel, imp, c.as_ptr()) as i32
+}
+
+/// `ObjC.RegisterClass(cls)` — finalize a class begun with `AllocateClass`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_register_class(cls: *mut c_void) {
+    let f = sym_or_null("objc_registerClassPair");
+    if f.is_null() {
+        return;
+    }
+    let f: extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(f) };
+    f(cls);
+}
+
 /// An `NSRect` / `CGRect` — four CGFloat (f64) passed in v0–v3 on arm64.
 #[repr(C)]
 #[derive(Clone, Copy)]
