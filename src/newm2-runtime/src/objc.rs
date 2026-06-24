@@ -144,6 +144,81 @@ pub extern "C-unwind" fn nm2_objc_nsstring(name: *const u16, high: u64) -> *mut 
     send(cls, sel, c.as_ptr())
 }
 
+/// An `NSRect` / `CGRect` — four CGFloat (f64) passed in v0–v3 on arm64.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// `ObjC.SnapshotView(view, path)` — render an `NSView` (and its subviews)
+/// offscreen into a bitmap and write it as a PNG. This works without a window
+/// server (`cacheDisplayInRect:` draws into a CGBitmapContext), so a Cocoa UI
+/// can be captured headlessly — the native way to *see* the UI. Returns nonzero
+/// on success.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_cocoa_snapshot_view(
+    view: *mut c_void,
+    path: *const u16,
+    path_high: u64,
+) -> i32 {
+    bootstrap();
+    if view.is_null() {
+        return 0;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return 0;
+    }
+    let sel = |s: &std::ffi::CStr| -> *mut c_void {
+        let f: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+        f(s.as_ptr())
+    };
+
+    // [view bounds] -> NSRect (struct return, x8-indirect on arm64).
+    let send_rect_ret: extern "C" fn(*mut c_void, *mut c_void) -> NsRect =
+        unsafe { std::mem::transmute(msg) };
+    let bounds = send_rect_ret(view, sel(c"bounds"));
+    if bounds.w < 1.0 || bounds.h < 1.0 {
+        return 0;
+    }
+
+    // rep = [view bitmapImageRepForCachingDisplayInRect: bounds]
+    let send_rect_arg: extern "C" fn(*mut c_void, *mut c_void, NsRect) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let rep = send_rect_arg(view, sel(c"bitmapImageRepForCachingDisplayInRect:"), bounds);
+    if rep.is_null() {
+        return 0;
+    }
+
+    // [view cacheDisplayInRect: bounds toBitmapImageRep: rep]
+    let send_rect_rep: extern "C" fn(*mut c_void, *mut c_void, NsRect, *mut c_void) =
+        unsafe { std::mem::transmute(msg) };
+    send_rect_rep(view, sel(c"cacheDisplayInRect:toBitmapImageRep:"), bounds, rep);
+
+    // data = [rep representationUsingType: NSBitmapImageFileTypePNG(4) properties: nil]
+    let send_png: extern "C" fn(*mut c_void, *mut c_void, u64, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let data = send_png(rep, sel(c"representationUsingType:properties:"), 4, std::ptr::null_mut());
+    if data.is_null() {
+        return 0;
+    }
+
+    // [data writeToFile: <NSString path> atomically: NO]
+    let path_str = nm2_objc_nsstring(path, path_high);
+    if path_str.is_null() {
+        return 0;
+    }
+    let send_write: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, bool) -> bool =
+        unsafe { std::mem::transmute(msg) };
+    let ok = send_write(data, sel(c"writeToFile:atomically:"), path_str, false);
+    if ok { 1 } else { 0 }
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).

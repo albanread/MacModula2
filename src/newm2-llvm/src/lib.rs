@@ -300,6 +300,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.MsgSendPtr".to_string(), "nm2_objc_msgsend_ptr"));
         v.push(("ObjC.NSString".to_string(), "nm2_objc_nsstring"));
         v.push(("ObjC.Pump".to_string(), "nm2_objc_pump"));
+        v.push(("ObjC.SnapshotView".to_string(), "nm2_cocoa_snapshot_view"));
     }
 
     v
@@ -1195,6 +1196,7 @@ fn for_each_runtime_binding(
         bind("ObjC.MsgSendPtr", newm2_runtime::objc::nm2_objc_msgsend_ptr as *const ());
         bind("ObjC.NSString", newm2_runtime::objc::nm2_objc_nsstring as *const ());
         bind("ObjC.Pump", newm2_runtime::objc::nm2_objc_pump as *const ());
+        bind("ObjC.SnapshotView", newm2_runtime::objc::nm2_cocoa_snapshot_view as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());
