@@ -76,6 +76,11 @@ pub mod safepoint;
 #[cfg(not(windows))]
 pub mod win32_compat;
 
+/// macOS Objective-C runtime bridge (objc_getClass / sel_registerName /
+/// objc_msgSend) — the native framework-dispatch layer, analogue of COM.
+#[cfg(not(windows))]
+pub mod objc;
+
 /// No-op `SYSTEM.COLLECT` / `SYSTEM.GCREPORT` for the manual-memory build.
 #[cfg(not(feature = "gc"))]
 mod gc_stubs;

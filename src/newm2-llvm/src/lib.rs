@@ -291,6 +291,17 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push((format!("NM2Math.{n}"), sym));
         v.push((format!("NM2Math.L{n}"), sym));
     }
+
+    // macOS Objective-C bridge forwarders (mirrors the bind() calls above).
+    #[cfg(not(windows))]
+    {
+        v.push(("ObjC.GetClass".to_string(), "nm2_objc_get_class"));
+        v.push(("ObjC.Selector".to_string(), "nm2_objc_sel"));
+        v.push(("ObjC.MsgSendPtr".to_string(), "nm2_objc_msgsend_ptr"));
+        v.push(("ObjC.NSString".to_string(), "nm2_objc_nsstring"));
+        v.push(("ObjC.Pump".to_string(), "nm2_objc_pump"));
+    }
+
     v
 }
 
@@ -1175,6 +1186,16 @@ fn for_each_runtime_binding(
     // ISO channel device backing (StdChans console DeviceTable → NM2IO.*).
     bind("libc.printf", nm2_libc_printf as *const ());
     bind("libc.exit", nm2_libc_exit as *const ());
+    // macOS Objective-C bridge: class lookup, selector interning, and the
+    // address of objc_msgSend (M2 casts it to a typed PROCEDURE per call site).
+    #[cfg(not(windows))]
+    {
+        bind("ObjC.GetClass", newm2_runtime::objc::nm2_objc_get_class as *const ());
+        bind("ObjC.Selector", newm2_runtime::objc::nm2_objc_sel as *const ());
+        bind("ObjC.MsgSendPtr", newm2_runtime::objc::nm2_objc_msgsend_ptr as *const ());
+        bind("ObjC.NSString", newm2_runtime::objc::nm2_objc_nsstring as *const ());
+        bind("ObjC.Pump", newm2_runtime::objc::nm2_objc_pump as *const ());
+    }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());
     bind("NM2.IO.WriteBytes", nm2_io_write_bytes as *const ());
@@ -1473,9 +1494,16 @@ fn resolve_external_function_address_impl(name: &str, dll: Option<&str>) -> Opti
 
 #[cfg(not(windows))]
 fn resolve_external_function_address_impl(name: &str, _dll: Option<&str>) -> Option<*const ()> {
-    // macOS has no Win32 DLLs; resolve the small set of Win32 imports the
-    // runtime library layer calls directly to native (mmap-backed) shims.
-    newm2_runtime::win32_compat::resolve(name)
+    // 1. Native shims for the few Win32 imports the runtime library calls
+    //    directly (mmap-backed VirtualAlloc, …).
+    if let Some(addr) = newm2_runtime::win32_compat::resolve(name) {
+        return Some(addr);
+    }
+    // 2. dlsym across the process — the macOS analogue of the Windows build's
+    //    DLL probing. After the Obj-C bridge bootstraps the umbrella frameworks,
+    //    every libSystem / libobjc / framework C entry point resolves here, so
+    //    `EXTERNAL` Modula-2 procedures can call AppKit/Foundation/CoreGraphics.
+    newm2_runtime::objc::dlsym_default(name)
 }
 
 fn patch_vtables(

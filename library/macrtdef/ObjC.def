@@ -1,0 +1,48 @@
+(* macOS Objective-C runtime bridge — the native framework-dispatch layer.
+
+   The Windows build reaches frameworks through COM @ordinal vtables; macOS
+   reaches AppKit / Foundation / CoreGraphics through Objective-C message sends.
+   The three primitives below are provided by the NewM2 runtime
+   (src/newm2-runtime/src/objc.rs); there is no IMPLEMENTATION MODULE.
+
+   Message sends go through `objc_msgSend`, whose address `MsgSendPtr` returns.
+   Because each selector has its own signature, the caller CASTs that address to
+   the matching `Send*` procedure type and calls it indirectly — the exact
+   analogue of calling through a COM vtable slot. The first two arguments are
+   always (receiver, selector). *)
+
+DEFINITION MODULE ObjC;
+
+FROM SYSTEM IMPORT ADDRESS;
+
+TYPE
+  Id    = ADDRESS;   (* an Objective-C object (`id`) *)
+  SEL   = ADDRESS;   (* an interned selector        *)
+  Class = ADDRESS;   (* a class object              *)
+
+  (* objc_msgSend signatures. CAST(MsgSendPtr(), <one of these>) then call. *)
+  Send0    = PROCEDURE (Id, SEL): Id;                       (* [obj msg]                 *)
+  SendB    = PROCEDURE (Id, SEL, BOOLEAN): Id;              (* [obj msg: aBool]          *)
+  SendI    = PROCEDURE (Id, SEL, INTEGER): Id;              (* [obj msg: anInt]          *)
+  SendC    = PROCEDURE (Id, SEL, CARDINAL): Id;             (* [obj msg: aUInt]          *)
+  SendP    = PROCEDURE (Id, SEL, Id): Id;                   (* [obj msg: anObject]       *)
+  (* [win initWithContentRect: rect styleMask: m backing: b defer: d]
+     NSRect (x,y,w,h) flattens to four CGFloat (REAL) registers on arm64. *)
+  SendRect = PROCEDURE (Id, SEL, REAL, REAL, REAL, REAL, CARDINAL, CARDINAL, BOOLEAN): Id;
+
+(* objc_getClass / sel_registerName, with the wide M2 name transcoded to a
+   UTF-8 C string at the runtime boundary. *)
+PROCEDURE GetClass (name: ARRAY OF CHAR): Class;
+PROCEDURE Selector (name: ARRAY OF CHAR): SEL;
+
+(* Address of objc_msgSend, for the CAST-and-call idiom above. *)
+PROCEDURE MsgSendPtr (): ADDRESS;
+
+(* Build an autoreleased NSString* from a (wide) M2 string. *)
+PROCEDURE NSString (s: ARRAY OF CHAR): Id;
+
+(* Run the Core Foundation run loop for `seconds` (a bounded substitute for
+   [NSApp run] — shows the window, processes events, then returns). *)
+PROCEDURE Pump (seconds: REAL);
+
+END ObjC.
