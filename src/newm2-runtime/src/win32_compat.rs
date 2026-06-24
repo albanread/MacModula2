@@ -47,8 +47,13 @@ fn regions() -> &'static Mutex<HashMap<usize, usize>> {
 /// `VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect)` — Win32
 /// contract, mmap implementation. We honor the common reserve+commit /
 /// read-write case the runtime heap uses and ignore the (NULL) hint address.
+///
+/// Exported under the bare Win32 name so the AOT static link resolves the
+/// emitted object's `VirtualAlloc` reference directly from the runtime archive
+/// (the JIT binds it by name via [`resolve`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn nm2_win32_VirtualAlloc(
+#[allow(non_snake_case)]
+pub extern "C" fn VirtualAlloc(
     _lp_address: *mut c_void,
     dw_size: usize,
     _fl_allocation_type: u32,
@@ -76,7 +81,8 @@ pub extern "C" fn nm2_win32_VirtualAlloc(
 
 /// `VirtualFree(lpAddress, dwSize, dwFreeType)` — returns nonzero on success.
 #[unsafe(no_mangle)]
-pub extern "C" fn nm2_win32_VirtualFree(
+#[allow(non_snake_case)]
+pub extern "C" fn VirtualFree(
     lp_address: *mut c_void,
     _dw_size: usize,
     _dw_free_type: u32,
@@ -96,8 +102,8 @@ pub extern "C" fn nm2_win32_VirtualFree(
 /// (yet) provide that symbol on macOS.
 pub fn resolve(name: &str) -> Option<*const ()> {
     match name {
-        "VirtualAlloc" => Some(nm2_win32_VirtualAlloc as *const ()),
-        "VirtualFree" => Some(nm2_win32_VirtualFree as *const ()),
+        "VirtualAlloc" => Some(VirtualAlloc as *const ()),
+        "VirtualFree" => Some(VirtualFree as *const ()),
         _ => None,
     }
 }

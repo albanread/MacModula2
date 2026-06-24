@@ -1722,19 +1722,25 @@ fn locate_runtime_lib() -> Result<PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("current_exe: {e}"))?;
     let dir = exe.parent().ok_or("driver exe has no parent directory")?;
-    let lib = dir.join("newm2_runtime.lib");
+    // MSVC names the staticlib `newm2_runtime.lib`; the Unix/macOS toolchain
+    // names it `libnewm2_runtime.a`.
+    #[cfg(windows)]
+    let lib_name = "newm2_runtime.lib";
+    #[cfg(not(windows))]
+    let lib_name = "libnewm2_runtime.a";
+    let lib = dir.join(lib_name);
     if lib.is_file() {
         return Ok(lib);
     }
     // `cargo run`/`cargo test` may place the driver under target/<profile>/deps.
     if let Some(up) = dir.parent() {
-        let alt = up.join("newm2_runtime.lib");
+        let alt = up.join(lib_name);
         if alt.is_file() {
             return Ok(alt);
         }
     }
     Err(format!(
-        "newm2_runtime.lib not found next to {} — run `cargo build -p newm2-runtime`",
+        "{lib_name} not found next to {} — run `cargo build -p newm2-runtime`",
         dir.display()
     ))
 }
@@ -1891,6 +1897,46 @@ fn locate_sdk_tool_dir() -> Option<PathBuf> {
     None
 }
 
+/// macOS (Mach-O) AOT link: drive `clang`, which invokes `ld64`, emits a native
+/// arm64 Mach-O executable, and ad-hoc code-signs it. The Win32-only knobs
+/// (subsystem, manifest, import libraries) do not apply; the program's foreign
+/// references (e.g. `VirtualAlloc`) resolve from the runtime archive's native
+/// shims. Rust std (bundled in the static runtime) pulls in libSystem, libc++,
+/// libiconv, and the CoreFoundation/Security frameworks.
+#[cfg(not(windows))]
+fn link_executable(
+    obj: &Path,
+    exe: &Path,
+    extra_libs: &[&Path],
+    _import_libs: &[String],
+    _gui: bool,
+    _manifest: Option<&Path>,
+) -> Result<(), String> {
+    let runtime_lib = locate_runtime_lib()?;
+
+    let mut cmd = std::process::Command::new("clang");
+    cmd.arg("-o").arg(exe);
+    cmd.arg(obj);
+    for lib in extra_libs {
+        cmd.arg(lib);
+    }
+    cmd.arg(&runtime_lib);
+    cmd.args(["-lSystem", "-lc", "-lm", "-liconv", "-lc++"]);
+    cmd.args(["-framework", "CoreFoundation", "-framework", "Security"]);
+    cmd.args(["-arch", "arm64"]);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run clang: {e}"))?;
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("clang exited with {}\n{stdout}{stderr}", output.status));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn link_executable(
     obj: &Path,
     exe: &Path,
