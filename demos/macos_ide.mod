@@ -48,6 +48,7 @@ BEGIN
 
   editor := Cocoa.MakeEditor(10.0, 320.0, 680.0, 286.0);
   Cocoa.SetEditorText(editor, code);
+  Cocoa.HighlightEditor(editor);
   Cocoa.AddSubview(content, editor);
 
   output := Cocoa.MakeEditor(10.0, 50.0, 680.0, 256.0);

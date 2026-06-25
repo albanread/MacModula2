@@ -25,3 +25,8 @@ gc = []
 # crate supplies the OS entry points.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Com", "Win32_Foundation"] }
+
+# macOS: the lexer drives the IDE's syntax highlighter (tokenize the editor
+# buffer, color token ranges). Leaf crate (no cycle: it depends only on serde).
+[target.'cfg(not(windows))'.dependencies]
+newm2-lexer = { path = "../newm2-lexer" }

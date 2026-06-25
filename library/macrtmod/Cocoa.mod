@@ -115,6 +115,9 @@ BEGIN
   n := ObjC.GetString(s, dest)
 END EditorText;
 
+PROCEDURE HighlightEditor (editor: View);
+BEGIN ObjC.Highlight(send0(editor, Sel("documentView"))) END HighlightEditor;
+
 (* The Objective-C action method shared by every Cocoa button. It reads the
    sender's tag and invokes the Modula-2 ActionProc registered at that index. *)
 PROCEDURE TrampDispatch (self, cmd, sender: ObjC.Id);

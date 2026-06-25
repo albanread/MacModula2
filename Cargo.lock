@@ -230,6 +230,7 @@ dependencies = [
 name = "newm2-runtime"
 version = "0.0.0"
 dependencies = [
+ "newm2-lexer",
  "windows-sys",
 ]
 

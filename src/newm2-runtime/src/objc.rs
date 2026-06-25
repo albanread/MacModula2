@@ -314,6 +314,111 @@ pub extern "C-unwind" fn nm2_cocoa_snapshot_view(
     if ok { 1 } else { 0 }
 }
 
+/// `ObjC.Highlight(textview)` — syntax-color an NSTextView's content using the
+/// NewM2 lexer: keywords, string/char literals, numbers, pragmas, and comments
+/// each get a colour. Re-runnable. Byte offsets map to NSString (UTF-16) indices
+/// directly for ASCII source (the common case for M2).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_highlight(textview: *mut c_void) {
+    bootstrap();
+    if textview.is_null() {
+        return;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    let getcls = sym_or_null("objc_getClass");
+    if msg.is_null() || reg.is_null() || getcls.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let send_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let add_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+
+    let s = send0(textview, reg(c"string".as_ptr()));
+    if s.is_null() {
+        return;
+    }
+    let utf8 = send_str(s, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return;
+    }
+    let src = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+
+    let storage = send0(textview, reg(c"textStorage".as_ptr()));
+    if storage.is_null() {
+        return;
+    }
+    let fg_var = sym_or_null("NSForegroundColorAttributeName") as *const *mut c_void;
+    if fg_var.is_null() {
+        return;
+    }
+    let fg = unsafe { *fg_var };
+
+    let nscolor = getcls(c"NSColor".as_ptr());
+    let color = |name: &CStr| -> *mut c_void { send0(nscolor, reg(name.as_ptr())) };
+    let c_default = color(c"textColor");
+    let c_keyword = color(c"systemBlueColor");
+    let c_string = color(c"systemRedColor");
+    let c_number = color(c"systemPurpleColor");
+    let c_pragma = color(c"systemTealColor");
+    let c_comment = color(c"systemGreenColor");
+
+    let add_sel = reg(c"addAttribute:value:range:".as_ptr());
+    let utf16_len = src.encode_utf16().count() as u64;
+    add_attr(storage, add_sel, fg, c_default, 0, utf16_len);
+
+    let apply = |start: usize, end: usize, col: *mut c_void| {
+        if col.is_null() || end <= start {
+            return;
+        }
+        add_attr(storage, add_sel, fg, col, start as u64, (end - start) as u64);
+    };
+
+    // Comments (the lexer strips them): scan (* ... *) with nesting.
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'(' && bytes[i + 1] == b'*' {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i + 1 < bytes.len() && depth > 0 {
+                if bytes[i] == b'(' && bytes[i + 1] == b'*' {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && bytes[i + 1] == b')' {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            apply(start, i, c_comment);
+        } else {
+            i += 1;
+        }
+    }
+
+    if let Ok(tokens) = newm2_lexer::tokenize(&src) {
+        for t in &tokens {
+            use newm2_lexer::TokenKind::*;
+            let col = match &t.kind {
+                Keyword(_) => c_keyword,
+                String(_) | Char(_) => c_string,
+                Integer(_) | Real(_) => c_number,
+                Pragma(_) => c_pragma,
+                _ => std::ptr::null_mut(),
+            };
+            apply(t.span.start.offset, t.span.end.offset, col);
+        }
+    }
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).
