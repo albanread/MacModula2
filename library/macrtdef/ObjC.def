@@ -50,6 +50,10 @@ PROCEDURE GetString (nsstr: Id; VAR dest: ARRAY OF CHAR): INTEGER;
 (* Syntax-color an NSTextView's content using the NewM2 lexer. *)
 PROCEDURE Highlight (textview: Id);
 
+(* Mark error lines (parsed from compiler `output`) with a red background in the
+   NSTextView; returns how many were marked. *)
+PROCEDURE MarkErrors (textview: Id; output: ARRAY OF CHAR): INTEGER;
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);

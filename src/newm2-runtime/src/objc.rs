@@ -496,6 +496,115 @@ fn nm2_objc_nsstring_via(
     send(cls, reg(c"stringWithUTF8String:".as_ptr()), utf8)
 }
 
+/// `ObjC.MarkErrors(textview, output)` — parse compiler diagnostics of the form
+/// `name:LINE: error: …` (or `warning:`) out of `output`, and give those lines a
+/// pale-red background in the editor. Clears any previous marks first. Returns
+/// the number of error lines marked.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_mark_errors(
+    textview: *mut c_void,
+    out_ptr: *const u16,
+    out_high: u64,
+) -> i64 {
+    bootstrap();
+    if textview.is_null() {
+        return 0;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    let getcls = sym_or_null("objc_getClass");
+    if msg.is_null() || reg.is_null() || getcls.is_null() {
+        return 0;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let send_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let send_color: extern "C" fn(*mut c_void, *mut c_void, f64, f64, f64, f64) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let add_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+    let rem_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+
+    // editor text + line offsets (ASCII: byte offset == UTF-16 index)
+    let s = send0(textview, reg(c"string".as_ptr()));
+    if s.is_null() {
+        return 0;
+    }
+    let utf8 = send_str(s, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return 0;
+    }
+    let src = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+    let mut line_start: Vec<usize> = vec![0];
+    for (i, b) in src.bytes().enumerate() {
+        if b == b'\n' {
+            line_start.push(i + 1);
+        }
+    }
+
+    let storage = send0(textview, reg(c"textStorage".as_ptr()));
+    if storage.is_null() {
+        return 0;
+    }
+    let bg_var = sym_or_null("NSBackgroundColorAttributeName") as *const *mut c_void;
+    if bg_var.is_null() {
+        return 0;
+    }
+    let bg = unsafe { *bg_var };
+    let total = src.encode_utf16().count() as u64;
+    // clear previous marks
+    rem_attr(storage, reg(c"removeAttribute:range:".as_ptr()), bg, 0, total);
+
+    let nscolor = getcls(c"NSColor".as_ptr());
+    let pale_red = send_color(
+        nscolor,
+        reg(c"colorWithCalibratedRed:green:blue:alpha:".as_ptr()),
+        1.0,
+        0.80,
+        0.80,
+        1.0,
+    );
+
+    // parse diagnostics for line numbers
+    let out = {
+        if out_ptr.is_null() {
+            String::new()
+        } else {
+            let cap = (out_high as usize).saturating_add(1);
+            let units = unsafe { std::slice::from_raw_parts(out_ptr, cap) };
+            let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+            String::from_utf16_lossy(&units[..end])
+        }
+    };
+    let add_sel = reg(c"addAttribute:value:range:".as_ptr());
+    let mut count = 0i64;
+    for line in out.lines() {
+        if !(line.contains("error") || line.contains("warning")) {
+            continue;
+        }
+        // `name:LINE: sev: message` → field 1 is the line number
+        let Some(num) = line.split(':').nth(1).and_then(|f| f.trim().parse::<usize>().ok()) else {
+            continue;
+        };
+        if num == 0 || num > line_start.len() {
+            continue;
+        }
+        let start = line_start[num - 1];
+        let end = if num < line_start.len() {
+            line_start[num]
+        } else {
+            src.len()
+        };
+        add_attr(storage, add_sel, bg, pale_red, start as u64, (end - start) as u64);
+        count += 1;
+    }
+    count
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).

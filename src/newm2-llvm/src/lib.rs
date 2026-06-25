@@ -307,6 +307,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.RegisterClass".to_string(), "nm2_objc_register_class"));
         v.push(("ObjC.GetString".to_string(), "nm2_objc_nsstring_to_wide"));
         v.push(("ObjC.Highlight".to_string(), "nm2_ide_highlight"));
+        v.push(("ObjC.MarkErrors".to_string(), "nm2_ide_mark_errors"));
         v.push(("Proc.RunCapture".to_string(), "nm2_proc_run_capture"));
         v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
     }
@@ -1211,6 +1212,7 @@ fn for_each_runtime_binding(
         bind("ObjC.RegisterClass", newm2_runtime::objc::nm2_objc_register_class as *const ());
         bind("ObjC.GetString", newm2_runtime::objc::nm2_objc_nsstring_to_wide as *const ());
         bind("ObjC.Highlight", newm2_runtime::objc::nm2_ide_highlight as *const ());
+        bind("ObjC.MarkErrors", newm2_runtime::objc::nm2_ide_mark_errors as *const ());
         bind("Proc.RunCapture", newm2_runtime::proc::nm2_proc_run_capture as *const ());
         bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
     }

@@ -27,6 +27,7 @@ BEGIN
           "./target/debug/newm2-driver run --library library /tmp/ide_buffer.mod 2>&1",
           out);
   Cocoa.SetEditorText(output, out);
+  ig := Cocoa.MarkErrors(editor, out);
   IF rc = 0 THEN Cocoa.SetText(status, "Build & run succeeded (exit 0).")
   ELSE Cocoa.SetText(status, "Build/run reported errors.") END
 END OnRun;
