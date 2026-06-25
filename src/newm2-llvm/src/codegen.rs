@@ -454,6 +454,14 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
         );
         let reg_pair =
             self.objc_extern("objc_registerClassPair", void_t.fn_type(&[ptr_ty.into()], false));
+        // BOOL class_addIvar(Class, const char* name, size_t size, uint8_t align, const char* types)
+        let add_ivar = self.objc_extern(
+            "class_addIvar",
+            i8_t.fn_type(
+                &[ptr_ty.into(), ptr_ty.into(), i64_t.into(), i8_t.into(), ptr_ty.into()],
+                false,
+            ),
+        );
 
         let ctor =
             self.module.add_function(&format!("M2.objcreg.{}", self.ir.name), void_t.fn_type(&[], false), None);
@@ -461,7 +469,9 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
         self.builder.position_at_end(entry);
 
         for g in &classes {
-            let Global::ObjCClass { objc_name, super_name, methods } = g else { continue };
+            let Global::ObjCClass { objc_name, super_name, methods, object_record } = g else {
+                continue;
+            };
             let name_ptr = self.objc_cstring(objc_name);
             let super_ptr = self.objc_cstring(super_name);
             let super_cls = self
@@ -484,6 +494,35 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
                 .basic()
                 .unwrap()
                 .into_pointer_value();
+            // One ivar holding the object record's field area (everything after
+            // the leading word, which the isa occupies). Placed right after the
+            // isa (8-byte aligned -> offset 8), it makes the Obj-C instance the
+            // same size+layout as the native record, so field-access GEPs into
+            // the object record land in real per-instance Obj-C storage. alloc
+            // zero-fills it, matching NEW's semantics.
+            let or_size = self
+                .llvm_type(*object_record)
+                .size_of()
+                .and_then(|c| c.get_zero_extended_constant())
+                .unwrap_or(8);
+            if or_size > 8 {
+                let ivar_size = or_size - 8;
+                let iname = self.objc_cstring("__m2");
+                let itypes = self.objc_cstring(&format!("[{ivar_size}c]"));
+                self.builder
+                    .build_call(
+                        add_ivar,
+                        &[
+                            cls.into(),
+                            iname.into(),
+                            i64_t.const_int(ivar_size, false).into(),
+                            i8_t.const_int(3, false).into(), // alignment 2^3 = 8 bytes
+                            itypes.into(),
+                        ],
+                        "",
+                    )
+                    .unwrap();
+            }
             for m in methods {
                 let Some(imp) = self.module.get_function(&m.imp_fn) else { continue };
                 let sel = self

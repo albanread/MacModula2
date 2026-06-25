@@ -255,11 +255,14 @@ pub fn lower_module_opts(
                 Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
                 None => "NSObject".to_string(),
             };
-            ir.globals.push(Global::ObjCClass {
-                objc_name: format!("M2.{}.{}", ir.name, class.name),
-                super_name,
-                methods,
-            });
+            if let Some(object_record) = class.object_record {
+                ir.globals.push(Global::ObjCClass {
+                    objc_name: format!("M2.{}.{}", ir.name, class.name),
+                    super_name,
+                    methods,
+                    object_record,
+                });
+            }
         }
     }
 
