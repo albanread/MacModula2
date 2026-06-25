@@ -29,6 +29,7 @@ struct Rt {
     sel_get_name: extern "C" fn(*mut c_void) -> *const c_char,
     superclass: extern "C" fn(*mut c_void) -> *mut c_void,
     class_get_name: extern "C" fn(*mut c_void) -> *const c_char,
+    object_get_class: extern "C" fn(*mut c_void) -> *mut c_void,
 }
 
 fn sym(name: &str) -> *mut c_void {
@@ -171,39 +172,83 @@ fn gen_class(
         known.contains(&n).then_some(n)
     };
 
-    let mut emitted: Vec<Method> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+    // Instance methods (on the class); class methods (on the metaclass).
+    let (mut instance, sk1) = collect_methods(rt, cls, &mut seen, inherited);
+    let metaclass = (rt.object_get_class)(cls);
+    let (mut classm, sk2) = collect_methods(rt, metaclass, &mut seen, inherited);
+    instance.sort_by(|a, b| a.name.cmp(&b.name));
+    classm.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let render = |m: &Method, kw: &str| -> String {
+        let ps: Vec<String> =
+            m.params.iter().enumerate().map(|(i, t)| format!("a{i}: {t}")).collect();
+        let params = format!(" ({})", ps.join("; "));
+        let ret = m.ret.map(|t| format!(": {t}")).unwrap_or_default();
+        format!("  ABSTRACT {kw} {}{}{} <* selector \"{}\" *>;\n", m.name, params, ret, m.selector)
+    };
+
+    let mut out = String::new();
+    out.push_str(&format!("CLASS {name};\n"));
+    // INHERIT must precede any class member (the parser parses it right after the
+    // header); the cocoa_class pragma and methods follow.
+    if let Some(s) = &super_name {
+        out.push_str(&format!("  INHERIT {s};\n"));
+    }
+    out.push_str(&format!("  <* cocoa_class \"{name}\" *>\n"));
+    for m in &classm {
+        out.push_str(&render(m, "CLASS PROCEDURE"));
+    }
+    for m in &instance {
+        out.push_str(&render(m, "PROCEDURE"));
+    }
+    out.push_str(&format!("END {name};\n"));
+    out.push_str(&format!(
+        "  (* {} instance + {} class methods; {} skipped *)\n\n",
+        instance.len(),
+        classm.len(),
+        sk1 + sk2
+    ));
+    let own_names: HashSet<String> =
+        instance.iter().chain(classm.iter()).map(|m| m.name.clone()).collect();
+    (out, own_names)
+}
+
+/// Process a class's `class_copyMethodList`, mapping selectors+encodings to M2
+/// methods, filtering unsupported/category/keyword/dup ones. `seen` dedups
+/// within the (class, metaclass) pair; `inherited` skips ancestor methods.
+fn collect_methods(
+    rt: &Rt,
+    cls: *mut c_void,
+    seen: &mut HashSet<String>,
+    inherited: &HashSet<String>,
+) -> (Vec<Method>, u32) {
+    let mut out = Vec::new();
     let mut skipped = 0u32;
     let mut count: u32 = 0;
     let methods = (rt.copy_methods)(cls, &mut count);
-    let method_ptrs: Vec<*mut c_void> =
-        (0..count as isize).map(|k| unsafe { *methods.offset(k) }).collect();
-    for m in method_ptrs {
+    for k in 0..count as isize {
+        let m = unsafe { *methods.offset(k) };
         let sel = (rt.method_get_name)(m);
-        let sel_name = unsafe { CStr::from_ptr((rt.sel_get_name)(sel)) }.to_string_lossy().into_owned();
-        let enc = unsafe { CStr::from_ptr((rt.method_get_types)(m)) }.to_string_lossy().into_owned();
-        // skip private / category-injected selectors (the runtime returns every
-        // method, including ones other frameworks graft on via categories).
-        // Underscores flag private/category conventions; '.' flags property ivars.
+        let sel_name =
+            unsafe { CStr::from_ptr((rt.sel_get_name)(sel)) }.to_string_lossy().into_owned();
+        let enc =
+            unsafe { CStr::from_ptr((rt.method_get_types)(m)) }.to_string_lossy().into_owned();
         if sel_name.starts_with('_') || sel_name.contains('_') || sel_name.contains('.') {
             continue;
         }
         let toks = tokenize(&enc);
-        // toks: [ret, @(self), :(cmd), args...]
         if toks.len() < 3 {
             skipped += 1;
             continue;
         }
-        let ret = if toks[0] == "v" { None } else { Some(toks[0].as_str()) };
-        let ret_m2 = match ret {
-            None => None,
-            Some(t) => match m2_type(t) {
-                Some(m) => Some(m),
-                None => {
-                    skipped += 1;
-                    continue;
-                }
-            },
+        let ret_m2 = match (toks[0] == "v").then_some(None).unwrap_or_else(|| Some(m2_type(&toks[0]))) {
+            None => None,             // void
+            Some(Some(m)) => Some(m), // mapped return
+            Some(None) => {
+                skipped += 1;
+                continue;
+            }
         };
         let mut params = Vec::new();
         let mut ok = true;
@@ -216,50 +261,22 @@ fn gen_class(
                 }
             }
         }
-        if !ok {
-            skipped += 1;
-            continue;
-        }
-        // arity must match the selector's colon count
-        if params.len() != sel_name.matches(':').count() {
+        if !ok || params.len() != sel_name.matches(':').count() {
             skipped += 1;
             continue;
         }
         let mname = method_name(&sel_name);
         if mname.is_empty()
             || M2_KEYWORDS.contains(&mname.as_str())
-            || inherited.contains(&mname)        // already declared by an ancestor
+            || inherited.contains(&mname)
             || !seen.insert(mname.clone())
         {
             skipped += 1;
             continue;
         }
-        emitted.push(Method { name: mname, selector: sel_name, ret: ret_m2, params });
+        out.push(Method { name: mname, selector: sel_name, ret: ret_m2, params });
     }
-    emitted.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let mut out = String::new();
-    out.push_str(&format!("CLASS {name};\n"));
-    // INHERIT must precede any class member (the parser parses it right after the
-    // header); the cocoa_class pragma and methods follow.
-    if let Some(s) = &super_name {
-        out.push_str(&format!("  INHERIT {s};\n"));
-    }
-    out.push_str(&format!("  <* cocoa_class \"{name}\" *>\n"));
-    for m in &emitted {
-        let ps: Vec<String> =
-            m.params.iter().enumerate().map(|(i, t)| format!("a{i}: {t}")).collect();
-        let params = format!(" ({})", ps.join("; "));
-        let ret = m.ret.map(|t| format!(": {t}")).unwrap_or_default();
-        out.push_str(&format!(
-            "  ABSTRACT PROCEDURE {}{}{} <* selector \"{}\" *>;\n",
-            m.name, params, ret, m.selector
-        ));
-    }
-    out.push_str(&format!("END {name};\n"));
-    out.push_str(&format!("  (* {} own methods; {skipped} skipped *)\n\n", emitted.len()));
-    let own_names: HashSet<String> = emitted.iter().map(|m| m.name.clone()).collect();
-    (out, own_names)
+    (out, skipped)
 }
 
 fn main() {
@@ -272,6 +289,7 @@ fn main() {
         sel_get_name: unsafe { std::mem::transmute(sym("sel_getName")) },
         superclass: unsafe { std::mem::transmute(sym("class_getSuperclass")) },
         class_get_name: unsafe { std::mem::transmute(sym("class_getName")) },
+        object_get_class: unsafe { std::mem::transmute(sym("object_getClass")) },
     };
 
     // Classes to generate: CLI args, or a default curated set.
