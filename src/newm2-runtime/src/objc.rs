@@ -742,6 +742,14 @@ pub extern "C-unwind" fn nm2_cocoa_run_app() {
     let app = s0(getcls(c"NSApplication".as_ptr()), sel(c"sharedApplication"));
     let _ = s1(app, sel(c"setActivationPolicy:"), 0 as *mut c_void); // Regular
 
+    // If the program already installed a main menu (e.g. the IDE's File/Help
+    // menu), leave it; only provide the default Quit menu when there is none.
+    if !s0(app, sel(c"mainMenu")).is_null() {
+        let _ = s1b(app, sel(c"activateIgnoringOtherApps:"), true);
+        let _ = s0(app, sel(c"run"));
+        return;
+    }
+
     // Minimal main menu: one app menu containing Quit (Cmd-Q -> terminate:).
     let main_menu = alloc_init(c"NSMenu");
     let app_item = alloc_init(c"NSMenuItem");
