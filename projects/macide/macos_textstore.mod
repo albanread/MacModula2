@@ -1,83 +1,122 @@
 MODULE macos_textstore;
-(* Stage 1 proof: a custom NSTextStorage written as an ordinary Modula-2 CLASS
-   on the Cocoa model. It overrides the four NSTextStorage primitives, forwarding
-   to an internal NSMutableAttributedString (the rope swaps in at Stage 2). The
-   point is to prove an M2 object can BE the text storage an NSTextView drives —
-   the gating capability for docs/design/mac-text-store.md. Verified by snapshot. *)
+(* Stage 2: an efficient editor text store whose characters live in the M2
+   TextRope (O(log n) insert/delete), exposed to Cocoa's text system through two
+   Modula-2 classes that ARE Cocoa objects:
+
+     RopeString : NSString       length / characterAtIndex: read the rope
+     RopeStore  : NSTextStorage  edits go to the rope; `string` returns the
+                                 RopeString; attributes are default for now
+                                 (the syntax-colour run list is Stage 2b)
+
+   Both share one rope cell (PRopeBox) so the NSString view always reflects the
+   current rope after an edit. A hand-built TextKit stack lays out and draws
+   through it. See docs/design/mac-text-store.md.  Verified by snapshot. *)
 FROM SYSTEM IMPORT CAST, ADDRESS;
 FROM STextIO IMPORT WriteString, WriteLn;
 IMPORT ObjC;
 IMPORT Cocoa;
+IMPORT TextRope;
 
 TYPE
-  SendRangeStr = PROCEDURE (ObjC.Id, ObjC.SEL, INTEGER, INTEGER, ObjC.Id): ObjC.Id; (* …InRange:withString: *)
-  SendIAddr    = PROCEDURE (ObjC.Id, ObjC.SEL, INTEGER, ADDRESS): ObjC.Id;          (* atIndex:effectiveRange: *)
-  SendPRange   = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, INTEGER, INTEGER): ObjC.Id; (* setAttributes:range: *)
-  SendEdited   = PROCEDURE (ObjC.Id, ObjC.SEL, INTEGER, INTEGER, INTEGER, INTEGER): ObjC.Id; (* edited:range:changeInLength: *)
-  Send2F       = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
-  SendFrameC   = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id; (* initWithFrame:textContainer: *)
+  PRopeBox = POINTER TO RECORD r: TextRope.Rope END;   (* the shared, mutable rope cell *)
+  PNSRange = POINTER TO RECORD location, length: CARDINAL END;
+  SendEdited = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, CARDINAL, INTEGER): ObjC.Id;
+  Send2F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
+  SendFrameC = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id;
+  SendPP     = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.Id): ObjC.Id;
 
 VAR
-  s0: ObjC.Send0; sp: ObjC.SendP; s0i: ObjC.Send0I;
-  srs: SendRangeStr; sia: SendIAddr; spr: SendPRange; sed: SendEdited; s2f: Send2F; sfc: SendFrameC;
-  ig: ObjC.Id;
+  s0: ObjC.Send0; sp: ObjC.SendP; s0i: ObjC.Send0I; sf1: ObjC.SendF;
+  sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP;
+  ig, font: ObjC.Id;
+  gAttrs: ObjC.Id;        (* one stable, retained default-attributes dict *)
 
-(* ---- the text store: a Modula-2 class that IS an NSTextStorage ---- *)
+(* ---- RopeString: an NSString whose characters come straight from the rope ---- *)
+CLASS RopeString;
+  <* cocoa "NSString" *>
+  VAR box: PRopeBox;
+  PROCEDURE SetBox (b: PRopeBox);                 (* helper, not an NSString primitive *)
+  BEGIN box := b END SetBox;
+  PROCEDURE Length (): CARDINAL;                  (* primitive "length" *)
+  BEGIN RETURN TextRope.Length(box^.r) END Length;
+  PROCEDURE CharacterAtIndex (i: CARDINAL): CARDINAL;   (* primitive "characterAtIndex:" *)
+  BEGIN RETURN ORD(TextRope.CharAt(box^.r, i)) END CharacterAtIndex;
+END RopeString;
+
+(* ---- RopeStore: an NSTextStorage backed by the rope ---- *)
 CLASS RopeStore;
   <* cocoa "NSTextStorage" *>
-  VAR backing: ObjC.Id;          (* Stage 1: an NSMutableAttributedString; Stage 2: a TextRope *)
+  VAR box: PRopeBox; ropeStr: ObjC.Id;
 
-  PROCEDURE Setup;               (* not a primitive — create the backing store *)
+  PROCEDURE Setup;                                (* build the rope cell + string view *)
+  VAR rs: RopeString;
   BEGIN
-    backing := s0(s0(ObjC.GetClass("NSMutableAttributedString"), ObjC.Selector("alloc")), ObjC.Selector("init"))
+    NEW(box); box^.r := TextRope.Empty();
+    NEW(rs); rs.SetBox(box); ropeStr := CAST(ObjC.Id, rs)
   END Setup;
 
-  (* primitive 1: the "string" accessor (derived selector "string" matches) *)
-  PROCEDURE String (): ObjC.Id;
-  BEGIN RETURN s0(backing, ObjC.Selector("string")) END String;
+  PROCEDURE String (): ObjC.Id;                   (* primitive "string" *)
+  BEGIN RETURN ropeStr END String;
 
-  (* primitive 2: -replaceCharactersInRange:withString: *)
-  PROCEDURE ReplaceChars (loc, len: INTEGER; s: ObjC.Id) <* selector "replaceCharactersInRange:withString:" *>;
-  VAR newLen: INTEGER;
+  PROCEDURE ReplaceChars (loc, len: CARDINAL; s: ObjC.Id) <* selector "replaceCharactersInRange:withString:" *>;
+  VAR text: ARRAY [0..65535] OF CHAR; inserted: CARDINAL;
   BEGIN
-    ig := srs(backing, ObjC.Selector("replaceCharactersInRange:withString:"), loc, len, s);
-    newLen := s0i(s, ObjC.Selector("length"));
-    ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"), 3, loc, len, newLen - len)
+    inserted := s0i(s, ObjC.Selector("length"));
+    box^.r := TextRope.DeleteRange(box^.r, loc, len);
+    ObjC.GetString(s, text);
+    IF text[0] # CHR(0) THEN box^.r := TextRope.Insert(box^.r, loc, text) END;
+    ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"),
+              3, loc, len, VAL(INTEGER, inserted) - VAL(INTEGER, len))
   END ReplaceChars;
 
-  (* primitive 3: attributesAtIndex:effectiveRange: *)
-  PROCEDURE AttributesAt (loc: INTEGER; rangePtr: ADDRESS): ObjC.Id <* selector "attributesAtIndex:effectiveRange:" *>;
-  BEGIN RETURN sia(backing, ObjC.Selector("attributesAtIndex:effectiveRange:"), loc, rangePtr) END AttributesAt;
-
-  (* primitive 4: -setAttributes:range: *)
-  PROCEDURE SetAttrs (attrs: ObjC.Id; loc, len: INTEGER) <* selector "setAttributes:range:" *>;
+  (* one uniform attributes run over the whole document (Stage 2b: a real run list) *)
+  PROCEDURE AttributesAt (loc: CARDINAL; rangePtr: ADDRESS): ObjC.Id <* selector "attributesAtIndex:effectiveRange:" *>;
+  VAR rng: PNSRange;
   BEGIN
-    ig := spr(backing, ObjC.Selector("setAttributes:range:"), attrs, loc, len);
-    ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"), 2, loc, len, 0)
-  END SetAttrs;
+    IF rangePtr # NIL THEN
+      rng := CAST(PNSRange, rangePtr);
+      rng^.location := 0;
+      rng^.length := TextRope.Length(box^.r)
+    END;
+    RETURN gAttrs
+  END AttributesAt;
+
+  PROCEDURE SetAttrs (a: ObjC.Id; loc, len: CARDINAL) <* selector "setAttributes:range:" *>;
+  BEGIN END SetAttrs;                             (* no-op: we own attributes (Stage 2b) *)
+
+  (* take responsibility for attribute validity — skip Cocoa's attribute fixing
+     (which assumes an NSMutableAttributedString backing we don't have) *)
+  PROCEDURE FixAttributes (loc, len: CARDINAL) <* selector "fixAttributesInRange:" *>;
+  BEGIN END FixAttributes;
 END RopeStore;
 
 VAR
-  store: RopeStore; win, content, lm, container, tv: ObjC.Id; storeId: ObjC.Id;
+  store: RopeStore; win, content, lm, container, tv, storeId: ObjC.Id; got: ARRAY [0..255] OF CHAR;
 BEGIN
   s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
   sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
   s0i := CAST(ObjC.Send0I,    ObjC.MsgSendPtr());
-  srs := CAST(SendRangeStr,   ObjC.MsgSendPtr());
-  sia := CAST(SendIAddr,      ObjC.MsgSendPtr());
-  spr := CAST(SendPRange,     ObjC.MsgSendPtr());
+  sf1 := CAST(ObjC.SendF,     ObjC.MsgSendPtr());
   sed := CAST(SendEdited,     ObjC.MsgSendPtr());
   s2f := CAST(Send2F,         ObjC.MsgSendPtr());
   sfc := CAST(SendFrameC,     ObjC.MsgSendPtr());
+  spp := CAST(SendPP,         ObjC.MsgSendPtr());
 
   Cocoa.InitApp;
+  (* default attributes: a fixed-pitch font (NSFontAttributeName's value is "NSFont") *)
+  gAttrs := s0(s0(ObjC.GetClass("NSMutableDictionary"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  font := sf1(ObjC.GetClass("NSFont"), ObjC.Selector("userFixedPitchFontOfSize:"), 14.0);
+  ig := spp(gAttrs, ObjC.Selector("setObject:forKey:"), font, ObjC.NSString("NSFont"));
 
-  (* the custom storage, populated through its own primitive *)
   NEW(store); store.Setup;
   storeId := CAST(ObjC.Id, store);
-  store.ReplaceChars(0, 0, ObjC.NSString("MODULE Hello;  (* text in a Modula-2 NSTextStorage *)"));
+  store.ReplaceChars(0, 0, ObjC.NSString("MODULE Hello;"));
+  store.ReplaceChars(6, 0, ObjC.NSString("Rope"));     (* O(log n) mid-edit -> "MODULERope Hello;" *)
 
-  (* hand-built TextKit stack on top of our storage *)
+  (* read the text back THROUGH the rope-backed NSString (no whole-buffer copy) *)
+  ObjC.GetString(store.String(), got);
+  WriteString("rope text via NSString = '"); WriteString(got); WriteString("'"); WriteLn;
+
   lm := s0(s0(ObjC.GetClass("NSLayoutManager"), ObjC.Selector("alloc")), ObjC.Selector("init"));
   ig := sp(storeId, ObjC.Selector("addLayoutManager:"), lm);
   container := s0(ObjC.GetClass("NSTextContainer"), ObjC.Selector("alloc"));
@@ -86,11 +125,9 @@ BEGIN
   tv := s0(ObjC.GetClass("NSTextView"), ObjC.Selector("alloc"));
   tv := sfc(tv, ObjC.Selector("initWithFrame:textContainer:"), 0.0, 0.0, 600.0, 400.0, container);
 
-  win := Cocoa.MakeWindow(620.0, 420.0, "M2 NSTextStorage");
+  win := Cocoa.MakeWindow(620.0, 420.0, "M2 rope-backed NSTextStorage");
   content := CAST(ObjC.Id, Cocoa.ContentView(win));
   ig := sp(content, ObjC.Selector("addSubview:"), tv);
 
-  IF Cocoa.Snapshot(Cocoa.ContentView(win), "/tmp/macm2_textstore.png") THEN END;
-  WriteString("text store length = ");
-  IF s0i(storeId, ObjC.Selector("length")) > 0 THEN WriteString("non-zero (storage live)") END; WriteLn
+  IF Cocoa.Snapshot(Cocoa.ContentView(win), "/tmp/macm2_textstore.png") THEN END
 END macos_textstore.
