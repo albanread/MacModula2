@@ -1,61 +1,131 @@
 MODULE macos_textstore;
-(* Stage 2: an efficient editor text store whose characters live in the M2
-   TextRope (O(log n) insert/delete), exposed to Cocoa's text system through two
-   Modula-2 classes that ARE Cocoa objects:
-
-     RopeString : NSString       length / characterAtIndex: read the rope
-     RopeStore  : NSTextStorage  edits go to the rope; `string` returns the
-                                 RopeString; attributes are default for now
-                                 (the syntax-colour run list is Stage 2b)
-
-   Both share one rope cell (PRopeBox) so the NSString view always reflects the
-   current rope after an edit. A hand-built TextKit stack lays out and draws
-   through it. See docs/design/mac-text-store.md.  Verified by snapshot. *)
+(* Stage 2b: the rope-backed NSTextStorage, now with a per-range attribute run
+   list driving syntax colours. Characters live in the M2 TextRope; a small
+   Modula-2 lexer scans the rope text into runs {len, kind}; attributesAtIndex:
+   returns the colour dict for the run covering an index (and that run's extent
+   as effectiveRange, so the layout manager batches). Everything — the buffer,
+   the lexer, the storage object — is Modula-2 sitting on Cocoa.
+   See docs/design/mac-text-store.md.  Verified by snapshot. *)
 FROM SYSTEM IMPORT CAST, ADDRESS;
-FROM STextIO IMPORT WriteString, WriteLn;
+FROM Strings IMPORT Equal;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT TextRope;
 
+CONST
+  kDefault = 0; kKeyword = 1; kComment = 2; kString = 3; kNumber = 4; kKinds = 5;
+
 TYPE
-  PRopeBox = POINTER TO RECORD r: TextRope.Rope END;   (* the shared, mutable rope cell *)
+  PRopeBox = POINTER TO RECORD r: TextRope.Rope END;
   PNSRange = POINTER TO RECORD location, length: CARDINAL END;
+  Run      = RECORD len: CARDINAL; kind: INTEGER END;
+  PRuns    = POINTER TO RECORD count: CARDINAL; a: ARRAY [0..16383] OF Run END;
   SendEdited = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, CARDINAL, INTEGER): ObjC.Id;
   Send2F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
   SendFrameC = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id;
   SendPP     = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.Id): ObjC.Id;
+  Send4F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL): ObjC.Id;
 
 VAR
   s0: ObjC.Send0; sp: ObjC.SendP; s0i: ObjC.Send0I; sf1: ObjC.SendF;
-  sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP;
+  sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP; s4f: Send4F;
   ig, font: ObjC.Id;
-  gAttrs: ObjC.Id;        (* one stable, retained default-attributes dict *)
+  gKind: ARRAY [0..kKinds-1] OF ObjC.Id;     (* one attributes dict per token kind *)
 
-(* ---- RopeString: an NSString whose characters come straight from the rope ---- *)
+(* ---- tiny Modula-2 lexer over a plain wide buffer -> runs ---- *)
+PROCEDURE IsAlpha (c: CHAR): BOOLEAN;
+BEGIN RETURN ((c >= 'A') AND (c <= 'Z')) OR ((c >= 'a') AND (c <= 'z')) OR (c = '_') END IsAlpha;
+
+PROCEDURE IsDigit (c: CHAR): BOOLEAN;
+BEGIN RETURN (c >= '0') AND (c <= '9') END IsDigit;
+
+PROCEDURE IsKeyword (w: ARRAY OF CHAR): BOOLEAN;
+BEGIN
+  RETURN Equal(w,"MODULE") OR Equal(w,"IMPLEMENTATION") OR Equal(w,"DEFINITION") OR
+    Equal(w,"BEGIN") OR Equal(w,"END") OR Equal(w,"PROCEDURE") OR Equal(w,"CLASS") OR
+    Equal(w,"IF") OR Equal(w,"THEN") OR Equal(w,"ELSE") OR Equal(w,"ELSIF") OR
+    Equal(w,"WHILE") OR Equal(w,"DO") OR Equal(w,"FOR") OR Equal(w,"TO") OR Equal(w,"BY") OR
+    Equal(w,"REPEAT") OR Equal(w,"UNTIL") OR Equal(w,"CASE") OR Equal(w,"OF") OR
+    Equal(w,"LOOP") OR Equal(w,"EXIT") OR Equal(w,"RETURN") OR Equal(w,"VAR") OR
+    Equal(w,"CONST") OR Equal(w,"TYPE") OR Equal(w,"RECORD") OR Equal(w,"ARRAY") OR
+    Equal(w,"POINTER") OR Equal(w,"SET") OR Equal(w,"IMPORT") OR Equal(w,"FROM") OR
+    Equal(w,"WITH") OR Equal(w,"AND") OR Equal(w,"OR") OR Equal(w,"NOT") OR
+    Equal(w,"DIV") OR Equal(w,"MOD") OR Equal(w,"IN") OR Equal(w,"NIL") OR
+    Equal(w,"TRUE") OR Equal(w,"FALSE")
+END IsKeyword;
+
+PROCEDURE AddRun (p: PRuns; len: CARDINAL; kind: INTEGER);
+BEGIN
+  IF (p^.count > 0) AND (kind = kDefault) AND (p^.a[p^.count-1].kind = kDefault) THEN
+    p^.a[p^.count-1].len := p^.a[p^.count-1].len + len           (* merge runs of plain text *)
+  ELSIF p^.count <= 16383 THEN
+    p^.a[p^.count].len := len; p^.a[p^.count].kind := kind; INC(p^.count)
+  END
+END AddRun;
+
+PROCEDURE Lex (text: ARRAY OF CHAR; n: CARDINAL; p: PRuns);
+VAR i, j, k: CARDINAL; w: ARRAY [0..63] OF CHAR; q: CHAR;
+BEGIN
+  p^.count := 0; i := 0;
+  WHILE i < n DO
+    IF (text[i] = '(') AND (i+1 < n) AND (text[i+1] = '*') THEN
+      j := i+2;
+      WHILE (j+1 < n) AND NOT ((text[j] = '*') AND (text[j+1] = ')')) DO INC(j) END;
+      IF j+1 < n THEN j := j+2 ELSE j := n END;
+      AddRun(p, j-i, kComment); i := j
+    ELSIF (text[i] = '"') OR (text[i] = "'") THEN
+      q := text[i]; j := i+1;
+      WHILE (j < n) AND (text[j] # q) DO INC(j) END;
+      IF j < n THEN INC(j) END;
+      AddRun(p, j-i, kString); i := j
+    ELSIF IsAlpha(text[i]) THEN
+      j := i;
+      WHILE (j < n) AND (IsAlpha(text[j]) OR IsDigit(text[j])) DO INC(j) END;
+      k := 0;
+      WHILE (i+k < j) AND (k < 63) DO w[k] := text[i+k]; INC(k) END;
+      w[k] := CHR(0);
+      IF IsKeyword(w) THEN AddRun(p, j-i, kKeyword) ELSE AddRun(p, j-i, kDefault) END;
+      i := j
+    ELSIF IsDigit(text[i]) THEN
+      j := i;
+      WHILE (j < n) AND (IsDigit(text[j]) OR IsAlpha(text[j])) DO INC(j) END;
+      AddRun(p, j-i, kNumber); i := j
+    ELSE
+      AddRun(p, 1, kDefault); INC(i)
+    END
+  END
+END Lex;
+
+(* ---- RopeString: an NSString whose characters come from the rope ---- *)
 CLASS RopeString;
   <* cocoa "NSString" *>
   VAR box: PRopeBox;
-  PROCEDURE SetBox (b: PRopeBox);                 (* helper, not an NSString primitive *)
+  PROCEDURE SetBox (b: PRopeBox);
   BEGIN box := b END SetBox;
-  PROCEDURE Length (): CARDINAL;                  (* primitive "length" *)
+  PROCEDURE Length (): CARDINAL;
   BEGIN RETURN TextRope.Length(box^.r) END Length;
-  PROCEDURE CharacterAtIndex (i: CARDINAL): CARDINAL;   (* primitive "characterAtIndex:" *)
+  PROCEDURE CharacterAtIndex (i: CARDINAL): CARDINAL;
   BEGIN RETURN ORD(TextRope.CharAt(box^.r, i)) END CharacterAtIndex;
 END RopeString;
 
-(* ---- RopeStore: an NSTextStorage backed by the rope ---- *)
+(* ---- RopeStore: an NSTextStorage backed by the rope + a run list ---- *)
 CLASS RopeStore;
   <* cocoa "NSTextStorage" *>
-  VAR box: PRopeBox; ropeStr: ObjC.Id;
+  VAR box: PRopeBox; ropeStr: ObjC.Id; runs: PRuns;
 
-  PROCEDURE Setup;                                (* build the rope cell + string view *)
+  PROCEDURE Setup;
   VAR rs: RopeString;
   BEGIN
     NEW(box); box^.r := TextRope.Empty();
-    NEW(rs); rs.SetBox(box); ropeStr := CAST(ObjC.Id, rs)
+    NEW(rs); rs.SetBox(box); ropeStr := CAST(ObjC.Id, rs);
+    NEW(runs); runs^.count := 0
   END Setup;
 
-  PROCEDURE String (): ObjC.Id;                   (* primitive "string" *)
+  PROCEDURE Relex;                                (* re-lex the whole rope into runs *)
+  VAR text: ARRAY [0..65535] OF CHAR;
+  BEGIN TextRope.ToString(box^.r, text); Lex(text, TextRope.Length(box^.r), runs) END Relex;
+
+  PROCEDURE String (): ObjC.Id;
   BEGIN RETURN ropeStr END String;
 
   PROCEDURE ReplaceChars (loc, len: CARDINAL; s: ObjC.Id) <* selector "replaceCharactersInRange:withString:" *>;
@@ -65,33 +135,52 @@ CLASS RopeStore;
     box^.r := TextRope.DeleteRange(box^.r, loc, len);
     ObjC.GetString(s, text);
     IF text[0] # CHR(0) THEN box^.r := TextRope.Insert(box^.r, loc, text) END;
+    SELF.Relex;                                   (* Stage 2c: only the edited line range *)
     ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"),
               3, loc, len, VAL(INTEGER, inserted) - VAL(INTEGER, len))
   END ReplaceChars;
 
-  (* one uniform attributes run over the whole document (Stage 2b: a real run list) *)
   PROCEDURE AttributesAt (loc: CARDINAL; rangePtr: ADDRESS): ObjC.Id <* selector "attributesAtIndex:effectiveRange:" *>;
-  VAR rng: PNSRange;
+  VAR rng: PNSRange; i, start: CARDINAL;
   BEGIN
+    i := 0; start := 0;
+    WHILE (i < runs^.count) AND (start + runs^.a[i].len <= loc) DO start := start + runs^.a[i].len; INC(i) END;
     IF rangePtr # NIL THEN
       rng := CAST(PNSRange, rangePtr);
-      rng^.location := 0;
-      rng^.length := TextRope.Length(box^.r)
+      IF i < runs^.count THEN rng^.location := start; rng^.length := runs^.a[i].len
+      ELSE rng^.location := loc; rng^.length := 1 END
     END;
-    RETURN gAttrs
+    IF i < runs^.count THEN RETURN gKind[runs^.a[i].kind] ELSE RETURN gKind[kDefault] END
   END AttributesAt;
 
   PROCEDURE SetAttrs (a: ObjC.Id; loc, len: CARDINAL) <* selector "setAttributes:range:" *>;
-  BEGIN END SetAttrs;                             (* no-op: we own attributes (Stage 2b) *)
+  BEGIN END SetAttrs;
 
-  (* take responsibility for attribute validity — skip Cocoa's attribute fixing
-     (which assumes an NSMutableAttributedString backing we don't have) *)
   PROCEDURE FixAttributes (loc, len: CARDINAL) <* selector "fixAttributesInRange:" *>;
   BEGIN END FixAttributes;
 END RopeStore;
 
+(* build an attributes dict: the fixed-pitch font + a foreground colour *)
+PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;
+VAR d, color: ObjC.Id;
+BEGIN
+  d := s0(s0(ObjC.GetClass("NSMutableDictionary"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  ig := spp(d, ObjC.Selector("setObject:forKey:"), font, ObjC.NSString("NSFont"));
+  color := s4f(ObjC.GetClass("NSColor"), ObjC.Selector("colorWithCalibratedRed:green:blue:alpha:"), r, g, b, 1.0);
+  ig := spp(d, ObjC.Selector("setObject:forKey:"), color, ObjC.NSString("NSColor"));
+  RETURN d
+END MakeAttrs;
+
+PROCEDURE Seed (store: RopeStore; line: ARRAY OF CHAR);   (* append a line of code *)
+VAR nl: ARRAY [0..1] OF CHAR;
+BEGIN
+  store.ReplaceChars(s0i(store.String(), ObjC.Selector("length")), 0, ObjC.NSString(line));
+  nl[0] := CHR(10); nl[1] := CHR(0);
+  store.ReplaceChars(s0i(store.String(), ObjC.Selector("length")), 0, ObjC.NSString(nl))
+END Seed;
+
 VAR
-  store: RopeStore; win, content, lm, container, tv, storeId: ObjC.Id; got: ARRAY [0..255] OF CHAR;
+  store: RopeStore; win, content, lm, container, tv, storeId: ObjC.Id;
 BEGIN
   s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
   sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
@@ -101,21 +190,24 @@ BEGIN
   s2f := CAST(Send2F,         ObjC.MsgSendPtr());
   sfc := CAST(SendFrameC,     ObjC.MsgSendPtr());
   spp := CAST(SendPP,         ObjC.MsgSendPtr());
+  s4f := CAST(Send4F,         ObjC.MsgSendPtr());
 
   Cocoa.InitApp;
-  (* default attributes: a fixed-pitch font (NSFontAttributeName's value is "NSFont") *)
-  gAttrs := s0(s0(ObjC.GetClass("NSMutableDictionary"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  font := sf1(ObjC.GetClass("NSFont"), ObjC.Selector("userFixedPitchFontOfSize:"), 14.0);
-  ig := spp(gAttrs, ObjC.Selector("setObject:forKey:"), font, ObjC.NSString("NSFont"));
+  font := sf1(ObjC.GetClass("NSFont"), ObjC.Selector("userFixedPitchFontOfSize:"), 15.0);
+  gKind[kDefault] := MakeAttrs(0.0, 0.0, 0.0);   (* black *)
+  gKind[kKeyword] := MakeAttrs(0.15, 0.15, 0.8); (* blue *)
+  gKind[kComment] := MakeAttrs(0.0, 0.5, 0.0);   (* green *)
+  gKind[kString]  := MakeAttrs(0.6, 0.1, 0.1);   (* red-brown *)
+  gKind[kNumber]  := MakeAttrs(0.5, 0.0, 0.5);   (* purple *)
 
   NEW(store); store.Setup;
   storeId := CAST(ObjC.Id, store);
-  store.ReplaceChars(0, 0, ObjC.NSString("MODULE Hello;"));
-  store.ReplaceChars(6, 0, ObjC.NSString("Rope"));     (* O(log n) mid-edit -> "MODULERope Hello;" *)
-
-  (* read the text back THROUGH the rope-backed NSString (no whole-buffer copy) *)
-  ObjC.GetString(store.String(), got);
-  WriteString("rope text via NSString = '"); WriteString(got); WriteString("'"); WriteLn;
+  Seed(store, "MODULE Demo;");
+  Seed(store, "(* a rope-backed, M2-coloured buffer *)");
+  Seed(store, "VAR x: INTEGER;");
+  Seed(store, "BEGIN");
+  Seed(store, '  x := 42;  WriteString("hi")');
+  Seed(store, "END Demo.");
 
   lm := s0(s0(ObjC.GetClass("NSLayoutManager"), ObjC.Selector("alloc")), ObjC.Selector("init"));
   ig := sp(storeId, ObjC.Selector("addLayoutManager:"), lm);
@@ -125,7 +217,7 @@ BEGIN
   tv := s0(ObjC.GetClass("NSTextView"), ObjC.Selector("alloc"));
   tv := sfc(tv, ObjC.Selector("initWithFrame:textContainer:"), 0.0, 0.0, 600.0, 400.0, container);
 
-  win := Cocoa.MakeWindow(620.0, 420.0, "M2 rope-backed NSTextStorage");
+  win := Cocoa.MakeWindow(620.0, 420.0, "M2 rope-backed NSTextStorage + colours");
   content := CAST(ObjC.Id, Cocoa.ContentView(win));
   ig := sp(content, ObjC.Selector("addSubview:"), tv);
 
