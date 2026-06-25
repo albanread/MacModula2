@@ -163,6 +163,12 @@ BEGIN
   RETURN b
 END MakeButton;
 
+PROCEDURE OpenFile (VAR path: ARRAY OF CHAR): BOOLEAN;
+BEGIN RETURN ObjC.OpenPanel(path) END OpenFile;
+
+PROCEDURE SaveFile (VAR path: ARRAY OF CHAR): BOOLEAN;
+BEGIN RETURN ObjC.SavePanel(path) END SaveFile;
+
 PROCEDURE Click (button: Control);
 (* Synthetic click for scripting/headless testing: dispatch the registered
    ActionProc by the button's tag — the same procedure AppKit's target/action

@@ -60,6 +60,26 @@ pub extern "C-unwind" fn nm2_proc_run_capture(
     }
 }
 
+/// `Proc.ReadFile(path, VAR content): INTEGER` — read `path` (UTF-8) into a
+/// (wide) M2 `ARRAY OF CHAR`. Returns the number of code units read, or -1 on
+/// error.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_read_file(
+    path_ptr: *const u16,
+    path_high: u64,
+    out_ptr: *mut u16,
+    out_high: u64,
+) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            write_wide(out_ptr, out_high, &s);
+            s.encode_utf16().count() as i64
+        }
+        Err(_) => -1,
+    }
+}
+
 /// `Proc.WriteFile(path, content): INTEGER` — write `content` to `path` as UTF-8.
 /// Returns 0 on success, -1 on error.
 #[unsafe(no_mangle)]

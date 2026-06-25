@@ -419,6 +419,78 @@ pub extern "C-unwind" fn nm2_ide_highlight(textview: *mut c_void) {
     }
 }
 
+/// Shared body for the open/save panels: run the panel modally and, on OK, copy
+/// the chosen path into `dest`. `save` selects NSSavePanel vs NSOpenPanel.
+/// Returns 1 if a path was chosen, 0 otherwise.
+fn run_file_panel(save: bool, dest: *mut u16, dest_high: u64) -> i64 {
+    bootstrap();
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    let getcls = sym_or_null("objc_getClass");
+    if msg.is_null() || reg.is_null() || getcls.is_null() {
+        return 0;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+    let s0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_i64: extern "C" fn(*mut c_void, *mut c_void) -> i64 = unsafe { std::mem::transmute(msg) };
+    let s_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let cls = if save {
+        getcls(c"NSSavePanel".as_ptr())
+    } else {
+        getcls(c"NSOpenPanel".as_ptr())
+    };
+    let panel = s0(cls, reg(if save { c"savePanel".as_ptr() } else { c"openPanel".as_ptr() }));
+    if panel.is_null() {
+        return 0;
+    }
+    // NSModalResponseOK == 1
+    let resp = s_i64(panel, reg(c"runModal".as_ptr()));
+    if resp != 1 {
+        return 0;
+    }
+    let url = s0(panel, reg(c"URL".as_ptr()));
+    if url.is_null() {
+        return 0;
+    }
+    let nspath = s0(url, reg(c"path".as_ptr()));
+    if nspath.is_null() {
+        return 0;
+    }
+    let utf8 = s_str(nspath, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return 0;
+    }
+    let text = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+    // write into dest (wide, NUL-terminated)
+    let cap = (dest_high as usize).saturating_add(1);
+    if !dest.is_null() && cap > 0 {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let n = units.len().min(cap - 1);
+        for (i, &u) in units.iter().take(n).enumerate() {
+            unsafe { *dest.add(i) = u };
+        }
+        unsafe { *dest.add(n) = 0 };
+    }
+    1
+}
+
+/// `ObjC.OpenPanel(VAR path)` — show an Open dialog; returns 1 and fills `path`
+/// if the user chose a file, 0 if cancelled.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_cocoa_open_panel(dest: *mut u16, dest_high: u64) -> i64 {
+    run_file_panel(false, dest, dest_high)
+}
+
+/// `ObjC.SavePanel(VAR path)` — show a Save dialog; returns 1 and fills `path`
+/// if the user chose a destination, 0 if cancelled.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_cocoa_save_panel(dest: *mut u16, dest_high: u64) -> i64 {
+    run_file_panel(true, dest, dest_high)
+}
+
 /// `ObjC.RunApp()` — install a minimal main menu (so Cmd-Q quits), activate the
 /// app, and run the AppKit event loop until the user quits. This is the real,
 /// interactive desktop run (blocking), as opposed to the bounded `Pump`.

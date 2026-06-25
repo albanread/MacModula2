@@ -62,6 +62,11 @@ PROCEDURE Pump (seconds: REAL);
    the user quits (blocking) — the real interactive desktop run. *)
 PROCEDURE RunApp;
 
+(* Open / Save file dialogs. Return TRUE and fill `path` if the user chose a
+   file, FALSE if cancelled. *)
+PROCEDURE OpenPanel (VAR path: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE SavePanel (VAR path: ARRAY OF CHAR): BOOLEAN;
+
 (* Render an NSView (with its subviews) offscreen and write it as a PNG. Works
    without a window server, so a Cocoa UI can be captured to a file. *)
 PROCEDURE SnapshotView (view: Id; path: ARRAY OF CHAR): BOOLEAN;

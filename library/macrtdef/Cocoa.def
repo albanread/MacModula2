@@ -52,4 +52,8 @@ PROCEDURE MakeButton (x, y, w, h: REAL; title: ARRAY OF CHAR;
    useful for scripting and headless testing. *)
 PROCEDURE Click (button: Control);
 
+(* File dialogs (modal): TRUE + path if chosen, FALSE if cancelled. *)
+PROCEDURE OpenFile (VAR path: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE SaveFile (VAR path: ARRAY OF CHAR): BOOLEAN;
+
 END Cocoa.

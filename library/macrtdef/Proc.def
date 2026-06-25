@@ -11,4 +11,7 @@ PROCEDURE RunCapture (cmd: ARRAY OF CHAR; VAR output: ARRAY OF CHAR): INTEGER;
 (* Write `content` to `path` (UTF-8). Returns 0 on success, -1 on error. *)
 PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
 
+(* Read `path` (UTF-8) into `content`. Returns the length, or -1 on error. *)
+PROCEDURE ReadFile (path: ARRAY OF CHAR; VAR content: ARRAY OF CHAR): INTEGER;
+
 END Proc.
