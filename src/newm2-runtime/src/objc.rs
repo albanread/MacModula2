@@ -815,9 +815,11 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         unsafe { std::mem::transmute(msg) };
     let send_color: extern "C" fn(*mut c_void, *mut c_void, f64, f64, f64, f64) -> *mut c_void =
         unsafe { std::mem::transmute(msg) };
-    let add_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, u64, u64) =
+    // [NSDictionary dictionaryWithObject:forKey:]
+    let send_pp: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
         unsafe { std::mem::transmute(msg) };
-    let rem_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64, u64) =
+    // (layoutManager, sel, dict-or-attr, range.location, range.length)
+    let lm_attr: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u64, u64) =
         unsafe { std::mem::transmute(msg) };
 
     // editor text + line offsets (ASCII: byte offset == UTF-16 index)
@@ -837,8 +839,11 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         }
     }
 
-    let storage = send0(textview, reg(c"textStorage".as_ptr()));
-    if storage.is_null() {
+    // Mark via the layout manager's *temporary* attributes, not the text storage:
+    // they are display-only (they don't go through setAttributes:), so they render
+    // on the rope-backed RopeStore whose setAttributes: is a deliberate no-op.
+    let lm = send0(textview, reg(c"layoutManager".as_ptr()));
+    if lm.is_null() {
         return 0;
     }
     let bg_var = sym_or_null("NSBackgroundColorAttributeName") as *const *mut c_void;
@@ -848,7 +853,7 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
     let bg = unsafe { *bg_var };
     let total = src.encode_utf16().count() as u64;
     // clear previous marks
-    rem_attr(storage, reg(c"removeAttribute:range:".as_ptr()), bg, 0, total);
+    lm_attr(lm, reg(c"removeTemporaryAttribute:forCharacterRange:".as_ptr()), bg, 0, total);
 
     let nscolor = getcls(c"NSColor".as_ptr());
     let pale_red = send_color(
@@ -858,6 +863,13 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         0.80,
         0.80,
         1.0,
+    );
+    // one { NSBackgroundColorAttributeName: paleRed } dictionary, reused per line
+    let mark = send_pp(
+        getcls(c"NSDictionary".as_ptr()),
+        reg(c"dictionaryWithObject:forKey:".as_ptr()),
+        pale_red,
+        bg,
     );
 
     // parse diagnostics for line numbers
@@ -871,7 +883,7 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
             String::from_utf16_lossy(&units[..end])
         }
     };
-    let add_sel = reg(c"addAttribute:value:range:".as_ptr());
+    let add_sel = reg(c"addTemporaryAttributes:forCharacterRange:".as_ptr());
     let mut count = 0i64;
     for line in out.lines() {
         if !(line.contains("error") || line.contains("warning")) {
@@ -905,7 +917,7 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         } else {
             src.len()
         };
-        add_attr(storage, add_sel, bg, pale_red, start as u64, (end - start) as u64);
+        lm_attr(lm, add_sel, mark, start as u64, (end - start) as u64);
         count += 1;
     }
     count
