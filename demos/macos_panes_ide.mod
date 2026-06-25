@@ -1,22 +1,21 @@
 MODULE macos_panes_ide;
 (* The MacM2 IDE — a working multi-pane editor/build tool, the macOS counterpart
-   of the Windows FastPanes/PaneShell IDE, built on the native M2-object-on-Cocoa
-   model.  Layout (draggable NSSplitViews):
+   of the Windows FastPanes/PaneShell IDE, on the native M2-object-on-Cocoa model.
 
      [ Open ] [ Save ] [ Build & Run ]   status……………………………………
      +-----------+------------------------------------------------+
      | PROJECT   |  a.mod   b.mod   (tabs)                         |
-     |  a.mod    |------------------------------------------------|
-     |  b.mod    |  …syntax-highlighted editor (NSTextView)…      |
-     |  …        |================================================|
-     |           |  …compiler output; error lines marked above…  |
+     |  a.mod  ↕ |------------------------------------------------|
+     |  …        |  …syntax-highlighted editor (NSTextView)…      |
+     +-----------|================================================|
+     | LIBRARY ↕ |  …compiler output; error lines marked red…     |
+     |  ASCII.def|                                                |
      +-----------+------------------------------------------------+
 
-   The controller is an ordinary Modula-2 class that IS an NSObject; its Open /
-   Save / BuildRun methods are the toolbar buttons' AppKit actions (no
-   trampoline).  Open picks a project folder; clicking a file opens it in a tab;
-   Save writes the active tab back; Build & Run saves it, runs the compiler,
-   streams the output, and marks any error lines red in the editor. *)
+   The sidebar is a split: a scrollable PROJECT list over a scrollable LIBRARY
+   list (each a flipped NSView document inside an NSScrollView). The controller
+   and the flipped list views are ordinary Modula-2 classes that ARE Cocoa
+   objects; the toolbar buttons' actions are the controller's methods. *)
 FROM SYSTEM IMPORT CAST;
 FROM STextIO IMPORT WriteString, WriteLn;
 FROM Strings IMPORT Assign, Append;
@@ -24,33 +23,41 @@ IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT Proc;
 
-CONST MaxFiles = 128;
+CONST
+  MaxFiles = 256;
+  LibBase  = 1000;          (* sidebar tags >= LibBase address the library list *)
+  RowH     = 27.0;
 
 TYPE SendB2 = PROCEDURE (ObjC.Id, ObjC.SEL, BOOLEAN): ObjC.Id;
      SendFI = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, INTEGER): ObjC.Id;
 
+(* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
+   NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
+CLASS FlippedDoc;
+  <* cocoa "NSView" *>
+  PROCEDURE IsFlipped (): BOOLEAN;
+  BEGIN RETURN TRUE END IsFlipped;
+END FlippedDoc;
+
 VAR
   win, content, outerSplit, innerSplit, sidebar, tabs, output, status: Cocoa.Object;
-  gDir: ARRAY [0..1023] OF CHAR;
-  gFiles: ARRAY [0..MaxFiles-1] OF ARRAY [0..255] OF CHAR;
-  gBtns: ARRAY [0..MaxFiles-1] OF Cocoa.Object;
+  projScroll, libScroll, projDoc, libDoc: Cocoa.Object;
+  gProjDir, gLibDir: ARRAY [0..1023] OF CHAR;
+  gProjFiles, gLibFiles: ARRAY [0..MaxFiles-1] OF ARRAY [0..255] OF CHAR;
+  gProjBtns, gLibBtns: ARRAY [0..MaxFiles-1] OF Cocoa.Object;
+  gProjCount, gLibCount, gProjBtnCount, gLibBtnCount: INTEGER;
   gEditors: ARRAY [0..63] OF Cocoa.Object;
   gPaths: ARRAY [0..63] OF ARRAY [0..1023] OF CHAR;
-  gCount, gBtnCount, gTabCount: INTEGER;
+  gTabCount: INTEGER;
   s0: ObjC.Send0; sp: ObjC.SendP; sf: ObjC.SendFrame; sb: SendB2; sfi: SendFI;
-  ig: ObjC.Id;
-  ctrl: ObjC.Id;
+  ig: ObjC.Id; ctrl: ObjC.Id;
 
 PROCEDURE sendIInt (o: ObjC.Id; s: ObjC.SEL; n: INTEGER): ObjC.Id;
 VAR f: ObjC.SendI;
 BEGIN f := CAST(ObjC.SendI, ObjC.MsgSendPtr()); RETURN f(o, s, n) END sendIInt;
 
-PROCEDURE MakeView (x, y, w, h: REAL): Cocoa.Object;
-VAR v: ObjC.Id;
-BEGIN
-  v := s0(ObjC.GetClass("NSView"), ObjC.Selector("alloc"));
-  RETURN CAST(Cocoa.Object, sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h))
-END MakeView;
+PROCEDURE SetFrameOf (v: Cocoa.Object; x, y, w, h: REAL);
+BEGIN ig := sf(CAST(ObjC.Id, v), ObjC.Selector("setFrame:"), x, y, w, h) END SetFrameOf;
 
 PROCEDURE MakeSplit (x, y, w, h: REAL; sideBySide: BOOLEAN): Cocoa.Object;
 VAR v: ObjC.Id;
@@ -65,7 +72,21 @@ END MakeSplit;
 PROCEDURE SetDivider (split: Cocoa.Object; index: INTEGER; pos: REAL);
 BEGIN ig := sfi(CAST(ObjC.Id, split), ObjC.Selector("setPosition:ofDividerAtIndex:"), pos, index) END SetDivider;
 
-(* a toolbar button wired straight to a controller method (selector). *)
+(* an NSScrollView with a vertical scroller and a flipped document NSView. *)
+PROCEDURE MakeScroll (x, y, w, h: REAL; VAR doc: Cocoa.Object): Cocoa.Object;
+VAR sc: ObjC.Id; fd: FlippedDoc;
+BEGIN
+  sc := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
+  sc := sf(sc, ObjC.Selector("initWithFrame:"), x, y, w, h);
+  ig := sb(sc, ObjC.Selector("setHasVerticalScroller:"), TRUE);
+  ig := sendIInt(sc, ObjC.Selector("setBorderType:"), 0);
+  NEW(fd);
+  doc := CAST(Cocoa.Object, fd);
+  SetFrameOf(doc, 0.0, 0.0, w - 16.0, h);
+  ig := sp(sc, ObjC.Selector("setDocumentView:"), CAST(ObjC.Id, doc));
+  RETURN CAST(Cocoa.Object, sc)
+END MakeScroll;
+
 PROCEDURE CtrlButton (x, y, w: REAL; title, selector: ARRAY OF CHAR): Cocoa.Object;
 VAR b: ObjC.Id;
 BEGIN
@@ -77,51 +98,71 @@ BEGIN
   RETURN CAST(Cocoa.Object, b)
 END CtrlButton;
 
-(* (re)populate the project sidebar from gDir. *)
-PROCEDURE RebuildSidebar;
-VAR i, limit, n: INTEGER;
+(* populate one scrollable list (project or library) from its folder; buttons go
+   top-down in the flipped document, whose height grows to scroll. *)
+PROCEDURE RebuildList (isLib: BOOLEAN);
+VAR i, count, limit, n: INTEGER; b: Cocoa.Object; docW, totalH: REAL;
 BEGIN
-  FOR i := 0 TO gBtnCount - 1 DO Cocoa.RemoveView(gBtns[i]) END;
-  gBtnCount := 0;
-  gCount := Proc.ListDir(gDir);
-  IF gCount < 0 THEN gCount := 0 END;
-  limit := gCount; IF limit > MaxFiles - 1 THEN limit := MaxFiles - 1 END;
-  FOR i := 0 TO limit - 1 DO
-    n := Proc.DirEntry(i, gFiles[i]);
-    gBtns[i] := Cocoa.MakeFileButton(8.0, FLOAT(580 - i*28), 200.0, 25.0, gFiles[i], i);
-    Cocoa.AddSubview(sidebar, gBtns[i])
+  IF isLib THEN
+    FOR i := 0 TO gLibBtnCount - 1 DO Cocoa.RemoveView(gLibBtns[i]) END;
+    gLibBtnCount := 0; count := Proc.ListDir(gLibDir)
+  ELSE
+    FOR i := 0 TO gProjBtnCount - 1 DO Cocoa.RemoveView(gProjBtns[i]) END;
+    gProjBtnCount := 0; count := Proc.ListDir(gProjDir)
   END;
-  gBtnCount := limit;
-  Cocoa.SetText(status, gDir)
-END RebuildSidebar;
+  IF count < 0 THEN count := 0 END;
+  limit := count; IF limit > MaxFiles - 1 THEN limit := MaxFiles - 1 END;
+  docW := 200.0;
+  FOR i := 0 TO limit - 1 DO
+    IF isLib THEN n := Proc.DirEntry(i, gLibFiles[i]);
+                  b := Cocoa.MakeFileButton(2.0, FLOAT(i) * RowH, docW, RowH - 2.0, gLibFiles[i], LibBase + i);
+                  gLibBtns[i] := b; Cocoa.AddSubview(libDoc, b)
+    ELSE          n := Proc.DirEntry(i, gProjFiles[i]);
+                  b := Cocoa.MakeFileButton(2.0, FLOAT(i) * RowH, docW, RowH - 2.0, gProjFiles[i], i);
+                  gProjBtns[i] := b; Cocoa.AddSubview(projDoc, b)
+    END
+  END;
+  totalH := FLOAT(limit) * RowH + 4.0;
+  IF isLib THEN gLibCount := count; gLibBtnCount := limit; SetFrameOf(libDoc, 0.0, 0.0, docW + 4.0, totalH)
+  ELSE          gProjCount := count; gProjBtnCount := limit; SetFrameOf(projDoc, 0.0, 0.0, docW + 4.0, totalH);
+                Cocoa.SetText(status, gProjDir) END
+END RebuildList;
 
-(* open the project file at `index` in a new editor tab (the sidebar action). *)
-PROCEDURE OpenDoc (index: INTEGER);
-VAR full, text: ARRAY [0..32767] OF CHAR; ed, it: Cocoa.Object; n: INTEGER;
+(* the sidebar click action: open file (or descend into folder). Tags >= LibBase
+   are library entries; below are project entries. *)
+PROCEDURE OpenDoc (tag: INTEGER);
+VAR full, text: ARRAY [0..32767] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN;
 BEGIN
-  IF (index < 0) OR (index >= gCount) THEN RETURN END;
-  Assign(gDir, full); Append("/", full); Append(gFiles[index], full);
-  IF Proc.IsDir(full) THEN Assign(full, gDir); RebuildSidebar; RETURN END;
+  isLib := tag >= LibBase;
+  IF isLib THEN idx := tag - LibBase;
+    IF (idx < 0) OR (idx >= gLibCount) THEN RETURN END;
+    Assign(gLibDir, full); Append("/", full); Append(gLibFiles[idx], full)
+  ELSE idx := tag;
+    IF (idx < 0) OR (idx >= gProjCount) THEN RETURN END;
+    Assign(gProjDir, full); Append("/", full); Append(gProjFiles[idx], full)
+  END;
+  IF Proc.IsDir(full) THEN
+    IF isLib THEN Assign(full, gLibDir) ELSE Assign(full, gProjDir) END;
+    RebuildList(isLib); RETURN
+  END;
   n := Proc.ReadFile(full, text);
   IF n < 0 THEN RETURN END;
   ed := Cocoa.MakeEditor(0.0, 0.0, 760.0, 420.0);
   Cocoa.SetEditorText(ed, text);
   Cocoa.HighlightEditor(ed);
-  it := Cocoa.AddTab(tabs, gFiles[index], ed);
-  IF gTabCount <= 63 THEN
-    gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); INC(gTabCount)
-  END
+  it := Cocoa.AddTab(tabs, full, ed);
+  IF gTabCount <= 63 THEN gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); INC(gTabCount) END
 END OpenDoc;
 
-(* ---- the IDE controller: a real NSObject; its methods are the AppKit actions ---- *)
+(* The IDE controller — a real NSObject; its methods are the toolbar actions. *)
 CLASS IDE;
   <* cocoa "NSObject" *>
-  PROCEDURE OnOpen (sender: ObjC.Id);            (* "onOpen:" — choose a project folder *)
+  PROCEDURE OnOpen (sender: ObjC.Id);              (* "onOpen:" *)
   VAR path: ARRAY [0..1023] OF CHAR;
   BEGIN
-    IF Cocoa.OpenFolder(path) THEN Assign(path, gDir); RebuildSidebar END
+    IF Cocoa.OpenFolder(path) THEN Assign(path, gProjDir); RebuildList(FALSE) END
   END OnOpen;
-  PROCEDURE OnSave (sender: ObjC.Id);            (* "onSave:" — write the active tab to disk *)
+  PROCEDURE OnSave (sender: ObjC.Id);              (* "onSave:" *)
   VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
@@ -130,19 +171,19 @@ CLASS IDE;
     ix := Proc.WriteFile(gPaths[sel], src);
     IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
-  PROCEDURE OnBuildRun (sender: ObjC.Id);        (* "onBuildRun:" — save, compile, show output, mark errors *)
+  PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
   VAR sel, ix, rc, marked: INTEGER; src, out: ARRAY [0..32767] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
     Cocoa.SetText(status, "Building…");
     Cocoa.EditorText(gEditors[sel], src);
-    ix := Proc.WriteFile(gPaths[sel], src);          (* save before building *)
+    ix := Proc.WriteFile(gPaths[sel], src);
     Assign("./target/debug/newm2-driver run --library library ", cmd);
     Append(gPaths[sel], cmd); Append(" 2>&1", cmd);
     rc := Proc.RunCapture(cmd, out);
     Cocoa.SetEditorText(output, out);
-    marked := Cocoa.MarkErrors(gEditors[sel], out);  (* red-mark error lines in the editor *)
+    marked := Cocoa.MarkErrors(gEditors[sel], out);
     IF rc = 0 THEN Cocoa.SetText(status, "Build & run succeeded (exit 0).")
     ELSE Cocoa.SetText(status, "Build/run reported errors.") END
   END OnBuildRun;
@@ -155,43 +196,50 @@ BEGIN
   sf  := CAST(ObjC.SendFrame, ObjC.MsgSendPtr());
   sb  := CAST(SendB2,         ObjC.MsgSendPtr());
   sfi := CAST(SendFI,         ObjC.MsgSendPtr());
-  gBtnCount := 0; gTabCount := 0;
-  Assign("library/pimmod", gDir);
+  gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
+  Assign("library/pimmod", gProjDir);
+  Assign("library/pimdef", gLibDir);
 
   Cocoa.InitApp;
   win := Cocoa.MakeWindow(1100.0, 640.0, "MacM2 IDE");
   content := Cocoa.ContentView(win);
-
   NEW(ide); ctrl := CAST(ObjC.Id, ide);
 
-  (* toolbar *)
-  Cocoa.AddSubview(content, CtrlButton(8.0, 604.0, 80.0, "Open", "onOpen:"));
-  Cocoa.AddSubview(content, CtrlButton(92.0, 604.0, 80.0, "Save", "onSave:"));
+  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 80.0,  "Open", "onOpen:"));
+  Cocoa.AddSubview(content, CtrlButton(92.0,  604.0, 80.0,  "Save", "onSave:"));
   Cocoa.AddSubview(content, CtrlButton(176.0, 604.0, 120.0, "Build & Run", "onBuildRun:"));
   status := Cocoa.MakeLabel(308.0, 610.0, 784.0, 22.0, "Ready.");
   Cocoa.AddSubview(content, status);
 
-  (* panes *)
   outerSplit := MakeSplit(0.0, 0.0, 1100.0, 596.0, TRUE);
   ig := sendIInt(CAST(ObjC.Id, outerSplit), ObjC.Selector("setAutoresizingMask:"), 18);
   Cocoa.AddSubview(content, outerSplit);
-  sidebar := MakeView(0.0, 0.0, 220.0, 596.0);
+
+  (* the sidebar is itself a split: PROJECT list (top) over LIBRARY list (bottom) *)
+  sidebar := MakeSplit(0.0, 0.0, 220.0, 596.0, FALSE);
+  projScroll := MakeScroll(0.0, 0.0, 220.0, 360.0, projDoc);
+  libScroll := MakeScroll(0.0, 0.0, 220.0, 230.0, libDoc);
+  Cocoa.AddSubview(sidebar, projScroll);
+  Cocoa.AddSubview(sidebar, libScroll);
+
   innerSplit := MakeSplit(0.0, 0.0, 860.0, 596.0, FALSE);
   Cocoa.AddSubview(outerSplit, sidebar);
   Cocoa.AddSubview(outerSplit, innerSplit);
   tabs := Cocoa.MakeTabView(0.0, 0.0, 860.0, 390.0);
-  output := Cocoa.MakeEditor(0.0, 0.0, 860.0, 230.0);
+  output := Cocoa.MakeEditor(0.0, 0.0, 860.0, 200.0);
   Cocoa.SetEditorText(output, "(build output appears here — Build & Run marks error lines red)");
   Cocoa.AddSubview(innerSplit, tabs);
   Cocoa.AddSubview(innerSplit, output);
 
   Cocoa.SetListAction(OpenDoc);
-  RebuildSidebar;
-  IF gCount > 0 THEN OpenDoc(0) END;
+  RebuildList(FALSE);          (* project *)
+  RebuildList(TRUE);           (* library *)
+  IF gProjCount > 0 THEN OpenDoc(0) END;
 
   SetDivider(outerSplit, 0, 210.0);
   SetDivider(innerSplit, 0, 390.0);
-  Cocoa.SetText(status, "Ready — Open a folder, click a file, edit, Build & Run.");
+  SetDivider(sidebar, 0, 360.0);
+  Cocoa.SetText(status, "Ready — PROJECT (top) and LIBRARY (bottom), both scrollable.");
 
   Cocoa.ShowWindow(win);
   Cocoa.RunApp;
