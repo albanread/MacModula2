@@ -29,6 +29,7 @@ TYPE
   SendFrame= PROCEDURE (Id, SEL, REAL, REAL, REAL, REAL): Id; (* [v initWithFrame: rect] *)
   SendF    = PROCEDURE (Id, SEL, REAL): Id;                 (* [obj msg: aFloat]         *)
   Send0I   = PROCEDURE (Id, SEL): INTEGER;                  (* [obj msg] -> NSInteger    *)
+  SendPI   = PROCEDURE (Id, SEL, Id): INTEGER;              (* [obj msg: anObject] -> NSInteger *)
   (* [win initWithContentRect: rect styleMask: m backing: b defer: d]
      NSRect (x,y,w,h) flattens to four CGFloat (REAL) registers on arm64. *)
   SendRect = PROCEDURE (Id, SEL, REAL, REAL, REAL, REAL, CARDINAL, CARDINAL, BOOLEAN): Id;
@@ -70,6 +71,7 @@ PROCEDURE RunApp;
    file, FALSE if cancelled. *)
 PROCEDURE OpenPanel (VAR path: ARRAY OF CHAR): BOOLEAN;
 PROCEDURE SavePanel (VAR path: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE OpenFolderPanel (VAR path: ARRAY OF CHAR): BOOLEAN;   (* open project *)
 
 (* Render an NSView (with its subviews) offscreen and write it as a PNG. Works
    without a window server, so a Cocoa UI can be captured to a file. *)

@@ -502,7 +502,7 @@ pub extern "C-unwind" fn nm2_ide_highlight(textview: *mut c_void) {
 /// Shared body for the open/save panels: run the panel modally and, on OK, copy
 /// the chosen path into `dest`. `save` selects NSSavePanel vs NSOpenPanel.
 /// Returns 1 if a path was chosen, 0 otherwise.
-fn run_file_panel(save: bool, dest: *mut u16, dest_high: u64) -> i64 {
+fn run_file_panel(save: bool, choose_dir: bool, dest: *mut u16, dest_high: u64) -> i64 {
     bootstrap();
     let msg = sym_or_null("objc_msgSend");
     let reg = sym_or_null("sel_registerName");
@@ -513,6 +513,8 @@ fn run_file_panel(save: bool, dest: *mut u16, dest_high: u64) -> i64 {
     let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
     let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
     let s0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s1b: extern "C" fn(*mut c_void, *mut c_void, bool) -> *mut c_void =
         unsafe { std::mem::transmute(msg) };
     let s_i64: extern "C" fn(*mut c_void, *mut c_void) -> i64 = unsafe { std::mem::transmute(msg) };
     let s_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
@@ -525,6 +527,11 @@ fn run_file_panel(save: bool, dest: *mut u16, dest_high: u64) -> i64 {
     let panel = s0(cls, reg(if save { c"savePanel".as_ptr() } else { c"openPanel".as_ptr() }));
     if panel.is_null() {
         return 0;
+    }
+    if !save {
+        // Open panel: choose files or a directory ("open project").
+        let _ = s1b(panel, reg(c"setCanChooseFiles:".as_ptr()), !choose_dir);
+        let _ = s1b(panel, reg(c"setCanChooseDirectories:".as_ptr()), choose_dir);
     }
     // NSModalResponseOK == 1
     let resp = s_i64(panel, reg(c"runModal".as_ptr()));
@@ -561,14 +568,20 @@ fn run_file_panel(save: bool, dest: *mut u16, dest_high: u64) -> i64 {
 /// if the user chose a file, 0 if cancelled.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_cocoa_open_panel(dest: *mut u16, dest_high: u64) -> i64 {
-    run_file_panel(false, dest, dest_high)
+    run_file_panel(false, false, dest, dest_high)
 }
 
 /// `ObjC.SavePanel(VAR path)` — show a Save dialog; returns 1 and fills `path`
 /// if the user chose a destination, 0 if cancelled.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_cocoa_save_panel(dest: *mut u16, dest_high: u64) -> i64 {
-    run_file_panel(true, dest, dest_high)
+    run_file_panel(true, false, dest, dest_high)
+}
+
+/// `ObjC.OpenFolderPanel(VAR path)` — choose a directory ("open project").
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_cocoa_open_folder_panel(dest: *mut u16, dest_high: u64) -> i64 {
+    run_file_panel(false, true, dest, dest_high)
 }
 
 /// `ObjC.RunApp()` — install a minimal main menu (so Cmd-Q quits), activate the

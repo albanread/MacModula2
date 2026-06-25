@@ -312,8 +312,12 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
         v.push(("Proc.ReadFile".to_string(), "nm2_proc_read_file"));
         v.push(("Proc.Complete".to_string(), "nm2_ide_complete"));
+        v.push(("Proc.ListDir".to_string(), "nm2_proc_list_dir"));
+        v.push(("Proc.DirEntry".to_string(), "nm2_proc_dir_entry"));
+        v.push(("Proc.IsDir".to_string(), "nm2_proc_is_dir"));
         v.push(("ObjC.OpenPanel".to_string(), "nm2_cocoa_open_panel"));
         v.push(("ObjC.SavePanel".to_string(), "nm2_cocoa_save_panel"));
+        v.push(("ObjC.OpenFolderPanel".to_string(), "nm2_cocoa_open_folder_panel"));
         v.push(("ObjC.CursorPos".to_string(), "nm2_ide_cursor_pos"));
         v.push(("ObjC.SetCursor".to_string(), "nm2_ide_set_cursor"));
     }
@@ -1223,8 +1227,12 @@ fn for_each_runtime_binding(
         bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
         bind("Proc.ReadFile", newm2_runtime::proc::nm2_proc_read_file as *const ());
         bind("Proc.Complete", newm2_runtime::proc::nm2_ide_complete as *const ());
+        bind("Proc.ListDir", newm2_runtime::proc::nm2_proc_list_dir as *const ());
+        bind("Proc.DirEntry", newm2_runtime::proc::nm2_proc_dir_entry as *const ());
+        bind("Proc.IsDir", newm2_runtime::proc::nm2_proc_is_dir as *const ());
         bind("ObjC.OpenPanel", newm2_runtime::objc::nm2_cocoa_open_panel as *const ());
         bind("ObjC.SavePanel", newm2_runtime::objc::nm2_cocoa_save_panel as *const ());
+        bind("ObjC.OpenFolderPanel", newm2_runtime::objc::nm2_cocoa_open_folder_panel as *const ());
         bind("ObjC.CursorPos", newm2_runtime::objc::nm2_ide_cursor_pos as *const ());
         bind("ObjC.SetCursor", newm2_runtime::objc::nm2_ide_set_cursor as *const ());
     }

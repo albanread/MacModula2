@@ -19,7 +19,8 @@ TYPE
   Window  = Object;
   View    = Object;
   Control = Object;
-  ActionProc = PROCEDURE;     (* a button/menu action, written in Modula-2 *)
+  ActionProc = PROCEDURE;          (* a button/menu action, written in Modula-2 *)
+  IndexAction = PROCEDURE (INTEGER); (* a file-list action: receives the row index *)
 
 (* application lifecycle *)
 PROCEDURE InitApp;                       (* shared NSApplication, regular policy *)
@@ -33,6 +34,7 @@ PROCEDURE ShowWindow (w: Window);        (* center + make key and order front *)
 
 (* view tree + capture *)
 PROCEDURE AddSubview (parent, child: View);
+PROCEDURE RemoveView (child: View);          (* detach from its parent (for rebuilds) *)
 PROCEDURE Snapshot (view: View; path: ARRAY OF CHAR): BOOLEAN;
 
 (* controls *)
@@ -57,5 +59,18 @@ PROCEDURE Click (button: Control);
 (* File dialogs (modal): TRUE + path if chosen, FALSE if cancelled. *)
 PROCEDURE OpenFile (VAR path: ARRAY OF CHAR): BOOLEAN;
 PROCEDURE SaveFile (VAR path: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE OpenFolder (VAR path: ARRAY OF CHAR): BOOLEAN;   (* open project folder *)
+
+(* Tabs: a tab container, and add a labelled tab holding `content`. *)
+PROCEDURE MakeTabView (x, y, w, h: REAL): View;
+PROCEDURE AddTab (tabs: View; label: ARRAY OF CHAR; content: View): Object;
+PROCEDURE TabCount (tabs: View): INTEGER;                  (* number of open tabs *)
+PROCEDURE SelectedTab (tabs: View): INTEGER;               (* index of the visible tab, -1 if none *)
+PROCEDURE SelectTab (tabs: View; index: INTEGER);          (* make tab `index` visible *)
+
+(* Project file list: register one IndexAction, then make a button per file
+   (its `index` is passed to the action when clicked). *)
+PROCEDURE SetListAction (action: IndexAction);
+PROCEDURE MakeFileButton (x, y, w, h: REAL; label: ARRAY OF CHAR; index: INTEGER): Control;
 
 END Cocoa.

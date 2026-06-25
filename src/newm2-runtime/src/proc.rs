@@ -5,6 +5,15 @@
 #![cfg(not(windows))]
 
 use std::process::Command;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+/// The most recent `ListDir` result, so `DirEntry` can return names by index
+/// without the caller re-splitting a packed string.
+fn dir_cache() -> &'static Mutex<Vec<String>> {
+    static C: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 /// Decode a (wide) M2 `ARRAY OF CHAR` `(ptr, high)` to a Rust `String`, stopping
 /// at the first NUL.
@@ -57,6 +66,69 @@ pub extern "C-unwind" fn nm2_proc_run_capture(
             write_wide(out_ptr, out_high, &format!("failed to run command: {e}"));
             -1
         }
+    }
+}
+
+/// `Proc.ListDir(path): INTEGER` — list the entries of `path` (subdirectories
+/// first, then files, each group sorted), cache them, and return the count (-1
+/// if the directory can't be read). Hidden entries (leading `.`) are skipped.
+/// Read each name with `DirEntry`, and use `IsDir` to tell folders from files so
+/// a browser can descend into one or open the other.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_list_dir(path_ptr: *const u16, path_high: u64) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    let Ok(rd) = std::fs::read_dir(&path) else {
+        return -1;
+    };
+    let mut dirs: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    for entry in rd.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            dirs.push(name);
+        } else {
+            files.push(name);
+        }
+    }
+    dirs.sort();
+    files.sort();
+    dirs.extend(files);
+    let names = dirs;
+    let n = names.len() as i64;
+    if let Ok(mut c) = dir_cache().lock() {
+        *c = names;
+    }
+    n
+}
+
+/// `Proc.DirEntry(index, VAR name): INTEGER` — the cached file name at `index`.
+/// Returns the length, or -1 if out of range.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_dir_entry(index: i64, out_ptr: *mut u16, out_high: u64) -> i64 {
+    let Ok(c) = dir_cache().lock() else {
+        return -1;
+    };
+    if index < 0 || index as usize >= c.len() {
+        return -1;
+    }
+    let name = &c[index as usize];
+    write_wide(out_ptr, out_high, name);
+    name.encode_utf16().count() as i64
+}
+
+/// `Proc.IsDir(path): BOOLEAN` — 1 if `path` exists and is a directory, else 0.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_is_dir(path_ptr: *const u16, path_high: u64) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    if std::path::Path::new(&path).is_dir() {
+        1
+    } else {
+        0
     }
 }
 

@@ -14,6 +14,17 @@ PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
 (* Read `path` (UTF-8) into `content`. Returns the length, or -1 on error. *)
 PROCEDURE ReadFile (path: ARRAY OF CHAR; VAR content: ARRAY OF CHAR): INTEGER;
 
+(* List the entries of directory `path` — subdirectories first, then files, each
+   group sorted; hidden (dot) entries skipped — cache them, and return the count
+   (-1 if the directory can't be read). Read each name with DirEntry, and use
+   IsDir to tell folders from files. *)
+PROCEDURE ListDir (path: ARRAY OF CHAR): INTEGER;
+PROCEDURE DirEntry (index: INTEGER; VAR name: ARRAY OF CHAR): INTEGER;
+
+(* TRUE if `path` exists and is a directory (so a file browser can offer to
+   descend into it rather than open it in an editor tab). *)
+PROCEDURE IsDir (path: ARRAY OF CHAR): BOOLEAN;
+
 (* Run the compiler's `complete` command on `path` at (1-based line, 0-based col)
    and capture its `name<TAB>kind<TAB>detail` candidate lines. Returns the count. *)
 PROCEDURE Complete (path: ARRAY OF CHAR; line, col: INTEGER;

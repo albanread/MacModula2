@@ -20,11 +20,15 @@ VAR
   sendFrame: ObjC.SendFrame;
   sendRect: ObjC.SendRect;
   send0I: ObjC.Send0I;
+  sendPI: ObjC.SendPI;
   (* button-action trampoline state *)
   gTrampReady: BOOLEAN;
   gTramp: Object;
   gActions: ARRAY [0..255] OF ActionProc;
   gActionCount: INTEGER;
+  (* file-list (indexed) action *)
+  gListAction: IndexAction;
+  gListSet: BOOLEAN;
 
 PROCEDURE Sel (name: ARRAY OF CHAR): ObjC.SEL;
 BEGIN RETURN ObjC.Selector(name) END Sel;
@@ -69,6 +73,10 @@ END ShowWindow;
 PROCEDURE AddSubview (parent, child: View);
 VAR ignore: Object;
 BEGIN ignore := sendP(parent, Sel("addSubview:"), child) END AddSubview;
+
+PROCEDURE RemoveView (child: View);
+VAR ignore: Object;
+BEGIN ignore := send0(child, Sel("removeFromSuperview")) END RemoveView;
 
 PROCEDURE Snapshot (view: View; path: ARRAY OF CHAR): BOOLEAN;
 BEGIN RETURN ObjC.SnapshotView(view, path) END Snapshot;
@@ -141,16 +149,81 @@ BEGIN
   END
 END TrampDispatch;
 
+(* Shared action for project file buttons: invoke the registered IndexAction
+   with the clicked button's tag (its row index). *)
+PROCEDURE TrampIndex (self, cmd, sender: ObjC.Id);
+VAR idx: INTEGER;
+BEGIN
+  idx := send0I(sender, Sel("tag"));
+  IF gListSet THEN gListAction(idx) END
+END TrampIndex;
+
 PROCEDURE EnsureTramp;
 VAR cls: ObjC.Class; ok: BOOLEAN;
 BEGIN
   IF gTrampReady THEN RETURN END;
   cls := ObjC.AllocateClass(Cls("NSObject"), "M2CocoaTrampoline");
   ok := ObjC.AddMethod(cls, Sel("m2act:"), CAST(ADDRESS, TrampDispatch), "v@:@");
+  ok := ObjC.AddMethod(cls, Sel("m2idx:"), CAST(ADDRESS, TrampIndex), "v@:@");
   ObjC.RegisterClass(cls);
   gTramp := send0(send0(cls, Sel("alloc")), Sel("init"));
   gTrampReady := TRUE
 END EnsureTramp;
+
+PROCEDURE SetListAction (action: IndexAction);
+BEGIN EnsureTramp; gListAction := action; gListSet := TRUE END SetListAction;
+
+PROCEDURE MakeFileButton (x, y, w, h: REAL; label: ARRAY OF CHAR; index: INTEGER): Control;
+VAR b: Control; ignore: Object;
+BEGIN
+  EnsureTramp;
+  b := send0(Cls("NSButton"), Sel("alloc"));
+  b := sendFrame(b, Sel("initWithFrame:"), x, y, w, h);
+  ignore := sendP(b, Sel("setTitle:"), ObjC.NSString(label));
+  ignore := sendI(b, Sel("setTag:"), index);
+  ignore := sendI(b, Sel("setBezelStyle:"), 1);          (* rounded/regular *)
+  ignore := sendP(b, Sel("setTarget:"), gTramp);
+  ignore := sendP(b, Sel("setAction:"), Sel("m2idx:"));
+  RETURN b
+END MakeFileButton;
+
+PROCEDURE MakeTabView (x, y, w, h: REAL): View;
+VAR t: View;
+BEGIN
+  t := send0(Cls("NSTabView"), Sel("alloc"));
+  t := sendFrame(t, Sel("initWithFrame:"), x, y, w, h);
+  RETURN t
+END MakeTabView;
+
+PROCEDURE AddTab (tabs: View; label: ARRAY OF CHAR; content: View): Object;
+VAR item, ignore: Object;
+BEGIN
+  item := send0(Cls("NSTabViewItem"), Sel("alloc"));
+  item := sendP(item, Sel("initWithIdentifier:"), NIL);
+  ignore := sendP(item, Sel("setLabel:"), ObjC.NSString(label));
+  ignore := sendP(item, Sel("setView:"), content);
+  ignore := sendP(tabs, Sel("addTabViewItem:"), item);
+  ignore := sendP(tabs, Sel("selectTabViewItem:"), item);
+  RETURN item
+END AddTab;
+
+PROCEDURE TabCount (tabs: View): INTEGER;
+BEGIN RETURN send0I(tabs, Sel("numberOfTabViewItems")) END TabCount;
+
+PROCEDURE SelectedTab (tabs: View): INTEGER;
+VAR item: Object;
+BEGIN
+  item := send0(tabs, Sel("selectedTabViewItem"));
+  IF item = NIL THEN RETURN -1 END;
+  RETURN sendPI(tabs, Sel("indexOfTabViewItem:"), item)
+END SelectedTab;
+
+PROCEDURE SelectTab (tabs: View; index: INTEGER);
+VAR ignore: Object;
+BEGIN ignore := sendI(tabs, Sel("selectTabViewItemAtIndex:"), index) END SelectTab;
+
+PROCEDURE OpenFolder (VAR path: ARRAY OF CHAR): BOOLEAN;
+BEGIN RETURN ObjC.OpenFolderPanel(path) END OpenFolder;
 
 PROCEDURE MakeButton (x, y, w, h: REAL; title: ARRAY OF CHAR;
                       action: ActionProc): Control;
@@ -191,6 +264,7 @@ END Click;
 BEGIN
   gActionCount := 0;
   gTrampReady := FALSE;
+  gListSet := FALSE;
   send0     := CAST(ObjC.Send0,    ObjC.MsgSendPtr());
   sendI     := CAST(ObjC.SendI,    ObjC.MsgSendPtr());
   sendP     := CAST(ObjC.SendP,    ObjC.MsgSendPtr());
@@ -198,5 +272,6 @@ BEGIN
   sendF     := CAST(ObjC.SendF,    ObjC.MsgSendPtr());
   sendFrame := CAST(ObjC.SendFrame, ObjC.MsgSendPtr());
   sendRect  := CAST(ObjC.SendRect, ObjC.MsgSendPtr());
-  send0I    := CAST(ObjC.Send0I,   ObjC.MsgSendPtr())
+  send0I    := CAST(ObjC.Send0I,   ObjC.MsgSendPtr());
+  sendPI    := CAST(ObjC.SendPI,   ObjC.MsgSendPtr())
 END Cocoa.
