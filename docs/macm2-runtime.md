@@ -185,6 +185,32 @@ superclass. `Dog` inherits `Animal`'s methods (ordinary Obj-C method inheritance
 and its `legs` field (in `Animal.__m2`), and adds its own (`Dog.__m2`, placed
 after). Verified by `demos/macos_inherit.mod`.
 
+### Subclassing a real Cocoa class — `<* cocoa "NSView" *>`
+
+A class pragma roots an M2 class at a **real Cocoa class** instead of `NSObject`:
+
+```modula2
+CLASS Canvas;
+  <* cocoa "NSView" *>                       (* register as an NSView subclass *)
+  PROCEDURE DrawRect (x, y, w, h: REAL);     (* selector drawRect: (derived), an OVERRIDE *)
+  BEGIN … draw with Core Graphics … END DrawRect;
+END Canvas;
+```
+
+`Canvas` is registered with `objc_getClass("NSView")` as its superclass, so
+AppKit sees a genuine `NSView` and calls the M2 `DrawRect` as the view's
+`drawRect:`. The `NSRect` argument arrives as `x, y, w, h` in REAL (SIMD)
+registers — declare such overrides with the flattened scalar parameters
+(`drawRect:` → four `REAL`, `mouseDown:` → one `ADDRESS`). Selector derivation
+already yields the AppKit names (`DrawRect`→`drawRect:`, `IsFlipped`→`isFlipped`),
+so common overrides need no annotation. Verified by `demos/macos_subclass.mod`
+(is-a NSView + an `isFlipped` override) and `demos/macos_canvas.mod` (a CG-drawn
+view rendered to PNG).
+
+Scope: **field-free** Cocoa subclasses today. A Cocoa superclass has its own
+ivars, so a subclass's `__m2` no longer sits at the native object-record offset —
+stateful Cocoa subclasses need real ivar-offset resolution (next step).
+
 ---
 
 ## 4. Worked example — pure Modula-2, Cocoa underneath
@@ -234,17 +260,22 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
 
 ## 6. Status & roadmap
 
-**Working (AOT):** root and single-inheritance M2 classes as full Obj-C objects —
-registration, `NEW`/`DISPOSE`, `objc_msgSend` dispatch with arguments,
-per-instance ivar state, method inheritance.
+**Working (AOT):**
+- Root and single-inheritance M2 classes as full Obj-C objects — registration,
+  `NEW`/`DISPOSE`, `objc_msgSend` dispatch with arguments, per-instance ivar
+  state, method inheritance.
+- **M2 subclasses of real Cocoa classes** via `<* cocoa "NSView" *>` — AppKit
+  drives an M2 class as a genuine view (e.g. an M2 `drawRect:` that draws with
+  Core Graphics). Field-free for now.
 
 **Next:**
-- `EXTERNAL` Cocoa classes (`CLASS NSView ["NSView"]; EXTERNAL;`) bound via
-  `objc_getClass`, and M2 subclasses of them (`INHERIT NSView`, `OVERRIDE
-  drawRect:`). This needs real ivar-offset resolution: under a Cocoa superclass
-  the `__m2` ivar is no longer at the native offset, so field access can no longer
-  use native object-record GEPs.
-- Selector pinning (`["initWithFrame:"]`) and `CLASS PROCEDURE` constructors.
+- Real ivar-offset resolution, so **stateful** Cocoa subclasses work (the `__m2`
+  ivar no longer sits at the native offset under a Cocoa superclass, so field
+  access can't use native object-record GEPs — resolve `ivar_getOffset` at load).
+- `EXTERNAL` Cocoa class declarations (`CLASS NSWindow ["NSWindow"]; EXTERNAL;`)
+  so inherited Cocoa methods are callable as typed M2 methods (today: via the
+  `ObjC`/`Cocoa` bridge); selector pinning (`["initWithFrame:"]`) for
+  multi-keyword selectors; `CLASS PROCEDURE` constructors.
 - `cocoa-gen` from the SDK BridgeSupport — generate the AppKit/Foundation
   `EXTERNAL` surface.
 - Rewrite the IDE editor as a real `NSView` subclass; retire the hand-written
