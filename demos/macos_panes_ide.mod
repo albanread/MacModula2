@@ -31,6 +31,7 @@ CONST
 TYPE SendB2 = PROCEDURE (ObjC.Id, ObjC.SEL, BOOLEAN): ObjC.Id;
      SendFI = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, INTEGER): ObjC.Id;
      SendMI = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.SEL, ObjC.Id): ObjC.Id;
+     SendRetI = PROCEDURE (ObjC.Id, ObjC.SEL): INTEGER;
 
 (* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
    NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
@@ -42,7 +43,10 @@ END FlippedDoc;
 
 VAR
   win, content, outerSplit, innerSplit, sidebar, tabs, output, status, helpPane: Cocoa.Object;
-  projScroll, libScroll, projDoc, libDoc: Cocoa.Object;
+  projScroll, libScroll, projDoc, libDoc, editorArea, tabBar: Cocoa.Object;
+  gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
+  gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
+  gTabBarCount: INTEGER;
   gHelpVisible: BOOLEAN;
   smi: SendMI;
   gHelpText: ARRAY [0..2047] OF CHAR;
@@ -64,6 +68,13 @@ BEGIN f := CAST(ObjC.SendI, ObjC.MsgSendPtr()); RETURN f(o, s, n) END sendIInt;
 
 PROCEDURE SetFrameOf (v: Cocoa.Object; x, y, w, h: REAL);
 BEGIN ig := sf(CAST(ObjC.Id, v), ObjC.Selector("setFrame:"), x, y, w, h) END SetFrameOf;
+
+PROCEDURE MakeView (x, y, w, h: REAL): Cocoa.Object;   (* a plain NSView container *)
+VAR v: ObjC.Id;
+BEGIN
+  v := s0(ObjC.GetClass("NSView"), ObjC.Selector("alloc"));
+  RETURN CAST(Cocoa.Object, sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h))
+END MakeView;
 
 PROCEDURE MakeSplit (x, y, w, h: REAL; sideBySide: BOOLEAN): Cocoa.Object;
 VAR v: ObjC.Id;
@@ -161,6 +172,63 @@ BEGIN
                 Cocoa.SetText(status, gProjDir) END
 END RebuildList;
 
+(* [sender tag] — which tab a tab-bar button belongs to. *)
+PROCEDURE TagOf (o: ObjC.Id): INTEGER;
+VAR f: SendRetI;
+BEGIN f := CAST(SendRetI, ObjC.MsgSendPtr()); RETURN f(o, ObjC.Selector("tag")) END TagOf;
+
+(* a tab-bar button (filename or ✕): target = controller, carries its tab index. *)
+PROCEDURE TagButton (x, w: REAL; title, action: ARRAY OF CHAR; tag: INTEGER): Cocoa.Object;
+VAR b: ObjC.Id;
+BEGIN
+  b := s0(s0(ObjC.GetClass("NSButton"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  ig := sf(b, ObjC.Selector("setFrame:"), x, 2.0, w, 22.0);
+  ig := sp(b, ObjC.Selector("setTitle:"), ObjC.NSString(title));
+  ig := sp(b, ObjC.Selector("setTarget:"), ctrl);
+  ig := sp(b, ObjC.Selector("setAction:"), ObjC.Selector(action));
+  ig := sendIInt(b, ObjC.Selector("setTag:"), tag);
+  ig := sendIInt(b, ObjC.Selector("setBezelStyle:"), 1);   (* rounded/flat tab look *)
+  RETURN CAST(Cocoa.Object, b)
+END TagButton;
+
+(* (re)draw the custom tab bar from the open-tab arrays; ✕ on every tab. *)
+PROCEDURE RebuildTabBar;
+VAR i, active: INTEGER; nameB, closeB: Cocoa.Object; label: ARRAY [0..271] OF CHAR; x: REAL;
+BEGIN
+  FOR i := 0 TO gTabBarCount - 1 DO
+    Cocoa.RemoveView(gTabBtns[i]); Cocoa.RemoveView(gTabCloseBtns[i])
+  END;
+  gTabBarCount := 0;
+  active := Cocoa.SelectedTab(tabs);
+  FOR i := 0 TO gTabCount - 1 DO
+    x := FLOAT(i) * 150.0;
+    Assign("", label);
+    IF i = active THEN Append("▸ ", label) END;       (* mark the active tab *)
+    Append(gTabNames[i], label);
+    nameB  := TagButton(x + 2.0, 122.0, label, "onSelectTab:", i);
+    closeB := TagButton(x + 126.0, 22.0, "✕", "onCloseTab:", i);
+    Cocoa.AddSubview(tabBar, nameB); Cocoa.AddSubview(tabBar, closeB);
+    gTabBtns[i] := nameB; gTabCloseBtns[i] := closeB
+  END;
+  gTabBarCount := gTabCount
+END RebuildTabBar;
+
+(* close the tab at `idx`: remove its NSTabViewItem, shift bookkeeping, redraw. *)
+PROCEDURE CloseTabAt (idx: INTEGER);
+VAR i: INTEGER; item: ObjC.Id;
+BEGIN
+  IF (idx < 0) OR (idx >= gTabCount) THEN RETURN END;
+  item := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("tabViewItemAtIndex:"), idx);
+  ig := sp(CAST(ObjC.Id, tabs), ObjC.Selector("removeTabViewItem:"), item);
+  FOR i := idx TO gTabCount - 2 DO
+    gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]);
+    Assign(gTabNames[i+1], gTabNames[i]); gReadOnly[i] := gReadOnly[i+1]
+  END;
+  DEC(gTabCount);
+  RebuildTabBar;
+  Cocoa.SetText(status, "Tab closed.")
+END CloseTabAt;
+
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
 PROCEDURE OpenDoc (tag: INTEGER);
@@ -194,7 +262,10 @@ BEGIN
   it := Cocoa.AddTab(tabs, full, ed);
   IF gTabCount <= 63 THEN
     gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); gReadOnly[gTabCount] := isLib;
-    INC(gTabCount)
+    IF isLib THEN Assign(gLibFiles[idx], gTabNames[gTabCount])
+    ELSE Assign(gProjFiles[idx], gTabNames[gTabCount]) END;
+    INC(gTabCount);
+    RebuildTabBar
   END
 END OpenDoc;
 
@@ -250,18 +321,14 @@ CLASS IDE;
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
   PROCEDURE OnClose (sender: ObjC.Id);            (* "onClose:" — close the active tab (⌘W) *)
-  VAR sel, i: INTEGER; item: ObjC.Id;
+  BEGIN CloseTabAt(Cocoa.SelectedTab(tabs)) END OnClose;
+  PROCEDURE OnCloseTab (sender: ObjC.Id);         (* "onCloseTab:" — the ✕ on a tab *)
+  BEGIN CloseTabAt(TagOf(sender)) END OnCloseTab;
+  PROCEDURE OnSelectTab (sender: ObjC.Id);        (* "onSelectTab:" — click a tab name *)
   BEGIN
-    sel := Cocoa.SelectedTab(tabs);
-    IF sel < 0 THEN RETURN END;
-    item := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("tabViewItemAtIndex:"), sel);
-    ig := sp(CAST(ObjC.Id, tabs), ObjC.Selector("removeTabViewItem:"), item);
-    FOR i := sel TO gTabCount - 2 DO
-      gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]); gReadOnly[i] := gReadOnly[i+1]
-    END;
-    DEC(gTabCount);
-    Cocoa.SetText(status, "Tab closed.")
-  END OnClose;
+    ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), TagOf(sender));
+    RebuildTabBar
+  END OnSelectTab;
   PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave *)
   VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
   BEGIN
@@ -315,10 +382,21 @@ BEGIN
   innerSplit := MakeSplit(0.0, 0.0, 860.0, 596.0, FALSE);
   Cocoa.AddSubview(outerSplit, sidebar);
   Cocoa.AddSubview(outerSplit, innerSplit);
-  tabs := Cocoa.MakeTabView(0.0, 0.0, 860.0, 390.0);
+
+  (* editor area = a custom tab bar (closeable tabs) over a tab-less NSTabView *)
+  editorArea := MakeView(0.0, 0.0, 860.0, 390.0);
+  tabs := Cocoa.MakeTabView(0.0, 0.0, 860.0, 362.0);
+  ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setTabViewType:"), 6);     (* NSNoTabsNoBorder *)
+  ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setAutoresizingMask:"), 18);
+  tabBar := MakeView(0.0, 362.0, 860.0, 28.0);
+  ig := sendIInt(CAST(ObjC.Id, tabBar), ObjC.Selector("setAutoresizingMask:"), 10);  (* width + stick to top *)
+  Cocoa.AddSubview(editorArea, tabs);
+  Cocoa.AddSubview(editorArea, tabBar);
+  gTabBarCount := 0;
+
   output := Cocoa.MakeEditor(0.0, 0.0, 860.0, 200.0);
   Cocoa.SetEditorText(output, "(build output appears here — Build & Run marks error lines red)");
-  Cocoa.AddSubview(innerSplit, tabs);
+  Cocoa.AddSubview(innerSplit, editorArea);
   Cocoa.AddSubview(innerSplit, output);
 
   (* third pane: help (F1 toggles it) — collapsed initially *)
