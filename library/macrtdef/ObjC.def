@@ -54,6 +54,10 @@ PROCEDURE Highlight (textview: Id);
    NSTextView; returns how many were marked. *)
 PROCEDURE MarkErrors (textview: Id; output: ARRAY OF CHAR): INTEGER;
 
+(* The insertion point as 1-based line / 0-based column, and a setter by offset. *)
+PROCEDURE CursorPos (textview: Id; VAR line, col: INTEGER);
+PROCEDURE SetCursor (textview: Id; offset: INTEGER);
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);

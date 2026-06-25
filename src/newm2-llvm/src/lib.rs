@@ -311,8 +311,11 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("Proc.RunCapture".to_string(), "nm2_proc_run_capture"));
         v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
         v.push(("Proc.ReadFile".to_string(), "nm2_proc_read_file"));
+        v.push(("Proc.Complete".to_string(), "nm2_ide_complete"));
         v.push(("ObjC.OpenPanel".to_string(), "nm2_cocoa_open_panel"));
         v.push(("ObjC.SavePanel".to_string(), "nm2_cocoa_save_panel"));
+        v.push(("ObjC.CursorPos".to_string(), "nm2_ide_cursor_pos"));
+        v.push(("ObjC.SetCursor".to_string(), "nm2_ide_set_cursor"));
     }
 
     v
@@ -1219,8 +1222,11 @@ fn for_each_runtime_binding(
         bind("Proc.RunCapture", newm2_runtime::proc::nm2_proc_run_capture as *const ());
         bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
         bind("Proc.ReadFile", newm2_runtime::proc::nm2_proc_read_file as *const ());
+        bind("Proc.Complete", newm2_runtime::proc::nm2_ide_complete as *const ());
         bind("ObjC.OpenPanel", newm2_runtime::objc::nm2_cocoa_open_panel as *const ());
         bind("ObjC.SavePanel", newm2_runtime::objc::nm2_cocoa_save_panel as *const ());
+        bind("ObjC.CursorPos", newm2_runtime::objc::nm2_ide_cursor_pos as *const ());
+        bind("ObjC.SetCursor", newm2_runtime::objc::nm2_ide_set_cursor as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());

@@ -111,6 +111,86 @@ pub extern "C-unwind" fn nm2_objc_sel(name: *const u16, high: u64) -> *mut c_voi
     f(c.as_ptr())
 }
 
+/// An `NSRange` — two NSUInteger; returned in x0/x1 (≤16 bytes) on arm64.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsRange {
+    location: u64,
+    length: u64,
+}
+
+/// `ObjC.CursorPos(textview, VAR line, VAR col)` — the insertion point as a
+/// 1-based line and 0-based column (for the compiler's `complete` command).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_cursor_pos(
+    textview: *mut c_void,
+    line: *mut i64,
+    col: *mut i64,
+) {
+    bootstrap();
+    if textview.is_null() {
+        return;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let get_range: extern "C" fn(*mut c_void, *mut c_void) -> NsRange =
+        unsafe { std::mem::transmute(msg) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let send_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+
+    let range = get_range(textview, reg(c"selectedRange".as_ptr()));
+    let s = send0(textview, reg(c"string".as_ptr()));
+    let mut ln = 1i64;
+    let mut col_v = 0i64;
+    if !s.is_null() {
+        let utf8 = send_str(s, reg(c"UTF8String".as_ptr()));
+        if !utf8.is_null() {
+            let src = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+            // ASCII: byte index == UTF-16 index == the selectedRange location.
+            let upto = (range.location as usize).min(src.len());
+            let mut last_nl = 0usize;
+            for (i, b) in src.bytes().take(upto).enumerate() {
+                if b == b'\n' {
+                    ln += 1;
+                    last_nl = i + 1;
+                }
+            }
+            col_v = (upto - last_nl) as i64;
+        }
+    }
+    if !line.is_null() {
+        unsafe { *line = ln };
+    }
+    if !col.is_null() {
+        unsafe { *col = col_v };
+    }
+}
+
+/// `ObjC.SetCursor(textview, offset)` — move the insertion point to a UTF-16
+/// offset (for scripting / placing the cursor for completion).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_set_cursor(textview: *mut c_void, offset: i64) {
+    bootstrap();
+    if textview.is_null() {
+        return;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let set_range: extern "C" fn(*mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+    set_range(textview, reg(c"setSelectedRange:".as_ptr()), offset as u64, 0);
+}
+
 /// `ObjC.GetString(nsstr, VAR dest)` — copy an `NSString`'s text into a (wide)
 /// M2 `ARRAY OF CHAR`, NUL-terminated. Returns the number of code units written.
 #[unsafe(no_mangle)]

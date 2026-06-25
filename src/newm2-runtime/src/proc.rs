@@ -60,6 +60,43 @@ pub extern "C-unwind" fn nm2_proc_run_capture(
     }
 }
 
+/// `Proc.Complete(path, line, col, VAR out): INTEGER` — run the compiler's
+/// `complete` command on `path` at (1-based `line`, 0-based `col`) and capture
+/// its `name<TAB>kind<TAB>detail` candidate lines into `out`. Returns the number
+/// of candidates (-1 on failure). Uses the running driver binary itself.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_complete(
+    path_ptr: *const u16,
+    path_high: u64,
+    line: i64,
+    col: i64,
+    out_ptr: *mut u16,
+    out_high: u64,
+) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let out = Command::new(&exe)
+        .arg("complete")
+        .arg(&path)
+        .arg(line.to_string())
+        .arg(col.to_string())
+        .arg("--library")
+        .arg("library")
+        .output();
+    match out {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout).into_owned();
+            let count = s.lines().filter(|l| !l.trim().is_empty()).count() as i64;
+            write_wide(out_ptr, out_high, &s);
+            count
+        }
+        Err(_) => -1,
+    }
+}
+
 /// `Proc.ReadFile(path, VAR content): INTEGER` — read `path` (UTF-8) into a
 /// (wide) M2 `ARRAY OF CHAR`. Returns the number of code units read, or -1 on
 /// error.

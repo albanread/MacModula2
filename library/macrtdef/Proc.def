@@ -14,4 +14,9 @@ PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
 (* Read `path` (UTF-8) into `content`. Returns the length, or -1 on error. *)
 PROCEDURE ReadFile (path: ARRAY OF CHAR; VAR content: ARRAY OF CHAR): INTEGER;
 
+(* Run the compiler's `complete` command on `path` at (1-based line, 0-based col)
+   and capture its `name<TAB>kind<TAB>detail` candidate lines. Returns the count. *)
+PROCEDURE Complete (path: ARRAY OF CHAR; line, col: INTEGER;
+                    VAR out: ARRAY OF CHAR): INTEGER;
+
 END Proc.
