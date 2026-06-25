@@ -85,13 +85,18 @@ pub enum Global {
         super_name: String,
         /// One per concrete method: (selector, IMP function name, type encoding).
         methods: Vec<ObjCMethod>,
-        /// The class's object-record type. Codegen adds a single `__m2` ivar
-        /// sized to its field area (everything after the leading vtable/isa
-        /// word), placed right after the isa — so the Obj-C instance has the
-        /// same layout as the native record and field access (native GEPs into
-        /// the object record) lands in real per-instance Obj-C storage with no
-        /// change to the field-access path. See docs/design/cocoa-classes.md.
+        /// The class's (flattened, base-first) object-record type.
         object_record: TypeId,
+        /// The base class's object record, when this class `INHERIT`s another M2
+        /// class. Codegen adds a single `__m2` ivar sized to this class's OWN
+        /// fields — `size(object_record) - size(base_object_record)` (or `- 8`,
+        /// the leading vtable/isa word, at a root). Because the Obj-C runtime
+        /// lays each class's ivars after its superclass's, the per-class `__m2`
+        /// blocks are contiguous and reproduce the native flattened field
+        /// layout, so field access (native GEPs into the object record) lands in
+        /// real per-instance Obj-C storage with no field-path change. See
+        /// docs/design/cocoa-classes.md and docs/macm2-runtime.md.
+        base_object_record: Option<TypeId>,
     },
 }
 

@@ -256,11 +256,14 @@ pub fn lower_module_opts(
                 None => "NSObject".to_string(),
             };
             if let Some(object_record) = class.object_record {
+                let base_object_record =
+                    class.base.and_then(|b| sema.classes.get(b).object_record);
                 ir.globals.push(Global::ObjCClass {
                     objc_name: format!("M2.{}.{}", ir.name, class.name),
                     super_name,
                     methods,
                     object_record,
+                    base_object_record,
                 });
             }
         }

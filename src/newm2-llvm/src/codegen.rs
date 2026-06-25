@@ -427,10 +427,52 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
     /// On non-macOS targets lower.rs emits no ObjCClass globals, so this no-ops.
     fn emit_objc_class_registrations(&self) {
         use newm2_ir::module::Global;
-        let classes: Vec<&Global> =
+        let mut classes: Vec<&Global> =
             self.ir.globals.iter().filter(|g| matches!(g, Global::ObjCClass { .. })).collect();
         if classes.is_empty() {
             return;
+        }
+        // Register base classes before derived ones: allocateClassPair needs the
+        // superclass to already exist (getClass returns it). Topologically order
+        // by the same-module super dependency (roots / Cocoa-rooted first).
+        {
+            let names: std::collections::HashSet<&str> = classes
+                .iter()
+                .filter_map(|g| match g {
+                    Global::ObjCClass { objc_name, .. } => Some(objc_name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let mut ordered: Vec<&Global> = Vec::with_capacity(classes.len());
+            let mut emitted: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            // Repeatedly take classes whose super is already emitted or external.
+            while ordered.len() < classes.len() {
+                let before = ordered.len();
+                for g in &classes {
+                    let Global::ObjCClass { objc_name, super_name, .. } = g else { continue };
+                    if emitted.contains(objc_name.as_str()) {
+                        continue;
+                    }
+                    let super_ready =
+                        !names.contains(super_name.as_str()) || emitted.contains(super_name.as_str());
+                    if super_ready {
+                        ordered.push(g);
+                        emitted.insert(objc_name.as_str());
+                    }
+                }
+                if ordered.len() == before {
+                    // Cycle (shouldn't happen) — append the rest as-is.
+                    for g in &classes {
+                        if let Global::ObjCClass { objc_name, .. } = g {
+                            if !emitted.contains(objc_name.as_str()) {
+                                ordered.push(g);
+                                emitted.insert(objc_name.as_str());
+                            }
+                        }
+                    }
+                }
+            }
+            classes = ordered;
         }
 
         let ptr_ty = self.ctx.ptr_type(inkwell::AddressSpace::default());
@@ -469,7 +511,14 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
         self.builder.position_at_end(entry);
 
         for g in &classes {
-            let Global::ObjCClass { objc_name, super_name, methods, object_record } = g else {
+            let Global::ObjCClass {
+                objc_name,
+                super_name,
+                methods,
+                object_record,
+                base_object_record,
+            } = g
+            else {
                 continue;
             };
             let name_ptr = self.objc_cstring(objc_name);
@@ -494,19 +543,28 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
                 .basic()
                 .unwrap()
                 .into_pointer_value();
-            // One ivar holding the object record's field area (everything after
-            // the leading word, which the isa occupies). Placed right after the
-            // isa (8-byte aligned -> offset 8), it makes the Obj-C instance the
-            // same size+layout as the native record, so field-access GEPs into
-            // the object record land in real per-instance Obj-C storage. alloc
-            // zero-fills it, matching NEW's semantics.
+            // One ivar holding this class's OWN field area. The runtime places
+            // it after the superclass's ivars, so per-class `__m2` blocks are
+            // contiguous and reproduce the native flattened field layout — field
+            // access (native GEPs into the object record) lands in real
+            // per-instance Obj-C storage. alloc zero-fills it (NEW's semantics).
+            // Own size = size(record) - size(base record) (or - 8 at a root,
+            // the leading vtable/isa word).
             let or_size = self
                 .llvm_type(*object_record)
                 .size_of()
                 .and_then(|c| c.get_zero_extended_constant())
                 .unwrap_or(8);
-            if or_size > 8 {
-                let ivar_size = or_size - 8;
+            let base_size = match base_object_record {
+                Some(b) => self
+                    .llvm_type(*b)
+                    .size_of()
+                    .and_then(|c| c.get_zero_extended_constant())
+                    .unwrap_or(8),
+                None => 8,
+            };
+            if or_size > base_size {
+                let ivar_size = or_size - base_size;
                 let iname = self.objc_cstring("__m2");
                 let itypes = self.objc_cstring(&format!("[{ivar_size}c]"));
                 self.builder
