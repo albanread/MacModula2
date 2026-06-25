@@ -67,6 +67,9 @@ PROCEDURE GotoFirstError (textview: Id; output: ARRAY OF CHAR): INTEGER;
    (case-insensitive); writes `Name : Super` lines into `out`, returns matches. *)
 PROCEDURE FindClasses (query: ARRAY OF CHAR; VAR out: ARRAY OF CHAR): INTEGER;
 
+(* Attach a line-number ruler to an editor's NSScrollView. *)
+PROCEDURE LineNumbers (scrollview: Id);
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);

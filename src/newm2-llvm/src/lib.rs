@@ -322,6 +322,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.SetCursor".to_string(), "nm2_ide_set_cursor"));
         v.push(("ObjC.GotoFirstError".to_string(), "nm2_ide_goto_first_error"));
         v.push(("ObjC.FindClasses".to_string(), "nm2_objc_find_classes"));
+        v.push(("ObjC.LineNumbers".to_string(), "nm2_ide_line_numbers"));
     }
 
     v
@@ -1262,6 +1263,7 @@ fn for_each_runtime_binding(
         bind("ObjC.SetCursor", newm2_runtime::objc::nm2_ide_set_cursor as *const ());
         bind("ObjC.GotoFirstError", newm2_runtime::objc::nm2_ide_goto_first_error as *const ());
         bind("ObjC.FindClasses", newm2_runtime::objc::nm2_objc_find_classes as *const ());
+        bind("ObjC.LineNumbers", newm2_runtime::objc::nm2_ide_line_numbers as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());

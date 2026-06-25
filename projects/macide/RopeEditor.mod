@@ -254,6 +254,7 @@ BEGIN
   scroll := sf(scroll, ObjC.Selector("initWithFrame:"), x, y, w, h);
   ig := sb(scroll, ObjC.Selector("setHasVerticalScroller:"), TRUE);
   ig := sp(scroll, ObjC.Selector("setDocumentView:"), tvId);
+  ObjC.LineNumbers(scroll);                          (* line-number ruler *)
   RETURN scroll
 END Make;
 

@@ -1113,6 +1113,213 @@ pub extern "C-unwind" fn nm2_objc_find_classes(
     total as i64
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsPoint {
+    x: f64,
+    y: f64,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NsSize {
+    w: f64,
+    h: f64,
+}
+
+/// `drawHashMarksAndLabelsInRect:` for our NSRulerView subclass — draws a line
+/// number at the left of each visible line, using the text view's layout manager
+/// for line geometry (NSRect/NSRange C structs, which is why this lives in Rust).
+extern "C" fn nm2_line_ruler_draw(this: *mut c_void, _cmd: *mut c_void, _rect: NsRect) {
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    let getcls = sym_or_null("objc_getClass");
+    if msg.is_null() || reg.is_null() || getcls.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+    let s0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let s_rect0: extern "C" fn(*mut c_void, *mut c_void) -> NsRect =
+        unsafe { std::mem::transmute(msg) };
+    let s_size0: extern "C" fn(*mut c_void, *mut c_void) -> NsSize =
+        unsafe { std::mem::transmute(msg) };
+    let s_grange: extern "C" fn(*mut c_void, *mut c_void, NsRect, *mut c_void) -> NsRange =
+        unsafe { std::mem::transmute(msg) };
+    let s_frag: extern "C" fn(*mut c_void, *mut c_void, u64, *mut NsRange) -> NsRect =
+        unsafe { std::mem::transmute(msg) };
+    let s_cidx: extern "C" fn(*mut c_void, *mut c_void, u64) -> u64 =
+        unsafe { std::mem::transmute(msg) };
+    let s_setobj: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_drawat: extern "C" fn(*mut c_void, *mut c_void, NsPoint, *mut c_void) =
+        unsafe { std::mem::transmute(msg) };
+    let s_f: extern "C" fn(*mut c_void, *mut c_void, f64) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+
+    let client = s0(this, reg(c"clientView".as_ptr()));
+    if client.is_null() {
+        return;
+    }
+    let lm = s0(client, reg(c"layoutManager".as_ptr()));
+    let tc = s0(client, reg(c"textContainer".as_ptr()));
+    let str_obj = s0(client, reg(c"string".as_ptr()));
+    if lm.is_null() || tc.is_null() || str_obj.is_null() {
+        return;
+    }
+    let utf8 = s_str(str_obj, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return;
+    }
+    let text = unsafe { CStr::from_ptr(utf8) }.to_string_lossy();
+    let mut line_start: Vec<u64> = vec![0];
+    let mut off: u64 = 0;
+    for ch in text.chars() {
+        let w = ch.len_utf16() as u64;
+        off += w;
+        if ch == '\n' {
+            line_start.push(off);
+        }
+    }
+
+    let vis: NsRect = s_rect0(client, reg(c"visibleRect".as_ptr()));
+    let inset: NsSize = s_size0(client, reg(c"textContainerInset".as_ptr()));
+    let grange: NsRange = s_grange(
+        lm,
+        reg(c"glyphRangeForBoundingRect:inTextContainer:".as_ptr()),
+        vis,
+        tc,
+    );
+
+    let dict = s0(
+        s0(getcls(c"NSMutableDictionary".as_ptr()), reg(c"alloc".as_ptr())),
+        reg(c"init".as_ptr()),
+    );
+    let font = s_f(getcls(c"NSFont".as_ptr()), reg(c"userFixedPitchFontOfSize:".as_ptr()), 11.0);
+    let fkey = nm2_objc_nsstring_via(getcls, reg, msg, c"NSFont".as_ptr());
+    let ckey = nm2_objc_nsstring_via(getcls, reg, msg, c"NSColor".as_ptr());
+    let _ = s_setobj(dict, reg(c"setObject:forKey:".as_ptr()), font, fkey);
+    let gray = s0(getcls(c"NSColor".as_ptr()), reg(c"grayColor".as_ptr()));
+    let _ = s_setobj(dict, reg(c"setObject:forKey:".as_ptr()), gray, ckey);
+
+    let end = grange.location + grange.length;
+    let mut idx = grange.location;
+    let mut guard = 0u32;
+    while idx < end && guard < 200_000 {
+        guard += 1;
+        let mut eff = NsRange { location: 0, length: 0 };
+        let frag: NsRect = s_frag(
+            lm,
+            reg(c"lineFragmentRectForGlyphAtIndex:effectiveRange:".as_ptr()),
+            idx,
+            &mut eff,
+        );
+        let cidx = s_cidx(lm, reg(c"characterIndexForGlyphAtIndex:".as_ptr()), idx);
+        if let Ok(k) = line_start.binary_search(&cidx) {
+            let y = frag.y - vis.y + inset.h;
+            if let Ok(cs) = CString::new((k + 1).to_string()) {
+                let ns = nm2_objc_nsstring_via(getcls, reg, msg, cs.as_ptr());
+                s_drawat(
+                    ns,
+                    reg(c"drawAtPoint:withAttributes:".as_ptr()),
+                    NsPoint { x: 4.0, y },
+                    dict,
+                );
+            }
+        }
+        if eff.length == 0 {
+            break;
+        }
+        idx = eff.location + eff.length;
+    }
+}
+
+static LINE_RULER_CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn line_ruler_class() -> *mut c_void {
+    (*LINE_RULER_CLASS.get_or_init(|| {
+        let getcls = sym_or_null("objc_getClass");
+        let alloc_pair = sym_or_null("objc_allocateClassPair");
+        let add_method = sym_or_null("class_addMethod");
+        let reg_pair = sym_or_null("objc_registerClassPair");
+        let reg = sym_or_null("sel_registerName");
+        if getcls.is_null() || alloc_pair.is_null() || add_method.is_null()
+            || reg_pair.is_null() || reg.is_null()
+        {
+            return 0;
+        }
+        let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+        let alloc_pair: extern "C" fn(*mut c_void, *const i8, usize) -> *mut c_void =
+            unsafe { std::mem::transmute(alloc_pair) };
+        let add_method: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i8) -> bool =
+            unsafe { std::mem::transmute(add_method) };
+        let reg_pair: extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(reg_pair) };
+        let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+        let superc = getcls(c"NSRulerView".as_ptr());
+        if superc.is_null() {
+            return 0;
+        }
+        let cls = alloc_pair(superc, c"NM2LineRuler".as_ptr(), 0);
+        if cls.is_null() {
+            return 0;
+        }
+        add_method(
+            cls,
+            reg(c"drawHashMarksAndLabelsInRect:".as_ptr()),
+            nm2_line_ruler_draw as *mut c_void,
+            c"v@:{CGRect={CGPoint=dd}{CGSize=dd}}".as_ptr(),
+        );
+        reg_pair(cls);
+        cls as usize
+    })) as *mut c_void
+}
+
+/// `ObjC.LineNumbers(scrollview)` — attach a line-number ruler to an editor's
+/// NSScrollView (the documentView is the text view).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_line_numbers(scrollview: *mut c_void) {
+    bootstrap();
+    if scrollview.is_null() {
+        return;
+    }
+    let cls = line_ruler_class();
+    if cls.is_null() {
+        return;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let s0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_init: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, i64) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_p: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_b: extern "C" fn(*mut c_void, *mut c_void, bool) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s_f: extern "C" fn(*mut c_void, *mut c_void, f64) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+
+    let tv = s0(scrollview, reg(c"documentView".as_ptr()));
+    let ruler = s0(cls, reg(c"alloc".as_ptr()));
+    let ruler = s_init(
+        ruler,
+        reg(c"initWithScrollView:orientation:".as_ptr()),
+        scrollview,
+        1, // NSVerticalRuler
+    );
+    let _ = s_p(ruler, reg(c"setClientView:".as_ptr()), tv);
+    let _ = s_f(ruler, reg(c"setRuleThickness:".as_ptr()), 42.0);
+    let _ = s_p(scrollview, reg(c"setVerticalRulerView:".as_ptr()), ruler);
+    let _ = s_b(scrollview, reg(c"setHasVerticalRuler:".as_ptr()), true);
+    let _ = s_b(scrollview, reg(c"setRulersVisible:".as_ptr()), true);
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).
