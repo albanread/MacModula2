@@ -43,6 +43,12 @@ pub struct ClassSymbol {
     pub is_interface: bool,
     /// The COM IID, from an `["xxxxxxxx-...."]` annotation, if any.
     pub iid: Option<String>,
+    /// macOS: the Obj-C superclass name from a `<* cocoa "NSView" *>` class
+    /// pragma. When set (here or via the base chain) the class is "Cocoa-rooted":
+    /// registered as a subclass of that Cocoa class, and its `__m2` ivar sits
+    /// after the Cocoa superclass's ivars (not at the native offset), so field
+    /// access is base-adjusted at runtime. See docs/macm2-runtime.md.
+    pub objc_super: Option<String>,
     /// `false` until the full definition has been analysed (forward decls
     /// start unresolved).
     pub body_resolved: bool,
@@ -137,6 +143,7 @@ impl ClassArena {
             is_abstract,
             is_interface: false,
             iid: None,
+            objc_super: None,
             body_resolved: false,
             ptr_type: None,
             base: None,
@@ -163,6 +170,21 @@ impl ClassArena {
 
     pub fn lookup(&self, name: &str) -> Option<ClassSymbolId> {
         self.by_name.get(name).copied()
+    }
+
+    /// macOS: true if this class or any ancestor is rooted at a Cocoa class
+    /// (`<* cocoa "…" *>`). Cocoa-rooted classes need runtime-adjusted field
+    /// access (their `__m2` ivar is not at the native object-record offset).
+    pub fn is_cocoa_rooted(&self, id: ClassSymbolId) -> bool {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let cls = self.get(c);
+            if cls.objc_super.is_some() {
+                return true;
+            }
+            cur = cls.base;
+        }
+        false
     }
 
     pub fn len(&self) -> usize {

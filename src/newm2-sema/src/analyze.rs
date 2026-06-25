@@ -1275,6 +1275,14 @@ fn analyse_decl_body(
             else {
                 return;
             };
+            // A `<* cocoa "NSView" *>` pragma roots the class at a Cocoa class.
+            for member in &cd.members {
+                if let ast::ClassMember::Pragma(p) = member {
+                    if let Some(name) = parse_cocoa_pragma(&p.body) {
+                        ctx.classes.get_mut(cid).objc_super = Some(name);
+                    }
+                }
+            }
             for member in &cd.members {
                 if let ast::ClassMember::Method(m) = member {
                     if m.body.is_some() {
@@ -1285,6 +1293,16 @@ fn analyse_decl_body(
         }
         _ => {}
     }
+}
+
+/// Extract the class name from a `cocoa "NSView"` pragma body (lenient about
+/// spacing/punctuation). Returns the quoted name if the pragma is a cocoa one.
+fn parse_cocoa_pragma(body: &str) -> Option<String> {
+    let rest = body.trim().strip_prefix("cocoa")?;
+    let q1 = rest.find('"')?;
+    let after = &rest[q1 + 1..];
+    let q2 = after.find('"')?;
+    Some(after[..q2].to_string())
 }
 
 /// Analyse a class method body. The receiver `SELF` (the class type) and the

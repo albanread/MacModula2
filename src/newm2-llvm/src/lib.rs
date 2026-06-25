@@ -1225,6 +1225,7 @@ fn for_each_runtime_binding(
         // their raw symbol names because codegen calls them directly.
         bind("nm2_objc_new", newm2_runtime::objc::nm2_objc_new as *const ());
         bind("nm2_objc_release", newm2_runtime::objc::nm2_objc_release as *const ());
+        bind("nm2_objc_field_base", newm2_runtime::objc::nm2_objc_field_base as *const ());
         // Method dispatch lowers to objc_msgSend: codegen interns the selector
         // and fetches msgSend's address by these raw symbol names.
         bind("nm2_objc_sel", newm2_runtime::objc::nm2_objc_sel as *const ());

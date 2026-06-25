@@ -550,17 +550,12 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
             // per-instance Obj-C storage. alloc zero-fills it (NEW's semantics).
             // Own size = size(record) - size(base record) (or - 8 at a root,
             // the leading vtable/isa word).
-            let or_size = self
-                .llvm_type(*object_record)
-                .size_of()
-                .and_then(|c| c.get_zero_extended_constant())
-                .unwrap_or(8);
+            let td = inkwell::targets::TargetData::create(
+                self.module.get_data_layout().as_str().to_str().unwrap_or(""),
+            );
+            let or_size = td.get_store_size(&self.llvm_type(*object_record));
             let base_size = match base_object_record {
-                Some(b) => self
-                    .llvm_type(*b)
-                    .size_of()
-                    .and_then(|c| c.get_zero_extended_constant())
-                    .unwrap_or(8),
+                Some(b) => td.get_store_size(&self.llvm_type(*b)),
                 None => 8,
             };
             if or_size > base_size {

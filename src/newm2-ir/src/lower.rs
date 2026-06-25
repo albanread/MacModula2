@@ -255,8 +255,8 @@ pub fn lower_module_opts(
             // Cocoa class: it is registered as a subclass of that Obj-C class, so
             // AppKit sees it as (e.g.) a genuine NSView. Otherwise an INHERITed
             // M2 base, else NSObject. See docs/macm2-runtime.md.
-            let super_name = if let Some(s) = cocoa_super_pragma(cd) {
-                s
+            let super_name = if let Some(s) = &class.objc_super {
+                s.clone()
             } else {
                 match class.base {
                     Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
@@ -320,24 +320,6 @@ pub fn lower_module_opts(
 // one trailing colon. An explicit selector pin (for AppKit overrides like
 // `drawRect:`) is a later stage; for now common single-keyword AppKit selectors
 // fall out of derivation directly (`DrawRect` -> `drawRect:`).
-
-/// A `<* cocoa "NSView" *>` class pragma names the Obj-C superclass to register
-/// this M2 class under (so it becomes a real NSView/NSWindow/… subclass).
-/// Returns the quoted name if present. Lenient about spacing/punctuation.
-fn cocoa_super_pragma(cd: &ast::ClassDecl) -> Option<String> {
-    for m in &cd.members {
-        let ast::ClassMember::Pragma(p) = m else { continue };
-        let body = p.body.trim();
-        if let Some(rest) = body.strip_prefix("cocoa") {
-            // first double-quoted token after `cocoa`
-            let q1 = rest.find('"')?;
-            let after = &rest[q1 + 1..];
-            let q2 = after.find('"')?;
-            return Some(after[..q2].to_string());
-        }
-    }
-    None
-}
 
 fn objc_selector(method_name: &str, n_params: usize) -> String {
     let mut s = String::new();
@@ -1152,6 +1134,9 @@ fn lower_method(
             let self_slot = fl.local_ptr(binding);
             let obj = fl.fresh();
             fl.push(Inst::Load { dst: obj, ptr: self_slot });
+            // macOS: adjust to the field base for a Cocoa-rooted instance so
+            // bare-field GEPs land in the `__m2` ivar (no-op otherwise).
+            let obj = fl.objc_field_base(obj, cid);
             // Annotate the object pointer with the object-record layout so a
             // bare-field GEP indexes the struct, not the i64 fallback.
             let obj_typed = fl.fresh();
@@ -5819,16 +5804,37 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
     /// the reference) to obtain the object pointer and annotate it with the
     /// object-record layout, so a following field GEP indexes the heap object.
     /// Any other base type is returned unchanged.
+    /// macOS: for a Cocoa-rooted instance, adjust the object pointer to the base
+    /// the native field GEPs expect (`obj + ivar_getOffset(__m2) - 8`), so
+    /// `SELF.field` lands in the `__m2` ivar that sits after the Cocoa
+    /// superclass's ivars. A no-op for NSObject/M2-rooted classes.
+    fn objc_field_base(&mut self, obj: ValueId, cid: ClassSymbolId) -> ValueId {
+        if cfg!(target_os = "macos") && self.ctx.sema.classes.is_cocoa_rooted(cid) {
+            let addr = self.ctx.sema.types.builtin(Builtin::Address);
+            self.call_runtime(
+                "nm2_objc_field_base",
+                vec![IrParam { name: "obj".into(), ty: addr, is_var: false }],
+                Some(addr),
+                vec![obj],
+            )
+            .unwrap()
+        } else {
+            obj
+        }
+    }
+
     fn deref_class_base(&mut self, base: ValueId, base_ty: Option<newm2_sema::TypeId>) -> ValueId {
         let Some(bt) = base_ty else { return base };
-        let obj_rec = match self.ctx.sema.types.get(bt) {
-            TypeKind::Class { symbol } => {
-                self.ctx.sema.classes.get(ClassSymbolId(*symbol)).object_record
-            }
+        let (cid, obj_rec) = match self.ctx.sema.types.get(bt) {
+            TypeKind::Class { symbol } => (
+                ClassSymbolId(*symbol),
+                self.ctx.sema.classes.get(ClassSymbolId(*symbol)).object_record,
+            ),
             _ => return base,
         };
         let loaded = self.fresh();
         self.push(Inst::Load { dst: loaded, ptr: base });
+        let loaded = self.objc_field_base(loaded, cid);
         match obj_rec {
             Some(or) => {
                 let typed = self.fresh();

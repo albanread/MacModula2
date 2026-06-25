@@ -292,6 +292,41 @@ pub extern "C-unwind" fn nm2_objc_new(name: *const u16, high: u64) -> *mut c_voi
     send0(obj, reg_sel(c"init".as_ptr()))
 }
 
+/// macOS M2 object model: the base pointer for native field GEPs on a
+/// Cocoa-rooted instance. An M2 class's fields live in its `__m2` ivar; for an
+/// NSObject-rooted class that ivar sits at offset 8 (right after the isa) and the
+/// native object-record field offsets work directly. Under a Cocoa superclass
+/// the ivar sits after the superclass's ivars, so we return
+/// `obj + ivar_getOffset(__m2) - 8` — the existing native GEPs (which assume the
+/// field area starts at object-record offset 8) then land in `__m2`. Returns
+/// `obj` unchanged if the ivar isn't found.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_field_base(obj: *mut c_void) -> *mut c_void {
+    if obj.is_null() {
+        return obj;
+    }
+    bootstrap();
+    let obj_get_class = sym_or_null("object_getClass");
+    let class_get_ivar = sym_or_null("class_getInstanceVariable");
+    let ivar_get_offset = sym_or_null("ivar_getOffset");
+    if obj_get_class.is_null() || class_get_ivar.is_null() || ivar_get_offset.is_null() {
+        return obj;
+    }
+    let obj_get_class: extern "C" fn(*mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(obj_get_class) };
+    let class_get_ivar: extern "C" fn(*mut c_void, *const i8) -> *mut c_void =
+        unsafe { std::mem::transmute(class_get_ivar) };
+    let ivar_get_offset: extern "C" fn(*mut c_void) -> isize =
+        unsafe { std::mem::transmute(ivar_get_offset) };
+    let cls = obj_get_class(obj);
+    let ivar = class_get_ivar(cls, c"__m2".as_ptr());
+    if ivar.is_null() {
+        return obj;
+    }
+    let off = ivar_get_offset(ivar);
+    unsafe { obj.cast::<u8>().offset(off - 8).cast::<c_void>() }
+}
+
 /// macOS M2 object model: `DISPOSE(p)` on a class-typed pointer — `[p release]`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_objc_release(obj: *mut c_void) {
