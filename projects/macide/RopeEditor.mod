@@ -127,11 +127,10 @@ CLASS RopeString;
   PROCEDURE CharacterAtIndex (i: CARDINAL): CARDINAL;
   BEGIN RETURN ORD(TextRope.CharAt(box^.r, i)) END CharacterAtIndex;
   PROCEDURE GetCharacters (buffer: ADDRESS; loc, len: CARDINAL) <* selector "getCharacters:range:" *>;
-  VAR tmp: ARRAY [0..65535] OF CHAR; pbuf: PWide; k: CARDINAL;
-  BEGIN
-    TextRope.Sub(box^.r, loc, len, tmp);
+  VAR pbuf: PWide; k: CARDINAL;
+  BEGIN                                            (* straight from the rope — any length, no buffer *)
     pbuf := CAST(PWide, buffer); k := 0;
-    WHILE k < len DO pbuf^[k] := tmp[k]; INC(k) END
+    WHILE k < len DO pbuf^[k] := TextRope.CharAt(box^.r, loc + k); INC(k) END
   END GetCharacters;
 END RopeString;
 
@@ -146,7 +145,7 @@ CLASS RopeStore;
     NEW(runs); runs^.count := 0
   END Setup;
   PROCEDURE RelexEdit (editLoc, removed, inserted: CARDINAL);
-  VAR lineStart, lineEnd, docLen, oldEnd: CARDINAL; sub: ARRAY [0..65535] OF CHAR; delta: INTEGER;
+  VAR lineStart, lineEnd, docLen, oldEnd: CARDINAL; sub: ARRAY [0..262143] OF CHAR; delta: INTEGER;
   BEGIN
     docLen := TextRope.Length(box^.r);
     lineStart := editLoc;
@@ -164,7 +163,7 @@ CLASS RopeStore;
   PROCEDURE String (): ObjC.Id;
   BEGIN RETURN ropeStr END String;
   PROCEDURE ReplaceChars (loc, len: CARDINAL; s: ObjC.Id) <* selector "replaceCharactersInRange:withString:" *>;
-  VAR text: ARRAY [0..65535] OF CHAR; inserted: CARDINAL;
+  VAR text: ARRAY [0..262143] OF CHAR; inserted: CARDINAL;
   BEGIN
     inserted := s0i(s, ObjC.Selector("length"));
     box^.r := TextRope.DeleteRange(box^.r, loc, len);
@@ -197,7 +196,7 @@ END RopeStore;
 CLASS RopeTextView;
   <* cocoa "NSTextView" *>
   PROCEDURE InsertNewline (sender: ObjC.Id) <* selector "insertNewline:" *>;
-  VAR loc, ls, i, k: CARDINAL; buf: ARRAY [0..65535] OF CHAR; ins: ARRAY [0..255] OF CHAR; me: ObjC.Id;
+  VAR loc, ls, i, k: CARDINAL; buf: ARRAY [0..262143] OF CHAR; ins: ARRAY [0..255] OF CHAR; me: ObjC.Id;
   BEGIN
     me := CAST(ObjC.Id, SELF);
     loc := s0i(me, ObjC.Selector("selectedRange"));     (* NSRange.location is returned in x0 *)

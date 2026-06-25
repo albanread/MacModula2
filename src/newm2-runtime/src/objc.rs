@@ -75,8 +75,10 @@ fn wide_to_cstring(ptr: *const u16, high: u64) -> Option<CString> {
     if ptr.is_null() {
         return None;
     }
-    // `high` is HIGH(arr) = len-1; allow a generous bound and stop at NUL.
-    let cap = (high as usize).saturating_add(1).min(4096);
+    // `high` is HIGH(arr) = the array's last index, so it bounds the read; stop
+    // at NUL. (A large sanity ceiling guards against a bogus `high`; the old
+    // 4096 cap silently truncated any text — e.g. an editor buffer — over 4 KB.)
+    let cap = (high as usize).saturating_add(1).min(64 * 1024 * 1024);
     let units = unsafe { std::slice::from_raw_parts(ptr, cap) };
     let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
     let s = String::from_utf16_lossy(&units[..end]);

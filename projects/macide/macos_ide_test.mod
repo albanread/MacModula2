@@ -19,7 +19,7 @@ TYPE SendRange = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;
 
 VAR
   gEditor: ObjC.Id;
-  script, out: ARRAY [0..16383] OF CHAR;
+  script, out: ARRAY [0..262143] OF CHAR;
   nl: ARRAY [0..1] OF CHAR;
   s0: ObjC.Send0; sp: ObjC.SendP; srange: SendRange;
 
@@ -34,27 +34,31 @@ BEGIN
   j := 0; WHILE i > 0 DO DEC(i); s[j] := d[i]; INC(j) END; s[j] := CHR(0)
 END CardToStr;
 
-PROCEDURE CmdSetText (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR;
+PROCEDURE CmdSetText (): BOOLEAN; VAR t: ARRAY [0..262143] OF CHAR;
 BEGIN Ptcl.Arg(1, t); Cocoa.SetEditorText(gEditor, t); RETURN TRUE END CmdSetText;
 
-PROCEDURE CmdGetText (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR;
+PROCEDURE CmdGetText (): BOOLEAN; VAR t: ARRAY [0..262143] OF CHAR;
 BEGIN Cocoa.EditorText(gEditor, t); Ptcl.Result(t); RETURN TRUE END CmdGetText;
 
-PROCEDURE CmdSave (): BOOLEAN; VAR path, t: ARRAY [0..16383] OF CHAR; rc: INTEGER;
+PROCEDURE CmdSave (): BOOLEAN; VAR path, t: ARRAY [0..262143] OF CHAR; rc: INTEGER;
 BEGIN
   Ptcl.Arg(1, path); Cocoa.EditorText(gEditor, t); rc := Proc.WriteFile(path, t);
   IF rc = 0 THEN RETURN TRUE ELSE Ptcl.Fail("write failed"); RETURN FALSE END
 END CmdSave;
 
-PROCEDURE CmdLoad (): BOOLEAN; VAR path, t: ARRAY [0..16383] OF CHAR; n: INTEGER;
+PROCEDURE CmdLoad (): BOOLEAN; VAR path, t: ARRAY [0..262143] OF CHAR; n: INTEGER;
 BEGIN
   Ptcl.Arg(1, path); n := Proc.ReadFile(path, t);
   IF n >= 0 THEN Cocoa.SetEditorText(gEditor, t); RETURN TRUE
   ELSE Ptcl.Fail("read failed"); RETURN FALSE END
 END CmdLoad;
 
-PROCEDURE CmdLen (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR; s: ARRAY [0..31] OF CHAR;
+PROCEDURE CmdLen (): BOOLEAN; VAR t: ARRAY [0..262143] OF CHAR; s: ARRAY [0..31] OF CHAR;
 BEGIN Cocoa.EditorText(gEditor, t); CardToStr(Length(t), s); Ptcl.Result(s); RETURN TRUE END CmdLen;
+
+PROCEDURE CmdFileLen (): BOOLEAN;   (* filelen <path> : character count of a file on disk *)
+VAR path, t: ARRAY [0..262143] OF CHAR; n: INTEGER; s: ARRAY [0..31] OF CHAR;
+BEGIN Ptcl.Arg(1, path); n := Proc.ReadFile(path, t); CardToStr(Length(t), s); Ptcl.Result(s); RETURN TRUE END CmdFileLen;
 
 PROCEDURE CmdSetCursor (): BOOLEAN; VAR ig: ObjC.Id;
 BEGIN ig := srange(Tv(), ObjC.Selector("setSelectedRange:"), VAL(CARDINAL, Ptcl.ArgInt(1)), 0); RETURN TRUE END CmdSetCursor;
@@ -63,7 +67,7 @@ PROCEDURE CmdEnter (): BOOLEAN; VAR ig: ObjC.Id;
 BEGIN ig := sp(Tv(), ObjC.Selector("insertNewline:"), NIL); RETURN TRUE END CmdEnter;
 
 PROCEDURE CmdBuildRun (): BOOLEAN;
-VAR src, outp: ARRAY [0..16383] OF CHAR; s: ARRAY [0..31] OF CHAR; rc, ix: INTEGER;
+VAR src, outp: ARRAY [0..262143] OF CHAR; s: ARRAY [0..31] OF CHAR; rc, ix: INTEGER;
 BEGIN
   Cocoa.EditorText(gEditor, src);
   ix := Proc.WriteFile("/tmp/ide_test_build.mod", src);
@@ -71,7 +75,7 @@ BEGIN
   CardToStr(VAL(CARDINAL, rc), s); Ptcl.Result(s); RETURN TRUE
 END CmdBuildRun;
 
-PROCEDURE CmdExpect (): BOOLEAN; VAR a, b: ARRAY [0..16383] OF CHAR;
+PROCEDURE CmdExpect (): BOOLEAN; VAR a, b: ARRAY [0..262143] OF CHAR;
 BEGIN
   Ptcl.Arg(1, a); Ptcl.Arg(2, b);
   IF Equal(a, b) THEN Ptcl.Result("ok"); RETURN TRUE ELSE Ptcl.Fail("mismatch"); RETURN FALSE END
@@ -99,7 +103,7 @@ BEGIN
   Ptcl.Register("save", CmdSave);         Ptcl.Register("load", CmdLoad);
   Ptcl.Register("len", CmdLen);           Ptcl.Register("setcursor", CmdSetCursor);
   Ptcl.Register("enter", CmdEnter);       Ptcl.Register("buildrun", CmdBuildRun);
-  Ptcl.Register("expect", CmdExpect);
+  Ptcl.Register("expect", CmdExpect);     Ptcl.Register("filelen", CmdFileLen);
 
   SC("settext {MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.}");
   SC("save /tmp/ide_sample.mod");

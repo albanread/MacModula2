@@ -289,7 +289,7 @@ END ShowAssist;
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
 PROCEDURE OpenDoc (tag: INTEGER);
-VAR full, text: ARRAY [0..32767] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
+VAR full, text: ARRAY [0..262143] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
 BEGIN
   isLib := tag >= LibBase;
   IF isLib THEN idx := tag - LibBase;
@@ -337,7 +337,7 @@ CLASS IDE;
     IF Cocoa.OpenFolder(path) THEN Assign(path, gProjDir); RebuildList(FALSE) END
   END OnOpen;
   PROCEDURE OnSave (sender: ObjC.Id);              (* "onSave:" *)
-  VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
+  VAR sel, ix: INTEGER; src: ARRAY [0..262143] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
@@ -347,7 +347,7 @@ CLASS IDE;
     IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
   PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
-  VAR sel, ix, rc, marked, errLine: INTEGER; src, out: ARRAY [0..32767] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
+  VAR sel, ix, rc, marked, errLine: INTEGER; src: ARRAY [0..262143] OF CHAR; out: ARRAY [0..65535] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
