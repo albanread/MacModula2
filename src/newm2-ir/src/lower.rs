@@ -4734,10 +4734,16 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         else {
             return None;
         };
-        let (call_sig, object_record, sig) = {
+        let (call_sig, msgsend_sig, object_record, sig, sel_name) = {
             let cls = self.ctx.sema.classes.get(class);
             let slot = &cls.vtable[vtable_index as usize];
-            (slot.call_sig, cls.object_record, slot.sig.clone())
+            (
+                slot.call_sig,
+                slot.msgsend_sig,
+                cls.object_record,
+                slot.sig.clone(),
+                objc_selector(&slot.name, slot.sig.params.len()),
+            )
         };
         let call_sig = call_sig?;
         // Receiver = the designator without its final method selector.
@@ -4747,6 +4753,60 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             span: d.span,
         };
         let obj = self.eval_designator_val(&recv);
+
+        // macOS (Max Mac Native): an M2 object is an Obj-C object, so a method
+        // call IS a message send — objc_msgSend(self, @selector(...), args…) —
+        // not a native vtable load (field 0 is the isa, not our vtable). See
+        // docs/design/cocoa-classes.md.
+        if cfg!(target_os = "macos") {
+            if let Some(msig) = msgsend_sig {
+                let addr = self.ctx.sema.types.builtin(Builtin::Address);
+                let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+                // Intern the selector: sel := sel_registerName("name:").
+                let sel_ptr = self.fresh();
+                self.push(Inst::Const { dst: sel_ptr, val: ConstVal::Str(sel_name.clone()) });
+                let sel_high = self.fresh();
+                let h = (sel_name.chars().count() as i128 - 1).max(0);
+                self.push(Inst::Const { dst: sel_high, val: ConstVal::Int(h) });
+                let sel = self
+                    .call_runtime(
+                        "nm2_objc_sel",
+                        vec![
+                            IrParam { name: "n".into(), ty: addr, is_var: false },
+                            IrParam { name: "h".into(), ty: card, is_var: false },
+                        ],
+                        Some(addr),
+                        vec![sel_ptr, sel_high],
+                    )
+                    .unwrap();
+                let msgsend =
+                    self.call_runtime("nm2_objc_msgsend_ptr", vec![], Some(addr), vec![]).unwrap();
+                // Args: self, _cmd(sel), then the declared arguments.
+                let mut arg_vals = vec![obj, sel];
+                for (i, a) in args.iter().enumerate() {
+                    let is_var = sig
+                        .params
+                        .get(i)
+                        .map(|p| p.mode == newm2_sema::types::ParamMode::Var)
+                        .unwrap_or(false);
+                    if is_var {
+                        if let ast::Expr::Designator(dd) = a {
+                            arg_vals.push(self.eval_lvalue(dd));
+                            continue;
+                        }
+                    }
+                    arg_vals.push(self.eval_expr(a));
+                }
+                let dst = self.fresh();
+                self.push(Inst::IndCall {
+                    dst: Some(dst),
+                    callee: msgsend,
+                    sig: msig,
+                    args: arg_vals,
+                });
+                return Some(dst);
+            }
+        }
         // Type the object pointer as the object record so field 0 (vtable) GEPs.
         let obj_typed = match object_record {
             Some(or) => {

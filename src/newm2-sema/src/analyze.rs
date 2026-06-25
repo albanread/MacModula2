@@ -6134,8 +6134,16 @@ fn synthesize_vtable_call_sigs(ctx: &mut Ctx, cid: ClassSymbolId) {
         })
         .collect();
     for (i, params, return_ty) in descs {
-        let proc_ty = ctx.types.alloc(TypeKind::Proc { params, return_ty });
-        ctx.classes.get_mut(cid).vtable[i].call_sig = Some(proc_ty);
+        // SELF-first dispatch sig (native vtable path).
+        let proc_ty = ctx.types.alloc(TypeKind::Proc { params: params.clone(), return_ty });
+        // macOS objc_msgSend sig: insert the hidden `_cmd` (SEL) after SELF, so
+        // an M2 method call lowers to `objc_msgSend(self, sel, params…)`.
+        let mut msg_params = params;
+        msg_params.insert(1, ProcParam { mode: ParamMode::Value, ty: addr });
+        let msgsend_ty = ctx.types.alloc(TypeKind::Proc { params: msg_params, return_ty });
+        let slot = &mut ctx.classes.get_mut(cid).vtable[i];
+        slot.call_sig = Some(proc_ty);
+        slot.msgsend_sig = Some(msgsend_ty);
     }
 }
 

@@ -103,6 +103,10 @@ pub struct VtableSlot {
     /// hidden `SELF` receiver followed by the declared parameters. Filled by
     /// sema once the type system is available; codegen reads it for dispatch.
     pub call_sig: Option<TypeId>,
+    /// macOS only: like `call_sig` but with the hidden Obj-C `_cmd` (SEL) slot
+    /// inserted after SELF — `(self, _cmd, params…)`. Used to type the indirect
+    /// `objc_msgSend` call so an M2 method call lowers to a real message send.
+    pub msgsend_sig: Option<TypeId>,
 }
 
 // ---- Arena ----------------------------------------------------------------
@@ -222,6 +226,7 @@ impl ClassArena {
                         defining_class: id,
                         is_abstract: method.is_abstract,
                         call_sig: None,
+                        msgsend_sig: None,
                     });
                 }
             } else {
@@ -232,6 +237,7 @@ impl ClassArena {
                     defining_class: id,
                     is_abstract: method.is_abstract,
                     call_sig: None,
+                    msgsend_sig: None,
                 });
             }
         }
