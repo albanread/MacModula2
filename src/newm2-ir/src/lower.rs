@@ -245,7 +245,7 @@ pub fn lower_module_opts(
                 .map(|slot| {
                     let def_class = sema.classes.get(slot.defining_class);
                     ObjCMethod {
-                        selector: objc_selector(&slot.name, slot.sig.params.len()),
+                        selector: slot_selector(sema, slot),
                         imp_fn: format!("{}.{}", def_class.name, slot.name),
                         types: objc_method_encoding(sema, &slot.sig),
                     }
@@ -320,6 +320,18 @@ pub fn lower_module_opts(
 // one trailing colon. An explicit selector pin (for AppKit overrides like
 // `drawRect:`) is a later stage; for now common single-keyword AppKit selectors
 // fall out of derivation directly (`DrawRect` -> `drawRect:`).
+
+/// The Obj-C selector for a vtable slot: the explicit pin from a
+/// `<* selector "…" *>` pragma on the defining class's method, else derived from
+/// the method name.
+fn slot_selector(sema: &SemaResult, slot: &newm2_sema::class::VtableSlot) -> String {
+    let def = sema.classes.get(slot.defining_class);
+    def.own_methods
+        .iter()
+        .find(|m| m.name == slot.name)
+        .and_then(|m| m.objc_selector.clone())
+        .unwrap_or_else(|| objc_selector(&slot.name, slot.sig.params.len()))
+}
 
 fn objc_selector(method_name: &str, n_params: usize) -> String {
     let mut s = String::new();
@@ -4759,7 +4771,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 slot.msgsend_sig,
                 cls.object_record,
                 slot.sig.clone(),
-                objc_selector(&slot.name, slot.sig.params.len()),
+                slot_selector(self.ctx.sema, slot),
             )
         };
         let call_sig = call_sig?;

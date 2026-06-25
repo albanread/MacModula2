@@ -91,6 +91,10 @@ pub struct MethodSlot {
     pub is_override: bool,
     /// Index into `vtable` where this method lives.
     pub vtable_index: usize,
+    /// macOS: an explicit Obj-C selector from a `<* selector "initWithFrame:" *>`
+    /// method pragma, for multi-keyword selectors that name derivation can't
+    /// produce. `None` → derive the selector from the method name.
+    pub objc_selector: Option<String>,
     /// The COM vtable ordinal asserted by a `<* @N *>` annotation on the method
     /// (emitted by winapi-gen from the winmd, or hand-written). If `Some(n)`,
     /// `validate` checks `vtable_index == n` — the machine-check that makes the
@@ -411,6 +415,7 @@ mod tests {
                 is_override: false,
                 vtable_index: 0,
                 declared_slot: None,
+                objc_selector: None,
             },
             MethodSlot {
                 name: "AddRef".into(),
@@ -419,6 +424,7 @@ mod tests {
                 is_override: false,
                 vtable_index: 0,
                 declared_slot: None,
+                objc_selector: None,
             },
             MethodSlot {
                 name: "Release".into(),
@@ -427,6 +433,7 @@ mod tests {
                 is_override: false,
                 vtable_index: 0,
                 declared_slot: None,
+                objc_selector: None,
             },
         ];
         ca.get_mut(iu_id).body_resolved = true;
@@ -458,6 +465,7 @@ mod tests {
             is_override: false,
             vtable_index: 0,
             declared_slot: None,
+            objc_selector: None,
         }];
         ca.get_mut(base_id).body_resolved = true;
         ca.resolve_vtable(base_id);
@@ -472,6 +480,7 @@ mod tests {
             is_override: true,
             vtable_index: 0,
             declared_slot: None,
+            objc_selector: None,
         }];
         ca.get_mut(der_id).body_resolved = true;
         ca.resolve_vtable(der_id);
@@ -501,6 +510,7 @@ mod tests {
             is_override: false,
             vtable_index: 0,
             declared_slot: None,
+            objc_selector: None,
         }];
         ca.get_mut(base_id).body_resolved = true;
         ca.resolve_vtable(base_id);

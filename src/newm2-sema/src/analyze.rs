@@ -5903,6 +5903,19 @@ fn analyse_stmt(
 /// winapi-gen emits these from the winmd so the compiler can machine-check that
 /// each method's computed slot matches the metadata; they may also be written by
 /// hand. Returns the declared slot ordinal N.
+/// macOS: a `<* selector "initWithFrame:" *>` method pragma pins the Obj-C
+/// selector (for multi-keyword selectors derivation can't produce).
+fn parse_selector_pragma(pragmas: &[ast::Pragma]) -> Option<String> {
+    for p in pragmas {
+        let rest = p.body.trim().strip_prefix("selector")?;
+        let q1 = rest.find('"')?;
+        let after = &rest[q1 + 1..];
+        let q2 = after.find('"')?;
+        return Some(after[..q2].to_string());
+    }
+    None
+}
+
 fn parse_ordinal_pragma(pragmas: &[ast::Pragma]) -> Option<usize> {
     for p in pragmas {
         let body = p.body.trim();
@@ -6053,6 +6066,7 @@ fn resolve_class_decl(
                     is_override: m.is_override,
                     vtable_index: 0, // filled by resolve_vtable
                     declared_slot: parse_ordinal_pragma(&m.pragmas),
+                    objc_selector: parse_selector_pragma(&m.pragmas),
                 });
             }
             ast::ClassMember::Pragma(pr) => {
