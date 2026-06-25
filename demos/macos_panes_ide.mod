@@ -182,6 +182,8 @@ BEGIN
   ed := Cocoa.MakeEditor(0.0, 0.0, 760.0, 420.0);
   Cocoa.SetEditorText(ed, text);
   Cocoa.HighlightEditor(ed);
+  (* make the controller the text view's delegate, so edits drive autosave *)
+  ig := sp(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setDelegate:"), ctrl);
   it := Cocoa.AddTab(tabs, full, ed);
   IF gTabCount <= 63 THEN gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); INC(gTabCount) END
 END OpenDoc;
@@ -236,6 +238,26 @@ CLASS IDE;
     ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE);
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
+  PROCEDURE OnClose (sender: ObjC.Id);            (* "onClose:" — close the active tab (⌘W) *)
+  VAR sel, i: INTEGER; item: ObjC.Id;
+  BEGIN
+    sel := Cocoa.SelectedTab(tabs);
+    IF sel < 0 THEN RETURN END;
+    item := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("tabViewItemAtIndex:"), sel);
+    ig := sp(CAST(ObjC.Id, tabs), ObjC.Selector("removeTabViewItem:"), item);
+    FOR i := sel TO gTabCount - 2 DO gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]) END;
+    DEC(gTabCount);
+    Cocoa.SetText(status, "Tab closed.")
+  END OnClose;
+  PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave *)
+  VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
+  BEGIN
+    sel := Cocoa.SelectedTab(tabs);
+    IF sel < 0 THEN RETURN END;
+    Cocoa.EditorText(gEditors[sel], src);
+    ix := Proc.WriteFile(gPaths[sel], src);
+    IF ix = 0 THEN Cocoa.SetText(status, "Autosaved.") END
+  END TextDidChange;
 END IDE;
 
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mBuild, mHelp: ObjC.Id; f1key: ARRAY [0..2] OF CHAR;
@@ -255,10 +277,11 @@ BEGIN
   content := Cocoa.ContentView(win);
   NEW(ide); ctrl := CAST(ObjC.Id, ide);
 
-  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 80.0,  "Open", "onOpen:"));
-  Cocoa.AddSubview(content, CtrlButton(92.0,  604.0, 80.0,  "Save", "onSave:"));
-  Cocoa.AddSubview(content, CtrlButton(176.0, 604.0, 120.0, "Build & Run", "onBuildRun:"));
-  status := Cocoa.MakeLabel(308.0, 610.0, 600.0, 22.0, "Ready.");
+  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 76.0,  "Open", "onOpen:"));
+  Cocoa.AddSubview(content, CtrlButton(88.0,  604.0, 64.0,  "Save", "onSave:"));
+  Cocoa.AddSubview(content, CtrlButton(156.0, 604.0, 104.0, "Build & Run", "onBuildRun:"));
+  Cocoa.AddSubview(content, CtrlButton(264.0, 604.0, 92.0,  "✕ Close Tab", "onClose:"));
+  status := Cocoa.MakeLabel(362.0, 610.0, 636.0, 22.0, "Ready.");
   Cocoa.AddSubview(content, status);
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
   Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:"));
@@ -320,6 +343,7 @@ BEGIN
   mFile := AddMenu(menuBar, "File");
   AddItem(mFile, ctrl, "Open Folder…", "onOpen:", "o", 0);
   AddItem(mFile, ctrl, "Save", "onSave:", "s", 0);
+  AddItem(mFile, ctrl, "Close Tab", "onClose:", "w", 0);
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
   mHelp := AddMenu(menuBar, "Help");
