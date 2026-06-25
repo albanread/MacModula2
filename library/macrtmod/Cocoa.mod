@@ -42,6 +42,9 @@ END InitApp;
 PROCEDURE RunFor (seconds: REAL);
 BEGIN ObjC.Pump(seconds) END RunFor;
 
+PROCEDURE RunApp;
+BEGIN ObjC.RunApp END RunApp;
+
 PROCEDURE MakeWindow (width, height: REAL; title: ARRAY OF CHAR): Window;
 VAR w: Window; ignore: Object;
 BEGIN

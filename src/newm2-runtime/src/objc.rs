@@ -419,6 +419,83 @@ pub extern "C-unwind" fn nm2_ide_highlight(textview: *mut c_void) {
     }
 }
 
+/// `ObjC.RunApp()` — install a minimal main menu (so Cmd-Q quits), activate the
+/// app, and run the AppKit event loop until the user quits. This is the real,
+/// interactive desktop run (blocking), as opposed to the bounded `Pump`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_cocoa_run_app() {
+    bootstrap();
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    let getcls = sym_or_null("objc_getClass");
+    if msg.is_null() || reg.is_null() || getcls.is_null() {
+        return;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+    let s0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s1: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s1b: extern "C" fn(*mut c_void, *mut c_void, bool) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let s3: extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+    ) -> *mut c_void = unsafe { std::mem::transmute(msg) };
+    let sel = |n: &CStr| reg(n.as_ptr());
+    let nsstr = |s: &str| -> *mut c_void {
+        match CString::new(s) {
+            Ok(c) => nm2_objc_nsstring_via(getcls, reg, msg, c.as_ptr()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    };
+    let alloc_init = |cls_name: &CStr| -> *mut c_void {
+        let cls = getcls(cls_name.as_ptr());
+        s0(s0(cls, sel(c"alloc")), sel(c"init"))
+    };
+
+    let app = s0(getcls(c"NSApplication".as_ptr()), sel(c"sharedApplication"));
+    let _ = s1(app, sel(c"setActivationPolicy:"), 0 as *mut c_void); // Regular
+
+    // Minimal main menu: one app menu containing Quit (Cmd-Q -> terminate:).
+    let main_menu = alloc_init(c"NSMenu");
+    let app_item = alloc_init(c"NSMenuItem");
+    let _ = s1(main_menu, sel(c"addItem:"), app_item);
+    let app_menu = alloc_init(c"NSMenu");
+    let _ = s1(app_item, sel(c"setSubmenu:"), app_menu);
+    let quit = s0(getcls(c"NSMenuItem".as_ptr()), sel(c"alloc"));
+    // initWithTitle:(NSString) action:(SEL) keyEquivalent:(NSString)
+    let quit = s3(
+        quit,
+        sel(c"initWithTitle:action:keyEquivalent:"),
+        nsstr("Quit"),
+        sel(c"terminate:"),
+        nsstr("q"),
+    );
+    let _ = s1(app_menu, sel(c"addItem:"), quit);
+    let _ = s1(app, sel(c"setMainMenu:"), main_menu);
+
+    let _ = s1b(app, sel(c"activateIgnoringOtherApps:"), true);
+    let _ = s0(app, sel(c"run"));
+}
+
+// Internal: build an NSString from a UTF-8 C pointer using already-resolved fns.
+fn nm2_objc_nsstring_via(
+    getcls: extern "C" fn(*const i8) -> *mut c_void,
+    reg: extern "C" fn(*const i8) -> *mut c_void,
+    msg: *mut c_void,
+    utf8: *const i8,
+) -> *mut c_void {
+    let send: extern "C" fn(*mut c_void, *mut c_void, *const i8) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let cls = getcls(c"NSString".as_ptr());
+    send(cls, reg(c"stringWithUTF8String:".as_ptr()), utf8)
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).

@@ -24,6 +24,7 @@ TYPE
 (* application lifecycle *)
 PROCEDURE InitApp;                       (* shared NSApplication, regular policy *)
 PROCEDURE RunFor (seconds: REAL);        (* run the event loop for a while *)
+PROCEDURE RunApp;                        (* run interactively until quit (blocks) *)
 
 (* windows *)
 PROCEDURE MakeWindow (width, height: REAL; title: ARRAY OF CHAR): Window;

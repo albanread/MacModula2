@@ -54,6 +54,10 @@ PROCEDURE Highlight (textview: Id);
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);
 
+(* Install a minimal Quit menu, activate, and run the AppKit event loop until
+   the user quits (blocking) — the real interactive desktop run. *)
+PROCEDURE RunApp;
+
 (* Render an NSView (with its subviews) offscreen and write it as a PNG. Works
    without a window server, so a Cocoa UI can be captured to a file. *)
 PROCEDURE SnapshotView (view: Id; path: ARRAY OF CHAR): BOOLEAN;
