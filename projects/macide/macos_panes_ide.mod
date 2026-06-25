@@ -22,6 +22,7 @@ FROM Strings IMPORT Assign, Append;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT Proc;
+IMPORT RopeEditor;
 
 CONST
   MaxFiles = 256;
@@ -304,9 +305,8 @@ BEGIN
   END;
   n := Proc.ReadFile(full, text);
   IF n < 0 THEN RETURN END;
-  ed := Cocoa.MakeEditor(0.0, 0.0, 760.0, 420.0);
-  Cocoa.SetEditorText(ed, text);
-  Cocoa.HighlightEditor(ed);
+  ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));  (* rope-backed editor *)
+  Cocoa.SetEditorText(ed, text);                 (* colours itself; no HighlightEditor needed *)
   tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
   ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);       (* ⌘Z / ⌘⇧Z *)
   ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);      (* ⌘F find bar *)
