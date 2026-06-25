@@ -251,9 +251,17 @@ pub fn lower_module_opts(
                     }
                 })
                 .collect();
-            let super_name = match class.base {
-                Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
-                None => "NSObject".to_string(),
+            // A `<* cocoa "NSView" *>` class pragma roots the M2 class at a real
+            // Cocoa class: it is registered as a subclass of that Obj-C class, so
+            // AppKit sees it as (e.g.) a genuine NSView. Otherwise an INHERITed
+            // M2 base, else NSObject. See docs/macm2-runtime.md.
+            let super_name = if let Some(s) = cocoa_super_pragma(cd) {
+                s
+            } else {
+                match class.base {
+                    Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
+                    None => "NSObject".to_string(),
+                }
             };
             if let Some(object_record) = class.object_record {
                 let base_object_record =
@@ -312,6 +320,24 @@ pub fn lower_module_opts(
 // one trailing colon. An explicit selector pin (for AppKit overrides like
 // `drawRect:`) is a later stage; for now common single-keyword AppKit selectors
 // fall out of derivation directly (`DrawRect` -> `drawRect:`).
+
+/// A `<* cocoa "NSView" *>` class pragma names the Obj-C superclass to register
+/// this M2 class under (so it becomes a real NSView/NSWindow/… subclass).
+/// Returns the quoted name if present. Lenient about spacing/punctuation.
+fn cocoa_super_pragma(cd: &ast::ClassDecl) -> Option<String> {
+    for m in &cd.members {
+        let ast::ClassMember::Pragma(p) = m else { continue };
+        let body = p.body.trim();
+        if let Some(rest) = body.strip_prefix("cocoa") {
+            // first double-quoted token after `cocoa`
+            let q1 = rest.find('"')?;
+            let after = &rest[q1 + 1..];
+            let q2 = after.find('"')?;
+            return Some(after[..q2].to_string());
+        }
+    }
+    None
+}
 
 fn objc_selector(method_name: &str, n_params: usize) -> String {
     let mut s = String::new();
