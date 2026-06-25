@@ -204,7 +204,7 @@ CLASS IDE;
     IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
   PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
-  VAR sel, ix, rc, marked: INTEGER; src, out: ARRAY [0..32767] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
+  VAR sel, ix, rc, marked, errLine: INTEGER; src, out: ARRAY [0..32767] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
@@ -217,7 +217,11 @@ CLASS IDE;
     Cocoa.SetEditorText(output, out);
     marked := Cocoa.MarkErrors(gEditors[sel], out);
     IF rc = 0 THEN Cocoa.SetText(status, "Build & run succeeded (exit 0).")
-    ELSE Cocoa.SetText(status, "Build/run reported errors.") END
+    ELSE
+      errLine := Cocoa.GotoFirstError(gEditors[sel], out);   (* jump the cursor to the first error *)
+      IF errLine > 0 THEN Cocoa.SetText(status, "Build failed — jumped to first error.")
+      ELSE Cocoa.SetText(status, "Build/run reported errors.") END
+    END
   END OnBuildRun;
   PROCEDURE OnHelp (sender: ObjC.Id);              (* "onHelp:" — F1 toggles the help pane *)
   BEGIN
@@ -226,6 +230,12 @@ CLASS IDE;
     IF gHelpVisible THEN Cocoa.SetText(status, "Help shown (F1 to hide).")
     ELSE Cocoa.SetText(status, "Help hidden (F1 to show).") END
   END OnHelp;
+  PROCEDURE OnHome (sender: ObjC.Id);             (* "onHome:" — reveal the help/welcome pane *)
+  BEGIN
+    gHelpVisible := TRUE;
+    ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE);
+    Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
+  END OnHome;
 END IDE;
 
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mBuild, mHelp: ObjC.Id; f1key: ARRAY [0..2] OF CHAR;
@@ -248,15 +258,19 @@ BEGIN
   Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 80.0,  "Open", "onOpen:"));
   Cocoa.AddSubview(content, CtrlButton(92.0,  604.0, 80.0,  "Save", "onSave:"));
   Cocoa.AddSubview(content, CtrlButton(176.0, 604.0, 120.0, "Build & Run", "onBuildRun:"));
-  status := Cocoa.MakeLabel(308.0, 610.0, 784.0, 22.0, "Ready.");
+  status := Cocoa.MakeLabel(308.0, 610.0, 600.0, 22.0, "Ready.");
   Cocoa.AddSubview(content, status);
+  (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
+  Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:"));
 
   outerSplit := MakeSplit(0.0, 0.0, 1100.0, 596.0, TRUE);
   ig := sendIInt(CAST(ObjC.Id, outerSplit), ObjC.Selector("setAutoresizingMask:"), 18);
   Cocoa.AddSubview(content, outerSplit);
 
-  (* the sidebar is itself a split: PROJECT list (top) over LIBRARY list (bottom) *)
+  (* the sidebar is itself a split: PROJECT list (top) over LIBRARY list (bottom),
+     with a thick, draggable divider between the two scrolling lists *)
   sidebar := MakeSplit(0.0, 0.0, 220.0, 596.0, FALSE);
+  ig := sendIInt(CAST(ObjC.Id, sidebar), ObjC.Selector("setDividerStyle:"), 1);  (* thick *)
   projScroll := MakeScroll(0.0, 0.0, 220.0, 360.0, projDoc);
   libScroll := MakeScroll(0.0, 0.0, 220.0, 230.0, libDoc);
   Cocoa.AddSubview(sidebar, projScroll);

@@ -875,8 +875,23 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         if !(line.contains("error") || line.contains("warning")) {
             continue;
         }
-        // `name:LINE: sev: message` → field 1 is the line number
-        let Some(num) = line.split(':').nth(1).and_then(|f| f.trim().parse::<usize>().ok()) else {
+        // `name:LINE: sev: message` (field 1 is the line number), with an
+        // `… at line N …` fallback for parse/lex diagnostics.
+        let num = line
+            .split(':')
+            .nth(1)
+            .and_then(|f| f.trim().parse::<usize>().ok())
+            .or_else(|| {
+                line.find("line ").and_then(|i| {
+                    line[i + 5..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<usize>()
+                        .ok()
+                })
+            });
+        let Some(num) = num else {
             continue;
         };
         if num == 0 || num > line_start.len() {
@@ -892,6 +907,107 @@ pub extern "C-unwind" fn nm2_ide_mark_errors(
         count += 1;
     }
     count
+}
+
+/// `Cocoa.GotoFirstError(editor, out)` — find the first error/warning line in the
+/// compiler output `out`, then select that line in `editor` and scroll it into
+/// view. Returns the 1-based line number, or 0 if there is none. Mirrors
+/// `nm2_ide_mark_errors`' parse (`name:LINE: sev: msg`), with an `at line N`
+/// fallback for parse/lex diagnostics.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_goto_first_error(
+    textview: *mut c_void,
+    out_ptr: *const u16,
+    out_high: u64,
+) -> i64 {
+    bootstrap();
+    if textview.is_null() {
+        return 0;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return 0;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg) };
+    let send_str: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let set_range: extern "C" fn(*mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+    let scroll: extern "C" fn(*mut c_void, *mut c_void, u64, u64) =
+        unsafe { std::mem::transmute(msg) };
+
+    let out = {
+        if out_ptr.is_null() {
+            String::new()
+        } else {
+            let cap = (out_high as usize).saturating_add(1);
+            let units = unsafe { std::slice::from_raw_parts(out_ptr, cap) };
+            let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+            String::from_utf16_lossy(&units[..end])
+        }
+    };
+    // first diagnostic line number
+    let mut target = 0usize;
+    for line in out.lines() {
+        if !(line.contains("error") || line.contains("warning")) {
+            continue;
+        }
+        if let Some(n) = line.split(':').nth(1).and_then(|f| f.trim().parse::<usize>().ok()) {
+            target = n;
+            break;
+        }
+        if let Some(idx) = line.find("line ") {
+            let rest = &line[idx + 5..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                target = n;
+                break;
+            }
+        }
+    }
+    if target == 0 {
+        return 0;
+    }
+
+    // line-start offsets in UTF-16 units (NSString range units)
+    let s = send0(textview, reg(c"string".as_ptr()));
+    if s.is_null() {
+        return 0;
+    }
+    let utf8 = send_str(s, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return 0;
+    }
+    let src = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+    let mut off: u64 = 0;
+    let mut cur = 1usize;
+    let mut units = 0u64;
+    let mut len: u64 = 0;
+    for ch in src.chars() {
+        let w = ch.len_utf16() as u64;
+        if cur == target {
+            if ch == '\n' {
+                break;
+            }
+            len += w;
+        }
+        if cur < target {
+            if ch == '\n' {
+                cur += 1;
+                off = units + w;
+            }
+        }
+        units += w;
+        if cur > target {
+            break;
+        }
+    }
+    set_range(textview, reg(c"setSelectedRange:".as_ptr()), off, len);
+    scroll(textview, reg(c"scrollRangeToVisible:".as_ptr()), off, len);
+    target as i64
 }
 
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode

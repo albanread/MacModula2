@@ -320,6 +320,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.OpenFolderPanel".to_string(), "nm2_cocoa_open_folder_panel"));
         v.push(("ObjC.CursorPos".to_string(), "nm2_ide_cursor_pos"));
         v.push(("ObjC.SetCursor".to_string(), "nm2_ide_set_cursor"));
+        v.push(("ObjC.GotoFirstError".to_string(), "nm2_ide_goto_first_error"));
     }
 
     v
@@ -1258,6 +1259,7 @@ fn for_each_runtime_binding(
         bind("ObjC.OpenFolderPanel", newm2_runtime::objc::nm2_cocoa_open_folder_panel as *const ());
         bind("ObjC.CursorPos", newm2_runtime::objc::nm2_ide_cursor_pos as *const ());
         bind("ObjC.SetCursor", newm2_runtime::objc::nm2_ide_set_cursor as *const ());
+        bind("ObjC.GotoFirstError", newm2_runtime::objc::nm2_ide_goto_first_error as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());

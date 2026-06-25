@@ -59,6 +59,10 @@ PROCEDURE MarkErrors (textview: Id; output: ARRAY OF CHAR): INTEGER;
 PROCEDURE CursorPos (textview: Id; VAR line, col: INTEGER);
 PROCEDURE SetCursor (textview: Id; offset: INTEGER);
 
+(* Find the first error/warning line in `output`, select it in `textview` and
+   scroll it into view; returns the 1-based line number (0 if none). *)
+PROCEDURE GotoFirstError (textview: Id; output: ARRAY OF CHAR): INTEGER;
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);

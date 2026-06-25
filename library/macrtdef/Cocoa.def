@@ -48,6 +48,7 @@ PROCEDURE HighlightEditor (editor: View);   (* syntax-color via the M2 lexer *)
 PROCEDURE MarkErrors (editor: View; compilerOutput: ARRAY OF CHAR): INTEGER;
 PROCEDURE EditorCursor (editor: View; VAR line, col: INTEGER);   (* 1-based line, 0-based col *)
 PROCEDURE SetEditorCursor (editor: View; offset: INTEGER);
+PROCEDURE GotoFirstError (editor: View; compilerOutput: ARRAY OF CHAR): INTEGER;  (* jump+scroll to first error *)
 
 PROCEDURE MakeButton (x, y, w, h: REAL; title: ARRAY OF CHAR;
                       action: ActionProc): Control;
