@@ -20,6 +20,8 @@ resolver = "3"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 version = "0.0.0"
+description = "MacModula2 — a Modula-2 compiler and runtime specialized for macOS (Rust + LLVM), with a Cocoa-native object model: a Modula-2 CLASS is an Objective-C object."
+repository = "https://github.com/albanread/MacModula2"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
