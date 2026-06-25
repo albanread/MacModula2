@@ -725,6 +725,17 @@ pub fn run_modules_orc(
     newm2_runtime::nm2_finalize_jit_symbols();
     newm2_runtime::nm2_install_crash_handler();
 
+    // Register Obj-C classes before running any module body. The RTDyld-based
+    // ORC layer does not auto-run llvm.global_ctors (where AOT puts class
+    // registration), so we invoke each module's `M2.objcreg.<name>` constructor
+    // explicitly by symbol — making class-using programs work under `run` too,
+    // not just AOT `build`. Modules without classes have no such symbol
+    // (orc_lookup returns null; run_void_at no-ops).
+    for ir in irs {
+        let addr = orc_lookup(&format!("M2.objcreg.{}", ir.name));
+        let _ = run_void_at(addr, &ir.name, "objcreg");
+    }
+
     // Run each module body in dependency order; finalizers in reverse. (The JIT
     // is intentionally not disposed — the executed/registered code stays mapped,
     // matching the MCJIT path which leaks its engine.)

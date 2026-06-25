@@ -251,11 +251,11 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
 ```
 
 - **AOT (`build`)** runs `llvm.global_ctors` at image load, so class registration
-  happens — this is the supported path for the object model today.
-- **JIT (`run`)** does not yet execute `global_ctors`, so a class-using program
-  under `run` sees its classes unregistered (`NEW` returns nil, gracefully — no
-  crash). Tracked; fix is to run static initializers in `run_modules_orc` or hook
-  registration into module init.
+  happens automatically.
+- **JIT (`run`)** also registers classes: the RTDyld ORC layer does not auto-run
+  `llvm.global_ctors`, so `run_modules_orc` invokes each module's
+  `M2.objcreg.<module>` constructor explicitly by symbol before running the module
+  bodies. Both paths work identically.
 - After changing `src/newm2-runtime/`, rebuild the **staticlib** the AOT linker
   uses: `cargo build -p newm2-runtime` (refreshes `target/debug/libnewm2_runtime.a`).
   `cargo build -p newm2-driver` alone does not refresh it.
@@ -282,6 +282,5 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
   `EXTERNAL` surface.
 - Rewrite the IDE editor as a real `NSView` subclass; retire the hand-written
   trampoline / `Send*` layer.
-- JIT `global_ctors` execution.
 
 See `docs/design/cocoa-classes.md` for the full design and the staged plan.
