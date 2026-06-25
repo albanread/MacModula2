@@ -1275,14 +1275,6 @@ fn analyse_decl_body(
             else {
                 return;
             };
-            // A `<* cocoa "NSView" *>` pragma roots the class at a Cocoa class.
-            for member in &cd.members {
-                if let ast::ClassMember::Pragma(p) = member {
-                    if let Some(name) = parse_cocoa_pragma(&p.body) {
-                        ctx.classes.get_mut(cid).objc_super = Some(name);
-                    }
-                }
-            }
             for member in &cd.members {
                 if let ast::ClassMember::Method(m) = member {
                     if m.body.is_some() {
@@ -5994,6 +5986,16 @@ fn resolve_class_decl(
     // Resolve REVEAL list.
     ctx.classes.get_mut(cid).revealed = cd.reveal.clone();
 
+    // macOS: a `<* cocoa "NSView" *>` pragma roots this class at a Cocoa class.
+    // Set before `validate` so the Cocoa-rooted abstract-method allowance applies.
+    for member in &cd.members {
+        if let ast::ClassMember::Pragma(p) = member {
+            if let Some(name) = parse_cocoa_pragma(&p.body) {
+                ctx.classes.get_mut(cid).objc_super = Some(name);
+            }
+        }
+    }
+
     // Resolve class members.
     let mut own_fields: Vec<FieldSlot> = Vec::new();
     let mut own_methods: Vec<MethodSlot> = Vec::new();
@@ -6180,6 +6182,7 @@ fn check_pragma_known(ctx: &mut Ctx, pr: &ast::Pragma) {
         || body.starts_with("ELSIF")
         || body.starts_with("ELSE")
         || body.starts_with("END")
+        || body.starts_with("cocoa") // <* cocoa "NSView" *> — macOS: root an M2 class at a Cocoa class
         || body.eq_ignore_ascii_case("GUI"); // <*GUI*> — link as a Windows GUI app (driver reads it)
     if !is_known {
         ctx.warning(pr.span, format!("unknown pragma: <*{body}*>"));

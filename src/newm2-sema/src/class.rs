@@ -294,7 +294,12 @@ impl ClassArena {
         let cls = self.get(id);
         let mut errs = Vec::new();
 
-        if !cls.is_abstract {
+        // A Cocoa-rooted class (`<* cocoa "NSView" *>`) may declare ABSTRACT
+        // methods that are *provided by the Cocoa superclass* (e.g. NSView's
+        // `isFlipped`, `setNeedsDisplay:`) — they get no M2 IMP and dispatch
+        // straight to the inherited Obj-C method via objc_msgSend. So an
+        // unimplemented abstract method is not an error there.
+        if !cls.is_abstract && !self.is_cocoa_rooted(id) {
             for slot in &cls.vtable {
                 if slot.is_abstract {
                     errs.push(ClassError {
