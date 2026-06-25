@@ -136,6 +136,11 @@ pub fn emit_module<'ctx>(
         cg.emit_func(func);
     }
 
+    // Pass 2b (macOS): register M2 classes with the Objective-C runtime via a
+    // llvm.global_ctors constructor, so an M2 object is a real Obj-C object.
+    // The IMP functions (`{Class}.{Method}`) now exist to take addresses of.
+    cg.emit_objc_class_registrations();
+
     // Pass 3 (GC mode only): emit `{mod}.init_roots` — registers all
     // pointer-typed module-level static globals with the GC root table.
     // When module-level VARs are stack-allocated there are no Static globals,
@@ -414,6 +419,142 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
 
     // ---- Global declarations ------------------------------------------------
 
+    /// macOS: emit a `llvm.global_ctors` constructor that registers every
+    /// `Global::ObjCClass` with the Objective-C runtime at image load
+    /// (`objc_allocateClassPair` + `class_addMethod` per method +
+    /// `objc_registerClassPair`). This makes an M2 object a genuine Obj-C object
+    /// — the "everything Cocoa below the line" of docs/design/cocoa-classes.md.
+    /// On non-macOS targets lower.rs emits no ObjCClass globals, so this no-ops.
+    fn emit_objc_class_registrations(&self) {
+        use newm2_ir::module::Global;
+        let classes: Vec<&Global> =
+            self.ir.globals.iter().filter(|g| matches!(g, Global::ObjCClass { .. })).collect();
+        if classes.is_empty() {
+            return;
+        }
+
+        let ptr_ty = self.ctx.ptr_type(inkwell::AddressSpace::default());
+        let i8_t = self.ctx.i8_type();
+        let i32_t = self.ctx.i32_type();
+        let i64_t = self.ctx.i64_type();
+        let void_t = self.ctx.void_type();
+
+        // libobjc entry points (opaque pointers: every Obj-C handle is `ptr`).
+        let get_class =
+            self.objc_extern("objc_getClass", ptr_ty.fn_type(&[ptr_ty.into()], false));
+        let alloc_pair = self.objc_extern(
+            "objc_allocateClassPair",
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_t.into()], false),
+        );
+        let sel_reg =
+            self.objc_extern("sel_registerName", ptr_ty.fn_type(&[ptr_ty.into()], false));
+        let add_method = self.objc_extern(
+            "class_addMethod",
+            i8_t.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        );
+        let reg_pair =
+            self.objc_extern("objc_registerClassPair", void_t.fn_type(&[ptr_ty.into()], false));
+
+        let ctor =
+            self.module.add_function(&format!("M2.objcreg.{}", self.ir.name), void_t.fn_type(&[], false), None);
+        let entry = self.ctx.append_basic_block(ctor, "entry");
+        self.builder.position_at_end(entry);
+
+        for g in &classes {
+            let Global::ObjCClass { objc_name, super_name, methods } = g else { continue };
+            let name_ptr = self.objc_cstring(objc_name);
+            let super_ptr = self.objc_cstring(super_name);
+            let super_cls = self
+                .builder
+                .build_call(get_class, &[super_ptr.into()], "super")
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value();
+            let cls = self
+                .builder
+                .build_call(
+                    alloc_pair,
+                    &[super_cls.into(), name_ptr.into(), i64_t.const_zero().into()],
+                    "cls",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .basic()
+                .unwrap()
+                .into_pointer_value();
+            for m in methods {
+                let Some(imp) = self.module.get_function(&m.imp_fn) else { continue };
+                let sel = self
+                    .builder
+                    .build_call(sel_reg, &[self.objc_cstring(&m.selector).into()], "sel")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .basic()
+                    .unwrap()
+                    .into_pointer_value();
+                let types_ptr = self.objc_cstring(&m.types);
+                self.builder
+                    .build_call(
+                        add_method,
+                        &[
+                            cls.into(),
+                            sel.into(),
+                            imp.as_global_value().as_pointer_value().into(),
+                            types_ptr.into(),
+                        ],
+                        "add",
+                    )
+                    .unwrap();
+            }
+            self.builder.build_call(reg_pair, &[cls.into()], "").unwrap();
+        }
+        self.builder.build_return(None).unwrap();
+
+        // Append the constructor to llvm.global_ctors: [{ i32 prio, ptr fn, ptr data }].
+        let ctor_struct =
+            self.ctx.struct_type(&[i32_t.into(), ptr_ty.into(), ptr_ty.into()], false);
+        let entry_val = ctor_struct.const_named_struct(&[
+            i32_t.const_int(65535, false).into(),
+            ctor.as_global_value().as_pointer_value().into(),
+            ptr_ty.const_null().into(),
+        ]);
+        let arr_ty = ctor_struct.array_type(1);
+        let gv = self.module.add_global(arr_ty, None, "llvm.global_ctors");
+        gv.set_initializer(&ctor_struct.const_array(&[entry_val]));
+        gv.set_linkage(inkwell::module::Linkage::Appending);
+    }
+
+    /// Declare (or reuse) a libobjc external function.
+    fn objc_extern(
+        &self,
+        name: &str,
+        ty: inkwell::types::FunctionType<'ctx>,
+    ) -> inkwell::values::FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| self.module.add_function(name, ty, None))
+    }
+
+    /// A private NUL-terminated UTF-8 byte global; returns a pointer to it.
+    /// Deduped by a sanitized name so identical strings coalesce.
+    fn objc_cstring(&self, value: &str) -> inkwell::values::PointerValue<'ctx> {
+        let san: String =
+            value.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        let gname = format!(".objcstr.{san}");
+        if let Some(g) = self.module.get_global(&gname) {
+            return g.as_pointer_value();
+        }
+        let i8_t = self.ctx.i8_type();
+        let bytes: Vec<u8> = value.bytes().chain(std::iter::once(0u8)).collect();
+        let arr_ty = i8_t.array_type(bytes.len() as u32);
+        let gv = self.module.add_global(arr_ty, None, &gname);
+        let vals: Vec<_> = bytes.iter().map(|&b| i8_t.const_int(b as u64, false)).collect();
+        gv.set_initializer(&i8_t.const_array(&vals));
+        gv.set_constant(true);
+        gv.set_linkage(inkwell::module::Linkage::Private);
+        gv.as_pointer_value()
+    }
+
     fn declare_globals(&self) {
         use newm2_ir::module::Global;
         let defined_funcs: std::collections::HashSet<&str> = self
@@ -610,6 +751,10 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
                         gv.set_constant(true);
                         gv.set_linkage(inkwell::module::Linkage::Private);
                     }
+                }
+                Global::ObjCClass { .. } => {
+                    // Emitted as a llvm.global_ctors constructor by
+                    // emit_objc_class_registrations(), after function bodies exist.
                 }
             }
         }

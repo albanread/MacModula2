@@ -24,6 +24,6 @@ pub mod print;
 
 pub use inst::{BinOp, BlockId, CastKind, ConstVal, Inst, SetOpKind, Terminator, UnaryOp, ValueId};
 pub use func::{Func, IrParam, LoopFrame};
-pub use module::{Global, IrModule, MemoryMode};
+pub use module::{Global, IrModule, MemoryMode, ObjCMethod};
 pub use lower::{lower_module, lower_module_opts};
 pub use print::{format_cfg, format_ir};

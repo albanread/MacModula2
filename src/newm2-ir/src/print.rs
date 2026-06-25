@@ -65,6 +65,10 @@ fn format_global(g: &Global) -> String {
             format!("typeinfo @{class_name}.typeinfo (parent {parent}, depth {depth})\n")
         }
         Global::Guid { name, .. } => format!("guid @{name} [16 x i8]\n"),
+        Global::ObjCClass { objc_name, super_name, methods } => {
+            let sels: Vec<&str> = methods.iter().map(|m| m.selector.as_str()).collect();
+            format!("objc-class @{objc_name} : {super_name} [{}]\n", sels.join(", "))
+        }
     }
 }
 

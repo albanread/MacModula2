@@ -72,6 +72,30 @@ pub enum Global {
         name: String,
         bytes: [u8; 16],
     },
+    /// macOS only: a concrete M2 class that must be registered with the
+    /// Objective-C runtime at image load. Codegen emits a `llvm.global_ctors`
+    /// constructor that does `objc_allocateClassPair(getClass(super), name)`,
+    /// `class_addMethod(sel, imp, types)` per method, then
+    /// `objc_registerClassPair` — so an M2 object is a real Obj-C object. See
+    /// docs/design/cocoa-classes.md.
+    ObjCClass {
+        /// The Obj-C runtime class name (mangled, e.g. `M2.Paint.Canvas`).
+        objc_name: String,
+        /// The superclass's Obj-C name (`NSObject` for a root M2 class).
+        super_name: String,
+        /// One per concrete method: (selector, IMP function name, type encoding).
+        methods: Vec<ObjCMethod>,
+    },
+}
+
+/// One method of an `ObjCClass`: the Obj-C selector, the LLVM function that
+/// implements it (`{Class}.{Method}`, SELF-first), and the Obj-C type-encoding
+/// string the runtime needs to marshal a dynamic call.
+#[derive(Debug, Clone)]
+pub struct ObjCMethod {
+    pub selector: String,
+    pub imp_fn: String,
+    pub types: String,
 }
 
 /// The IR for a single compiled module.

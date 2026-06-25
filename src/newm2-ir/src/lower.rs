@@ -16,14 +16,14 @@ use newm2_loader::{ModuleGraph, ModuleId};
 use newm2_lexer::Span;
 use newm2_parser::ast;
 use newm2_sema::scope::{ScopeId, SymbolKind, SymbolProvenance};
-use newm2_sema::types::{Builtin, TypeKind};
+use newm2_sema::types::{Builtin, TypeId, TypeKind};
 use newm2_sema::{ClassSymbolId, SelectorBinding, SemaResult};
 
 use crate::builder::FuncBuilder;
 use crate::func::{Func, IrParam, LoopFrame};
 use crate::inst::{BinOp, BlockId, CastKind, ConstVal, Inst, SetOpKind, Terminator, UnaryOp, ValueId, VecIntrin};
 use new_asm;
-use crate::module::{Global, IrModule, MemoryMode};
+use crate::module::{Global, IrModule, MemoryMode, ObjCMethod};
 
 // ---- Entry point ----------------------------------------------------------
 
@@ -232,6 +232,35 @@ pub fn lower_module_opts(
             vtable_slots,
             has_typeinfo: true,
         });
+
+        // macOS (Max Mac Native): also register this class with the Objective-C
+        // runtime at image load, so an M2 object *is* an Obj-C object. See
+        // docs/design/cocoa-classes.md. The native vtable above still exists;
+        // NEW/dispatch keep using it until the M0 NEW/dispatch stages land.
+        if cfg!(target_os = "macos") {
+            let methods: Vec<ObjCMethod> = class
+                .vtable
+                .iter()
+                .filter(|slot| !slot.is_abstract)
+                .map(|slot| {
+                    let def_class = sema.classes.get(slot.defining_class);
+                    ObjCMethod {
+                        selector: objc_selector(&slot.name, slot.sig.params.len()),
+                        imp_fn: format!("{}.{}", def_class.name, slot.name),
+                        types: objc_method_encoding(sema, &slot.sig),
+                    }
+                })
+                .collect();
+            let super_name = match class.base {
+                Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
+                None => "NSObject".to_string(),
+            };
+            ir.globals.push(Global::ObjCClass {
+                objc_name: format!("M2.{}.{}", ir.name, class.name),
+                super_name,
+                methods,
+            });
+        }
     }
 
     // Emit a `{Class}.typeinfo` RTTI descriptor for every native class declared
@@ -265,6 +294,63 @@ pub fn lower_module_opts(
     }
 
     Some(ir)
+}
+
+// ---- Objective-C class lowering (macOS) ----------------------------------
+//
+// Synthesize the Obj-C selector and type-encoding for an M2 method, so the
+// macOS backend can register the class with the runtime (docs/design/
+// cocoa-classes.md). M2 has a single method name (not Obj-C's interleaved
+// keywords), so the derived selector is single-keyword: a nullary method maps
+// to its bare lowercase-initial name, a method with arguments to that name plus
+// one trailing colon. An explicit selector pin (for AppKit overrides like
+// `drawRect:`) is a later stage; for now common single-keyword AppKit selectors
+// fall out of derivation directly (`DrawRect` -> `drawRect:`).
+
+fn objc_selector(method_name: &str, n_params: usize) -> String {
+    let mut s = String::new();
+    let mut chars = method_name.chars();
+    if let Some(first) = chars.next() {
+        s.extend(first.to_lowercase());
+        s.push_str(chars.as_str());
+    }
+    if n_params >= 1 {
+        s.push(':');
+    }
+    s
+}
+
+/// The Obj-C type-encoding string for a method: `<ret>@:<params...>` — the
+/// hidden `self` (`@`) and `_cmd` (`:`) always follow the return code.
+fn objc_method_encoding(sema: &SemaResult, sig: &newm2_sema::scope::ProcSig) -> String {
+    let mut enc = match sig.return_ty {
+        Some(t) => objc_encode_ty(sema, t).to_string(),
+        None => "v".to_string(),
+    };
+    enc.push_str("@:");
+    for p in &sig.params {
+        if p.mode == newm2_sema::types::ParamMode::Var {
+            enc.push_str("^v"); // by-reference: pointer
+        } else {
+            enc.push_str(objc_encode_ty(sema, p.ty));
+        }
+    }
+    enc
+}
+
+fn objc_encode_ty(sema: &SemaResult, ty: TypeId) -> &'static str {
+    match sema.types.get(ty) {
+        TypeKind::Builtin(b) => match b {
+            Builtin::Boolean => "c",
+            Builtin::Char | Builtin::Achar | Builtin::Uchar => "S",
+            Builtin::Real | Builtin::LongReal => "d",
+            Builtin::Cardinal | Builtin::LongCard => "Q",
+            Builtin::Address | Builtin::SysAddress | Builtin::Nil => "@",
+            _ => "q", // INTEGER and other word-sized ordinals
+        },
+        // class instances, pointers, open arrays, procedures: pointer-shaped
+        _ => "@",
+    }
 }
 
 // ---- Module-level context ------------------------------------------------
