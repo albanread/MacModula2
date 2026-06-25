@@ -1721,6 +1721,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 .map(|binding| match binding {
                     SelectorBinding::Field { ty, .. } => ty,
                     SelectorBinding::Method { ty, .. } => ty,
+                    SelectorBinding::ClassMethod { ty, .. } => ty,
                 })
                 .or_else(|| match self.ctx.sema.types.get(base_ty) {
                     TypeKind::Record(layout) => layout
@@ -4764,9 +4765,13 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         let ast::Selector::Field(_, mspan) = d.selectors.last()? else {
             return None;
         };
-        let SelectorBinding::Method { vtable_index, class, .. } =
-            self.ctx.sema.selector_binding(self.ctx.mid, *mspan)?
-        else {
+        let binding = self.ctx.sema.selector_binding(self.ctx.mid, *mspan)?;
+        // macOS class (static) method: `TypeName.M(args)` -> objc_msgSend on the
+        // class object. No instance receiver is evaluated.
+        if let SelectorBinding::ClassMethod { class, index, .. } = binding {
+            return self.lower_class_method_call(class, index, args);
+        }
+        let SelectorBinding::Method { vtable_index, class, .. } = binding else {
             return None;
         };
         let (call_sig, msgsend_sig, object_record, sig, sel_name) = {
@@ -4885,6 +4890,74 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         }
         let dst = self.fresh();
         self.push(Inst::IndCall { dst: Some(dst), callee: fnptr, sig: call_sig, args: arg_vals });
+        Some(dst)
+    }
+
+    /// Emit a runtime call `func(strPtr, high) -> ADDRESS` for a constant string
+    /// (selectors, class names) — the (ptr, high) ARRAY-OF-CHAR ABI.
+    fn objc_str_call(&mut self, func: &str, s: &str) -> ValueId {
+        let addr = self.ctx.sema.types.builtin(Builtin::Address);
+        let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+        let ptr = self.fresh();
+        self.push(Inst::Const { dst: ptr, val: ConstVal::Str(s.to_string()) });
+        let high = self.fresh();
+        let h = (s.chars().count() as i128 - 1).max(0);
+        self.push(Inst::Const { dst: high, val: ConstVal::Int(h) });
+        self.call_runtime(
+            func,
+            vec![
+                IrParam { name: "p".into(), ty: addr, is_var: false },
+                IrParam { name: "h".into(), ty: card, is_var: false },
+            ],
+            Some(addr),
+            vec![ptr, high],
+        )
+        .unwrap()
+    }
+
+    /// macOS: `TypeName.M(args)` — a `CLASS PROCEDURE` (static) method, dispatched
+    /// on the class object: `objc_msgSend(objc_getClass(name), @selector(M), args)`.
+    fn lower_class_method_call(
+        &mut self,
+        class: ClassSymbolId,
+        index: u32,
+        args: &[ast::Expr],
+    ) -> Option<ValueId> {
+        let (sel_name, msig, class_name, sig) = {
+            let cls = self.ctx.sema.classes.get(class);
+            let slot = &cls.own_class_methods[index as usize];
+            let sel = slot
+                .objc_selector
+                .clone()
+                .unwrap_or_else(|| objc_selector(&slot.name, slot.sig.params.len()));
+            let msig = cls.class_method_msgsend[index as usize]?;
+            let cname = cls
+                .objc_class_name
+                .clone()
+                .unwrap_or_else(|| format!("M2.{}.{}", self.ctx.module_name(), cls.name));
+            (sel, msig, cname, slot.sig.clone())
+        };
+        let addr = self.ctx.sema.types.builtin(Builtin::Address);
+        let cls_obj = self.objc_str_call("nm2_objc_get_class", &class_name);
+        let sel = self.objc_str_call("nm2_objc_sel", &sel_name);
+        let msgsend = self.call_runtime("nm2_objc_msgsend_ptr", vec![], Some(addr), vec![]).unwrap();
+        let mut arg_vals = vec![cls_obj, sel];
+        for (i, a) in args.iter().enumerate() {
+            let is_var = sig
+                .params
+                .get(i)
+                .map(|p| p.mode == newm2_sema::types::ParamMode::Var)
+                .unwrap_or(false);
+            if is_var {
+                if let ast::Expr::Designator(dd) = a {
+                    arg_vals.push(self.eval_lvalue(dd));
+                    continue;
+                }
+            }
+            arg_vals.push(self.eval_expr(a));
+        }
+        let dst = self.fresh();
+        self.push(Inst::IndCall { dst: Some(dst), callee: msgsend, sig: msig, args: arg_vals });
         Some(dst)
     }
 
@@ -5966,7 +6039,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     .selector_binding(self.ctx.mid, *span)
                     .and_then(|binding| match binding {
                         SelectorBinding::Field { index, .. } => index,
-                        SelectorBinding::Method { .. } => None,
+                        SelectorBinding::Method { .. } | SelectorBinding::ClassMethod { .. } => None,
                     })
                     .or_else(|| base_ty.and_then(|ty| self.resolve_field_index(ty, field_name)))
                     .unwrap_or(0);

@@ -603,12 +603,20 @@ impl<'a> Parser<'a> {
                     if matches!(
                         self.peek_at(1).map(|t| &t.kind),
                         Some(TokenKind::Keyword(Keyword::Procedure))
+                    ) || matches!(
+                        (self.peek_at(1).map(|t| &t.kind), self.peek_at(2).map(|t| &t.kind)),
+                        (Some(TokenKind::Ident(n)), Some(TokenKind::Keyword(Keyword::Procedure))) if n == "CLASS"
                     ) =>
                 {
                     self.bump(); // ABSTRACT
-                    let m = self.parse_method_decl(
+                    let is_class = matches!(self.peek_kind(), TokenKind::Ident(n) if n == "CLASS");
+                    if is_class {
+                        self.bump(); // CLASS
+                    }
+                    let m = self.parse_method_decl_kind(
                         /* is_abstract = */ true,
                         /* is_override = */ false,
+                        is_class,
                         allow_bodies,
                     )?;
                     members.push(ClassMember::Method(m));
@@ -625,6 +633,20 @@ impl<'a> Parser<'a> {
                         /* is_abstract = */ false,
                         /* is_override = */ true,
                         allow_bodies,
+                    )?;
+                    members.push(ClassMember::Method(m));
+                }
+                TokenKind::Ident(n)
+                    if n == "CLASS"
+                        && matches!(
+                            self.peek_at(1).map(|t| &t.kind),
+                            Some(TokenKind::Keyword(Keyword::Procedure))
+                        ) =>
+                {
+                    self.bump(); // CLASS
+                    let abstract_method = kind == ClassKind::Interface;
+                    let m = self.parse_method_decl_kind(
+                        abstract_method, false, /* is_class_method = */ true, allow_bodies,
                     )?;
                     members.push(ClassMember::Method(m));
                 }
@@ -691,6 +713,16 @@ impl<'a> Parser<'a> {
         &mut self,
         is_abstract: bool,
         is_override: bool,
+        allow_body: bool,
+    ) -> Result<MethodDecl, ParseError> {
+        self.parse_method_decl_kind(is_abstract, is_override, false, allow_body)
+    }
+
+    fn parse_method_decl_kind(
+        &mut self,
+        is_abstract: bool,
+        is_override: bool,
+        is_class_method: bool,
         allow_body: bool,
     ) -> Result<MethodDecl, ParseError> {
         let start = self.peek().span;
@@ -765,6 +797,7 @@ impl<'a> Parser<'a> {
             name,
             is_abstract,
             is_override,
+            is_class_method,
             params,
             return_ty,
             attrs,

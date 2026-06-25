@@ -133,6 +133,7 @@ pub fn interface_method(
         name: name.to_string(),
         is_abstract: true,
         is_override: false,
+        is_class_method: false,
         params,
         return_ty,
         attrs: vec![],

@@ -119,6 +119,11 @@ pub struct MethodDecl {
     pub name: String,
     pub is_abstract: bool,
     pub is_override: bool,
+    /// `CLASS PROCEDURE` — a static (class) method, dispatched on the class
+    /// object (`TypeName.Method(…)`). On macOS it lowers to
+    /// `objc_msgSend(objc_getClass(name), sel, …)` — factory methods and
+    /// constructors (`NSColor.RedColor()`, `NSWindow.Alloc()`).
+    pub is_class_method: bool,
     pub params: Vec<Param>,
     pub return_ty: Option<TypeExpr>,
     pub attrs: Vec<ProcAttr>,

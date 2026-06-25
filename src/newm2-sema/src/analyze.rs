@@ -77,6 +77,10 @@ pub enum SelectorBinding {
     /// from the object's vtable for virtual dispatch; `ty` is the return type
     /// (or a placeholder for a proper procedure). `class` is the static class.
     Method { ty: TypeId, vtable_index: u32, class: ClassSymbolId },
+    /// A `CLASS PROCEDURE` (static) method (`TypeName.M`). Dispatched on the
+    /// class object, not an instance. `index` is into the class's
+    /// `own_class_methods`; `ty` is the return type. macOS only.
+    ClassMethod { ty: TypeId, index: u32, class: ClassSymbolId },
 }
 
 #[derive(Debug, Clone)]
@@ -3308,6 +3312,31 @@ fn find_class_method_binding(
     ))
 }
 
+/// Resolve a `CLASS PROCEDURE` (static) method by name, searching this class and
+/// its base chain (class methods inherit in Obj-C). Returns a `ClassMethod`
+/// binding and the return type.
+fn find_class_class_method_binding(
+    ctx: &Ctx,
+    cid: ClassSymbolId,
+    name: &str,
+) -> Option<(SelectorBinding, TypeId)> {
+    let mut cur = Some(cid);
+    while let Some(c) = cur {
+        let cls = ctx.classes.get(c);
+        if let Some((i, slot)) =
+            cls.own_class_methods.iter().enumerate().find(|(_, s)| s.name == name)
+        {
+            let ret = slot.sig.return_ty.unwrap_or_else(|| ctx.types.builtin(Builtin::Proc));
+            return Some((
+                SelectorBinding::ClassMethod { ty: ret, index: i as u32, class: c },
+                ret,
+            ));
+        }
+        cur = cls.base;
+    }
+    None
+}
+
 /// If `d`'s last selector resolved to a class method, return that method's full
 /// signature (for argument checking at the call site).
 fn method_sig_from_designator(ctx: &Ctx, d: &ast::Designator) -> Option<ProcSig> {
@@ -3318,10 +3347,15 @@ fn method_sig_from_designator(ctx: &Ctx, d: &ast::Designator) -> Option<ProcSig>
         .selector_bindings
         .get(&SpanKey::new(ctx.current_module, *span))
         .copied()?;
-    let SelectorBinding::Method { class, vtable_index, .. } = binding else {
-        return None;
-    };
-    Some(ctx.classes.get(class).vtable[vtable_index as usize].sig.clone())
+    match binding {
+        SelectorBinding::Method { class, vtable_index, .. } => {
+            Some(ctx.classes.get(class).vtable[vtable_index as usize].sig.clone())
+        }
+        SelectorBinding::ClassMethod { class, index, .. } => {
+            Some(ctx.classes.get(class).own_class_methods[index as usize].sig.clone())
+        }
+        SelectorBinding::Field { .. } => None,
+    }
 }
 
 fn designator_type_from_symbol(ctx: &Ctx, sym: &SymbolKind) -> Option<TypeId> {
@@ -3840,7 +3874,7 @@ fn analyse_selector_chain(
                         ctx.note_selector_binding(*span, binding);
                         ty
                     }
-                    Some(SelectorBinding::Method { .. }) => {
+                    Some(SelectorBinding::Method { .. } | SelectorBinding::ClassMethod { .. }) => {
                         unreachable!("field lookup never yields a method binding")
                     }
                     None => {
@@ -3854,7 +3888,7 @@ fn analyse_selector_chain(
                             ctx.note_selector_binding(*span, binding);
                             ty
                         }
-                        Some(SelectorBinding::Method { .. }) => {
+                        Some(SelectorBinding::Method { .. } | SelectorBinding::ClassMethod { .. }) => {
                             unreachable!("field lookup never yields a method binding")
                         }
                         None => {
@@ -3867,7 +3901,7 @@ fn analyse_selector_chain(
                             ctx.note_selector_binding(*span, binding);
                             ty
                         }
-                        Some(SelectorBinding::Method { .. }) => {
+                        Some(SelectorBinding::Method { .. } | SelectorBinding::ClassMethod { .. }) => {
                             unreachable!("field lookup never yields a method binding")
                         }
                         None => {
@@ -3888,6 +3922,12 @@ fn analyse_selector_chain(
                         ctx.note_selector_binding(*span, binding);
                         ty
                     } else if let Some((binding, ret)) = find_class_method_binding(ctx, cid, name) {
+                        ctx.note_selector_binding(*span, binding);
+                        ret
+                    } else if let Some((binding, ret)) =
+                        find_class_class_method_binding(ctx, cid, name)
+                    {
+                        // TypeName.ClassMethod(…) — a static (CLASS PROCEDURE) call.
                         ctx.note_selector_binding(*span, binding);
                         ret
                     } else {
@@ -6074,7 +6114,7 @@ fn resolve_class_decl(
                 if is_interface && m.body.is_some() {
                     ctx.error(m.span, "an INTERFACE method has no body".to_string());
                 }
-                own_methods.push(MethodSlot {
+                let slot = MethodSlot {
                     name: m.name.clone(),
                     sig,
                     // INTERFACE methods are implicitly abstract.
@@ -6083,7 +6123,13 @@ fn resolve_class_decl(
                     vtable_index: 0, // filled by resolve_vtable
                     declared_slot: parse_ordinal_pragma(&m.pragmas),
                     objc_selector: parse_selector_pragma(&m.pragmas),
-                });
+                };
+                if m.is_class_method {
+                    // Static method: kept out of the vtable; dispatched on the class.
+                    ctx.classes.get_mut(cid).own_class_methods.push(slot);
+                } else {
+                    own_methods.push(slot);
+                }
             }
             ast::ClassMember::Pragma(pr) => {
                 check_pragma_known(ctx, pr);
@@ -6183,6 +6229,30 @@ fn synthesize_vtable_call_sigs(ctx: &mut Ctx, cid: ClassSymbolId) {
             (i, params, slot.sig.return_ty)
         })
         .collect();
+    // Class methods: a `(classObj, _cmd, params…)` msgSend sig each.
+    let cm_descs: Vec<(usize, Vec<ProcParam>, Option<TypeId>)> = ctx
+        .classes
+        .get(cid)
+        .own_class_methods
+        .iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            let mut params = vec![
+                ProcParam { mode: ParamMode::Value, ty: addr }, // the class object
+                ProcParam { mode: ParamMode::Value, ty: addr }, // _cmd (SEL)
+            ];
+            for p in &slot.sig.params {
+                params.push(ProcParam { mode: p.mode, ty: p.ty });
+            }
+            (i, params, slot.sig.return_ty)
+        })
+        .collect();
+    let mut cm_sigs: Vec<Option<TypeId>> = vec![None; cm_descs.len()];
+    for (i, params, return_ty) in cm_descs {
+        cm_sigs[i] = Some(ctx.types.alloc(TypeKind::Proc { params, return_ty }));
+    }
+    ctx.classes.get_mut(cid).class_method_msgsend = cm_sigs;
+
     for (i, params, return_ty) in descs {
         // SELF-first dispatch sig (native vtable path).
         let proc_ty = ctx.types.alloc(TypeKind::Proc { params: params.clone(), return_ty });

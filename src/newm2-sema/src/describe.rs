@@ -322,6 +322,18 @@ fn render_selector(md: &mut String, sema: &SemaResult, sel: SelectorBinding, tit
                 md.push_str(&format!("\n**{}** {} · slot @{}\n", word, c.name, vtable_index));
             }
         }
+        SelectorBinding::ClassMethod { index, class, .. } => {
+            let c = sema.classes.get(class);
+            let m = c.own_class_methods.get(index as usize);
+            let name = m.map(|m| m.name.as_str()).unwrap_or(title);
+            md.push_str(&format!("## {}\n\n```\n", name));
+            if let Some(m) = m {
+                md.push_str(&format!("CLASS PROCEDURE {}{}", name, sig_detail(sema, &m.sig)));
+            } else {
+                md.push_str(name);
+            }
+            md.push_str(&format!("\n```\n\n**Class** {} (static method)\n", c.name));
+        }
     }
 }
 

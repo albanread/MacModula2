@@ -1241,6 +1241,7 @@ fn for_each_runtime_binding(
         // and fetches msgSend's address by these raw symbol names.
         bind("nm2_objc_sel", newm2_runtime::objc::nm2_objc_sel as *const ());
         bind("nm2_objc_msgsend_ptr", newm2_runtime::objc::nm2_objc_msgsend_ptr as *const ());
+        bind("nm2_objc_get_class", newm2_runtime::objc::nm2_objc_get_class as *const ());
         bind("ObjC.GetString", newm2_runtime::objc::nm2_objc_nsstring_to_wide as *const ());
         bind("ObjC.Highlight", newm2_runtime::objc::nm2_ide_highlight as *const ());
         bind("ObjC.MarkErrors", newm2_runtime::objc::nm2_ide_mark_errors as *const ());

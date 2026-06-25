@@ -76,6 +76,12 @@ pub struct ClassSymbol {
     pub all_fields: Vec<FieldSlot>,
     /// Methods declared in *this* class body.
     pub own_methods: Vec<MethodSlot>,
+    /// `CLASS PROCEDURE` (static) methods of *this* class. Not in the vtable;
+    /// dispatched on the class object (`TypeName.Method` → msgSend on the class).
+    pub own_class_methods: Vec<MethodSlot>,
+    /// Per `own_class_methods` entry: the `(classObj, _cmd, params…)` Proc type
+    /// for the indirect `objc_msgSend` (parallel to `VtableSlot.msgsend_sig`).
+    pub class_method_msgsend: Vec<Option<TypeId>>,
     /// Names that the REVEAL clause exposes from the base class.
     pub revealed: Vec<String>,
     /// Full vtable: base slots first, then own slots appended or overridden.
@@ -163,6 +169,8 @@ impl ClassArena {
             own_fields: Vec::new(),
             all_fields: Vec::new(),
             own_methods: Vec::new(),
+            own_class_methods: Vec::new(),
+            class_method_msgsend: Vec::new(),
             revealed: Vec::new(),
             vtable: Vec::new(),
             span,
