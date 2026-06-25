@@ -1,0 +1,14 @@
+DEFINITION MODULE RopeEditor;
+(* A rope-backed code editor for the MacM2 IDE: Make builds an NSTextView whose
+   NSTextStorage is the Modula-2 RopeStore (characters in a TextRope, syntax
+   colours from an M2 lexer + run list, incremental re-lex on edit). It returns
+   an NSScrollView whose documentView is that text view — so the existing
+   Cocoa.SetEditorText / EditorText / SetEditorCursor / GotoFirstError all work
+   on it unchanged (they go through `documentView`), and typing flows straight
+   into the rope. No separate HighlightEditor pass is needed; the store colours
+   itself. See docs/design/mac-text-store.md. *)
+IMPORT ObjC;
+
+PROCEDURE Make (x, y, w, h: REAL): ObjC.Id;   (* a rope-backed editor (an NSScrollView) *)
+
+END RopeEditor.
