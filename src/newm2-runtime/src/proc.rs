@@ -225,3 +225,36 @@ pub extern "C-unwind" fn nm2_proc_write_bytes(
         Err(_) => -1,
     }
 }
+
+/// `Proc.FileSize(path)` — size of `path` in bytes, or -1 if it can't be read.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_file_size(path_ptr: *const u16, path_high: u64) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    match std::fs::metadata(&path) {
+        Ok(m) => m.len() as i64,
+        Err(_) => -1,
+    }
+}
+
+/// `Proc.ReadBytes(path, buf, max)` — read up to `max` raw bytes of `path` into
+/// `buf` (binary; for .wav input). Returns the number of bytes read, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_read_bytes(
+    path_ptr: *const u16,
+    path_high: u64,
+    buf: *mut u8,
+    max: u64,
+) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    if buf.is_null() {
+        return -1;
+    }
+    match std::fs::read(&path) {
+        Ok(data) => {
+            let n = data.len().min(max as usize);
+            unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buf, n) };
+            n as i64
+        }
+        Err(_) => -1,
+    }
+}

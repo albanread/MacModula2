@@ -311,6 +311,8 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("Proc.RunCapture".to_string(), "nm2_proc_run_capture"));
         v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
         v.push(("Proc.WriteBytes".to_string(), "nm2_proc_write_bytes"));
+        v.push(("Proc.FileSize".to_string(), "nm2_proc_file_size"));
+        v.push(("Proc.ReadBytes".to_string(), "nm2_proc_read_bytes"));
         v.push(("ObjC.LoadFramework".to_string(), "nm2_objc_load_framework"));
         v.push(("Proc.ReadFile".to_string(), "nm2_proc_read_file"));
         v.push(("Proc.Complete".to_string(), "nm2_ide_complete"));
@@ -1254,6 +1256,8 @@ fn for_each_runtime_binding(
         bind("Proc.RunCapture", newm2_runtime::proc::nm2_proc_run_capture as *const ());
         bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
         bind("Proc.WriteBytes", newm2_runtime::proc::nm2_proc_write_bytes as *const ());
+        bind("Proc.FileSize", newm2_runtime::proc::nm2_proc_file_size as *const ());
+        bind("Proc.ReadBytes", newm2_runtime::proc::nm2_proc_read_bytes as *const ());
         bind("ObjC.LoadFramework", newm2_runtime::objc::nm2_objc_load_framework as *const ());
         bind("Proc.ReadFile", newm2_runtime::proc::nm2_proc_read_file as *const ());
         bind("Proc.Complete", newm2_runtime::proc::nm2_ide_complete as *const ());

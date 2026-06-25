@@ -17,6 +17,13 @@ PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
    Returns 0 on success, -1 on error. *)
 PROCEDURE WriteBytes (path: ARRAY OF CHAR; data: ADDRESS; len: CARDINAL): INTEGER;
 
+(* Size of `path` in bytes, or -1 if it can't be read. *)
+PROCEDURE FileSize (path: ARRAY OF CHAR): INTEGER;
+
+(* Read up to `max` raw bytes of `path` into `buf` (binary — .wav input).
+   Returns the number of bytes read, or -1 on error. *)
+PROCEDURE ReadBytes (path: ARRAY OF CHAR; buf: ADDRESS; max: CARDINAL): INTEGER;
+
 (* Read `path` (UTF-8) into `content`. Returns the length, or -1 on error. *)
 PROCEDURE ReadFile (path: ARRAY OF CHAR; VAR content: ARRAY OF CHAR): INTEGER;
 
