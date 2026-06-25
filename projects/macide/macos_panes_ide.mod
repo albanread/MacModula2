@@ -85,8 +85,8 @@ VAR sc: ObjC.Id;
 BEGIN
   sc := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
   sc := sf(sc, ObjC.Selector("initWithFrame:"), x, y, w, h);
-  ig := sb(sc, ObjC.Selector("setHasHorizontalScroller:"), TRUE);
-  ig := sendIInt(sc, ObjC.Selector("setScrollerStyle:"), 1);   (* overlay *)
+  ig := sb(sc, ObjC.Selector("setHasHorizontalScroller:"), FALSE);  (* no scroll bar — tabs still
+                                       slide via trackpad and the auto-scroll-to-active *)
   ig := sendIInt(sc, ObjC.Selector("setBorderType:"), 0);
   doc := MakeView(0.0, 0.0, w, h);
   ig := sp(sc, ObjC.Selector("setDocumentView:"), CAST(ObjC.Id, doc));
