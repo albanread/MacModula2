@@ -278,13 +278,18 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
   Core Graphics), **including subclasses that hold their own M2 field state**
   (runtime-adjusted ivar access).
 
+- **EXTERNAL Cocoa classes** (`<* cocoa_class "NSMutableArray" *>`): bind an M2
+  class to an existing Obj-C class — `NEW` allocs the real class and ABSTRACT
+  methods dispatch to it via `objc_msgSend`, so Foundation/AppKit classes are
+  usable from typed M2. Selector pinning (`<* selector "…" *>`) covers
+  multi-keyword selectors.
+- **`cocoa-gen`** (`src/newm2-cocoa-gen`): the macOS analogue of winapi-gen —
+  introspects the Obj-C runtime (`class_copyMethodList` over the superclass
+  chain) and emits these EXTERNAL declarations for any class. `newm2-cocoa-gen
+  [Class…]` (default: a curated AppKit/Foundation set).
+
 **Next:**
-- `EXTERNAL` Cocoa class declarations (`CLASS NSWindow ["NSWindow"]; EXTERNAL;`)
-  so inherited Cocoa methods are callable as typed M2 methods (today: via the
-  `ObjC`/`Cocoa` bridge); selector pinning (`["initWithFrame:"]`) for
-  multi-keyword selectors; `CLASS PROCEDURE` constructors.
-- `cocoa-gen` from the SDK BridgeSupport — generate the AppKit/Foundation
-  `EXTERNAL` surface.
+- `CLASS PROCEDURE` constructors (`NSButton.New(frame)` → `alloc`+`initWithFrame:`).
 - Rewrite the IDE editor as a real `NSView` subclass; retire the hand-written
   trampoline / `Send*` layer.
 
