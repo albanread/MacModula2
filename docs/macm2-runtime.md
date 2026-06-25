@@ -141,8 +141,13 @@ registered before subclasses (the constructor is topologically ordered).
   superclass `M2.M.B`.
 - **Selectors** are derived from method names (`DrawRect` → `drawRect:`,
   `Answer` → `answer`): lowercase initial, one trailing `:` if the method takes
-  arguments. (An explicit selector pin for multi-keyword AppKit selectors is a
-  later stage.)
+  arguments. A `<* selector "initWithFrame:" *>` method pragma **pins** the exact
+  selector for multi-keyword Cocoa selectors derivation can't produce.
+- **Calling inherited Cocoa methods** as typed M2: declare them `ABSTRACT` (no M2
+  body — fulfilled by the Cocoa superclass) and call them like any method; they
+  dispatch via `objc_msgSend` to the superclass (`self.SetNeedsDisplay(TRUE)` →
+  `setNeedsDisplay:`). A Cocoa-rooted class is exempt from the "unimplemented
+  abstract method" check for exactly these.
 - **Type encodings** are synthesized from the M2 signature
   (`objc_method_encoding` in `lower.rs`): `v` void, `q` INTEGER, `Q` CARDINAL,
   `d` REAL, `c` BOOLEAN, `S` CHAR, `@` object/ADDRESS, plus the leading
