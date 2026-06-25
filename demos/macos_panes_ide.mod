@@ -229,6 +229,16 @@ BEGIN
   Cocoa.SetText(status, "Tab closed.")
 END CloseTabAt;
 
+(* show text in the right "Assist" pane (Help / Completions / Cocoa search). *)
+PROCEDURE ShowAssist (title, body: ARRAY OF CHAR);
+VAR t: ARRAY [0..32767] OF CHAR;
+BEGIN
+  Assign(title, t); Append(helpNL, t); Append(helpNL, t); Append(body, t);
+  Cocoa.SetEditorText(helpPane, t);
+  gHelpVisible := TRUE;
+  ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE)
+END ShowAssist;
+
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
 PROCEDURE OpenDoc (tag: INTEGER);
@@ -317,12 +327,25 @@ CLASS IDE;
     IF gHelpVisible THEN Cocoa.SetText(status, "Help shown (F1 to hide).")
     ELSE Cocoa.SetText(status, "Help hidden (F1 to show).") END
   END OnHelp;
-  PROCEDURE OnHome (sender: ObjC.Id);             (* "onHome:" — reveal the help/welcome pane *)
+  PROCEDURE OnHome (sender: ObjC.Id);             (* "onHome:" — reveal help, restoring its text *)
   BEGIN
+    Cocoa.SetEditorText(helpPane, gHelpText);
     gHelpVisible := TRUE;
     ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE);
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
+  PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘/ : completions at the cursor *)
+  VAR sel, line, col, n, ix: INTEGER; src, cand: ARRAY [0..16383] OF CHAR;
+  BEGIN
+    sel := Cocoa.SelectedTab(tabs);
+    IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
+    IF NOT gReadOnly[sel] THEN Cocoa.EditorText(gEditors[sel], src); ix := Proc.WriteFile(gPaths[sel], src) END;
+    Cocoa.EditorCursor(gEditors[sel], line, col);
+    n := Proc.Complete(gPaths[sel], line, col, cand);
+    ShowAssist("Completions at cursor (name / kind / detail):", cand);
+    IF n > 0 THEN Cocoa.SetText(status, "Completions in the right pane.")
+    ELSE Cocoa.SetText(status, "No completions at this position.") END
+  END OnComplete;
   PROCEDURE OnClose (sender: ObjC.Id);            (* "onClose:" — close the active tab (⌘W) *)
   BEGIN CloseTabAt(Cocoa.SelectedTab(tabs)) END OnClose;
   PROCEDURE OnCloseTab (sender: ObjC.Id);         (* "onCloseTab:" — the ✕ on a tab *)
@@ -446,6 +469,7 @@ BEGIN
   AddItem(mEdit, NIL, "Copy", "copy:", "c", 0);
   AddItem(mEdit, NIL, "Paste", "paste:", "v", 0);
   AddItem(mEdit, NIL, "Select All", "selectAll:", "a", 0);
+  AddItem(mEdit, ctrl, "Complete at Cursor", "onComplete:", "/", 0);     (* ⌘/ autocomplete *)
   findItem := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));   (* Find… ⌘F *)
   findItem := smi(findItem, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
                   ObjC.NSString("Find…"), ObjC.Selector("performFindPanelAction:"), ObjC.NSString("f"));
