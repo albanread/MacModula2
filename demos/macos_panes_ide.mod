@@ -32,6 +32,7 @@ TYPE SendB2 = PROCEDURE (ObjC.Id, ObjC.SEL, BOOLEAN): ObjC.Id;
      SendFI = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, INTEGER): ObjC.Id;
      SendMI = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.SEL, ObjC.Id): ObjC.Id;
      SendRetI = PROCEDURE (ObjC.Id, ObjC.SEL): INTEGER;
+     Send2F = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
 
 (* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
    NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
@@ -43,7 +44,7 @@ END FlippedDoc;
 
 VAR
   win, content, outerSplit, innerSplit, sidebar, tabs, output, status, helpPane: Cocoa.Object;
-  projScroll, libScroll, projDoc, libDoc, editorArea, tabBar: Cocoa.Object;
+  projScroll, libScroll, projDoc, libDoc, editorArea, tabBar, tabDoc: Cocoa.Object;
   gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
   gTabBarCount: INTEGER;
@@ -59,7 +60,7 @@ VAR
   gPaths: ARRAY [0..63] OF ARRAY [0..1023] OF CHAR;
   gReadOnly: ARRAY [0..63] OF BOOLEAN;     (* TRUE for LIBRARY (reference) tabs *)
   gTabCount: INTEGER;
-  s0: ObjC.Send0; sp: ObjC.SendP; sf: ObjC.SendFrame; sb: SendB2; sfi: SendFI;
+  s0: ObjC.Send0; sp: ObjC.SendP; sf: ObjC.SendFrame; sb: SendB2; sfi: SendFI; s2f: Send2F;
   ig: ObjC.Id; ctrl: ObjC.Id;
 
 PROCEDURE sendIInt (o: ObjC.Id; s: ObjC.SEL; n: INTEGER): ObjC.Id;
@@ -75,6 +76,21 @@ BEGIN
   v := s0(ObjC.GetClass("NSView"), ObjC.Selector("alloc"));
   RETURN CAST(Cocoa.Object, sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h))
 END MakeView;
+
+(* a horizontally-scrolling container (overlay scroller, so the tab bar slides
+   when full without the scroller taking layout space); returns its document. *)
+PROCEDURE MakeScrollH (x, y, w, h: REAL; VAR doc: Cocoa.Object): Cocoa.Object;
+VAR sc: ObjC.Id;
+BEGIN
+  sc := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
+  sc := sf(sc, ObjC.Selector("initWithFrame:"), x, y, w, h);
+  ig := sb(sc, ObjC.Selector("setHasHorizontalScroller:"), TRUE);
+  ig := sendIInt(sc, ObjC.Selector("setScrollerStyle:"), 1);   (* overlay *)
+  ig := sendIInt(sc, ObjC.Selector("setBorderType:"), 0);
+  doc := MakeView(0.0, 0.0, w, h);
+  ig := sp(sc, ObjC.Selector("setDocumentView:"), CAST(ObjC.Id, doc));
+  RETURN CAST(Cocoa.Object, sc)
+END MakeScrollH;
 
 PROCEDURE MakeSplit (x, y, w, h: REAL; sideBySide: BOOLEAN): Cocoa.Object;
 VAR v: ObjC.Id;
@@ -193,7 +209,7 @@ END TagButton;
 
 (* (re)draw the custom tab bar from the open-tab arrays; ✕ on every tab. *)
 PROCEDURE RebuildTabBar;
-VAR i, active: INTEGER; nameB, closeB: Cocoa.Object; label: ARRAY [0..271] OF CHAR; x: REAL;
+VAR i, active: INTEGER; nameB, closeB: Cocoa.Object; label: ARRAY [0..271] OF CHAR; x, totalW: REAL;
 BEGIN
   FOR i := 0 TO gTabBarCount - 1 DO
     Cocoa.RemoveView(gTabBtns[i]); Cocoa.RemoveView(gTabCloseBtns[i])
@@ -207,10 +223,18 @@ BEGIN
     Append(gTabNames[i], label);
     nameB  := TagButton(x + 2.0, 122.0, label, "onSelectTab:", i);
     closeB := TagButton(x + 126.0, 22.0, "✕", "onCloseTab:", i);
-    Cocoa.AddSubview(tabBar, nameB); Cocoa.AddSubview(tabBar, closeB);
+    Cocoa.AddSubview(tabDoc, nameB); Cocoa.AddSubview(tabDoc, closeB);
     gTabBtns[i] := nameB; gTabCloseBtns[i] := closeB
   END;
-  gTabBarCount := gTabCount
+  gTabBarCount := gTabCount;
+  (* grow the document to the total tab width so the bar slides when full *)
+  totalW := FLOAT(gTabCount) * 150.0 + 4.0;
+  IF totalW < 860.0 THEN totalW := 860.0 END;
+  SetFrameOf(tabDoc, 0.0, 0.0, totalW, 26.0);
+  (* slide so the active tab is in view *)
+  IF active >= 0 THEN
+    ig := s2f(CAST(ObjC.Id, tabDoc), ObjC.Selector("scrollPoint:"), FLOAT(active) * 150.0, 0.0)
+  END
 END RebuildTabBar;
 
 (* close the tab at `idx`: remove its NSTabViewItem, shift bookkeeping, redraw. *)
@@ -373,6 +397,7 @@ BEGIN
   sf  := CAST(ObjC.SendFrame, ObjC.MsgSendPtr());
   sb  := CAST(SendB2,         ObjC.MsgSendPtr());
   sfi := CAST(SendFI,         ObjC.MsgSendPtr());
+  s2f := CAST(Send2F,         ObjC.MsgSendPtr());
   smi := CAST(SendMI,         ObjC.MsgSendPtr());
   gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
   Assign("library/pimmod", gProjDir);
@@ -414,7 +439,7 @@ BEGIN
   tabs := Cocoa.MakeTabView(0.0, 0.0, 860.0, 362.0);
   ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setTabViewType:"), 6);     (* NSNoTabsNoBorder *)
   ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setAutoresizingMask:"), 18);
-  tabBar := MakeView(0.0, 362.0, 860.0, 28.0);
+  tabBar := MakeScrollH(0.0, 362.0, 860.0, 28.0, tabDoc);
   ig := sendIInt(CAST(ObjC.Id, tabBar), ObjC.Selector("setAutoresizingMask:"), 10);  (* width + stick to top *)
   Cocoa.AddSubview(editorArea, tabs);
   Cocoa.AddSubview(editorArea, tabBar);
