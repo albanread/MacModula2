@@ -18,6 +18,7 @@ CONST
 TYPE
   PRopeBox = POINTER TO RECORD r: TextRope.Rope END;
   PNSRange = POINTER TO RECORD location, length: CARDINAL END;
+  PWide    = POINTER TO ARRAY [0..16777215] OF CHAR;    (* a unichar* buffer, for getCharacters: *)
   Run      = RECORD len: CARDINAL; kind: INTEGER END;
   PRuns    = POINTER TO RECORD count: CARDINAL; a: ARRAY [0..16383] OF Run END;
   SendEdited = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, CARDINAL, INTEGER): ObjC.Id;
@@ -31,6 +32,7 @@ VAR
   sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP; s4f: Send4F;
   ig, font: ObjC.Id;
   gKind: ARRAY [0..kKinds-1] OF ObjC.Id;     (* one attributes dict per token kind *)
+  gNewRuns, gScratch: PRuns;                 (* transient buffers for incremental re-lex *)
 
 (* ---- tiny Modula-2 lexer over a plain wide buffer -> runs ---- *)
 PROCEDURE IsAlpha (c: CHAR): BOOLEAN;
@@ -96,6 +98,30 @@ BEGIN
   END
 END Lex;
 
+(* replace dst's runs covering [oldStart, oldEnd) with `mid`, splitting the runs
+   that straddle either boundary; result built in `out`, copied back to dst. *)
+PROCEDURE Splice (dst: PRuns; oldStart, oldEnd: CARDINAL; mid, out: PRuns);
+VAR ri, off, k: CARDINAL;
+BEGIN
+  out^.count := 0; off := 0; ri := 0;
+  WHILE (ri < dst^.count) AND (off + dst^.a[ri].len <= oldStart) DO
+    out^.a[out^.count] := dst^.a[ri]; INC(out^.count); off := off + dst^.a[ri].len; INC(ri)
+  END;
+  IF (ri < dst^.count) AND (off < oldStart) THEN          (* kept prefix of straddling run *)
+    out^.a[out^.count].len := oldStart - off; out^.a[out^.count].kind := dst^.a[ri].kind; INC(out^.count)
+  END;
+  k := 0;                                                  (* the re-lexed middle *)
+  WHILE k < mid^.count DO out^.a[out^.count] := mid^.a[k]; INC(out^.count); INC(k) END;
+  WHILE (ri < dst^.count) AND (off + dst^.a[ri].len <= oldEnd) DO off := off + dst^.a[ri].len; INC(ri) END;
+  IF (ri < dst^.count) AND (off < oldEnd) THEN            (* kept suffix of straddling run *)
+    out^.a[out^.count].len := (off + dst^.a[ri].len) - oldEnd; out^.a[out^.count].kind := dst^.a[ri].kind;
+    INC(out^.count); off := off + dst^.a[ri].len; INC(ri)
+  END;
+  WHILE ri < dst^.count DO out^.a[out^.count] := dst^.a[ri]; INC(out^.count); INC(ri) END;
+  dst^.count := out^.count; k := 0;
+  WHILE k < out^.count DO dst^.a[k] := out^.a[k]; INC(k) END
+END Splice;
+
 (* ---- RopeString: an NSString whose characters come from the rope ---- *)
 CLASS RopeString;
   <* cocoa "NSString" *>
@@ -106,6 +132,14 @@ CLASS RopeString;
   BEGIN RETURN TextRope.Length(box^.r) END Length;
   PROCEDURE CharacterAtIndex (i: CARDINAL): CARDINAL;
   BEGIN RETURN ORD(TextRope.CharAt(box^.r, i)) END CharacterAtIndex;
+  (* bulk accessor the layout manager uses: copy a whole range out of the rope *)
+  PROCEDURE GetCharacters (buffer: ADDRESS; loc, len: CARDINAL) <* selector "getCharacters:range:" *>;
+  VAR tmp: ARRAY [0..65535] OF CHAR; pbuf: PWide; k: CARDINAL;
+  BEGIN
+    TextRope.Sub(box^.r, loc, len, tmp);
+    pbuf := CAST(PWide, buffer); k := 0;
+    WHILE k < len DO pbuf^[k] := tmp[k]; INC(k) END
+  END GetCharacters;
 END RopeString;
 
 (* ---- RopeStore: an NSTextStorage backed by the rope + a run list ---- *)
@@ -121,9 +155,27 @@ CLASS RopeStore;
     NEW(runs); runs^.count := 0
   END Setup;
 
-  PROCEDURE Relex;                                (* re-lex the whole rope into runs *)
+  PROCEDURE Relex;                                (* full re-lex (used once, after Setup) *)
   VAR text: ARRAY [0..65535] OF CHAR;
   BEGIN TextRope.ToString(box^.r, text); Lex(text, TextRope.Length(box^.r), runs) END Relex;
+
+  (* incremental: re-lex only the line(s) the edit touched, then splice the runs *)
+  PROCEDURE RelexEdit (editLoc, removed, inserted: CARDINAL);
+  VAR lineStart, lineEnd, docLen, oldEnd: CARDINAL; sub: ARRAY [0..65535] OF CHAR; delta: INTEGER;
+  BEGIN
+    docLen := TextRope.Length(box^.r);
+    lineStart := editLoc;
+    WHILE (lineStart > 0) AND (TextRope.CharAt(box^.r, lineStart-1) # CHR(10)) DO DEC(lineStart) END;
+    lineEnd := editLoc + inserted;
+    IF lineEnd > docLen THEN lineEnd := docLen END;
+    WHILE (lineEnd < docLen) AND (TextRope.CharAt(box^.r, lineEnd) # CHR(10)) DO INC(lineEnd) END;
+    IF lineEnd < docLen THEN INC(lineEnd) END;
+    TextRope.Sub(box^.r, lineStart, lineEnd - lineStart, sub);
+    Lex(sub, lineEnd - lineStart, gNewRuns);
+    delta := VAL(INTEGER, inserted) - VAL(INTEGER, removed);
+    oldEnd := VAL(CARDINAL, VAL(INTEGER, lineEnd) - delta);
+    Splice(runs, lineStart, oldEnd, gNewRuns, gScratch)
+  END RelexEdit;
 
   PROCEDURE String (): ObjC.Id;
   BEGIN RETURN ropeStr END String;
@@ -135,7 +187,7 @@ CLASS RopeStore;
     box^.r := TextRope.DeleteRange(box^.r, loc, len);
     ObjC.GetString(s, text);
     IF text[0] # CHR(0) THEN box^.r := TextRope.Insert(box^.r, loc, text) END;
-    SELF.Relex;                                   (* Stage 2c: only the edited line range *)
+    SELF.RelexEdit(loc, len, inserted);           (* incremental: just the edited line(s) *)
     ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"),
               3, loc, len, VAL(INTEGER, inserted) - VAL(INTEGER, len))
   END ReplaceChars;
@@ -199,6 +251,7 @@ BEGIN
   gKind[kComment] := MakeAttrs(0.0, 0.5, 0.0);   (* green *)
   gKind[kString]  := MakeAttrs(0.6, 0.1, 0.1);   (* red-brown *)
   gKind[kNumber]  := MakeAttrs(0.5, 0.0, 0.5);   (* purple *)
+  NEW(gNewRuns); NEW(gScratch);
 
   NEW(store); store.Setup;
   storeId := CAST(ObjC.Id, store);
@@ -208,6 +261,8 @@ BEGIN
   Seed(store, "BEGIN");
   Seed(store, '  x := 42;  WriteString("hi")');
   Seed(store, "END Demo.");
+  (* a mid-document edit (prepend to line 1) — exercises the splice suffix path *)
+  store.ReplaceChars(0, 0, ObjC.NSString("(* top *) "));
 
   lm := s0(s0(ObjC.GetClass("NSLayoutManager"), ObjC.Selector("alloc")), ObjC.Selector("init"));
   ig := sp(storeId, ObjC.Selector("addLayoutManager:"), lm);
