@@ -3374,6 +3374,20 @@ fn resolve_designator_proc_sig(
     designator: &ast::Designator,
     scope: ScopeId,
 ) -> Option<ProcSig> {
+    // This is a *speculative* resolution of the call target (is it a plain or
+    // proc-variable callee?). If its head identifier is not in scope it can only
+    // be an implicit-`WITH SELF` field or a method-dispatch receiver — handled by
+    // the caller via analyse_expr — so bail silently rather than letting
+    // resolve_designator_head emit a spurious "unknown identifier". (Fixes bare
+    // `field.Method(…)` on an object-typed class field.)
+    if designator
+        .base
+        .segments
+        .first()
+        .is_some_and(|n| ctx.scopes.lookup(scope, n).is_none())
+    {
+        return None;
+    }
     let (sym, consumed) = resolve_designator_head(ctx, designator, scope)?;
     if consumed != designator.selectors.len() {
         return None;

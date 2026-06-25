@@ -57,10 +57,10 @@ CLASS IDEController;
   <* cocoa "NSObject" *>
   VAR editor: EditorView;                   (* an object-reference ivar *)
   PROCEDURE SetEditor (e: EditorView);
-  BEGIN SELF.editor := e END SetEditor;
+  BEGIN editor := e END SetEditor;
   PROCEDURE Build (sender: ObjC.Id);        (* target/action — selector "build:" *)
   BEGIN
-    SELF.editor.SetLines(SELF.editor.Lines() + 1)   (* each click compiles one more line *)
+    editor.SetLines(editor.Lines() + 1)     (* each click compiles one more line *)
   END Build;
 END IDEController;
 
