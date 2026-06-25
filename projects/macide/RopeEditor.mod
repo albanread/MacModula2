@@ -2,7 +2,8 @@ IMPLEMENTATION MODULE RopeEditor;
 (* The rope-backed text store (RopeStore : NSTextStorage, RopeString : NSString)
    + a small M2 lexer + incremental re-lex, wrapped as a reusable editor factory.
    See docs/design/mac-text-store.md and macos_textstore.mod (the staged proof). *)
-FROM SYSTEM IMPORT CAST, ADDRESS;
+FROM SYSTEM IMPORT CAST, ADDRESS, TSIZE;
+FROM Storage IMPORT ALLOCATE, DEALLOCATE;
 FROM Strings IMPORT Equal;
 IMPORT ObjC;
 IMPORT TextRope;
@@ -15,7 +16,8 @@ TYPE
   PNSRange = POINTER TO RECORD location, length: CARDINAL END;
   PWide    = POINTER TO ARRAY [0..16777215] OF CHAR;
   Run      = RECORD len: CARDINAL; kind: INTEGER END;
-  PRuns    = POINTER TO RECORD count: CARDINAL; a: ARRAY [0..16383] OF Run END;
+  PRunArr  = POINTER TO ARRAY [0..16777215] OF Run;   (* overlay on a heap block *)
+  PRuns    = POINTER TO RECORD count, cap: CARDINAL; a: PRunArr END;  (* growable run vector *)
   SendEdited = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, CARDINAL, INTEGER): ObjC.Id;
   Send2F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
   SendFrameC = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id;
@@ -30,6 +32,22 @@ VAR
   gKind: ARRAY [0..kKinds-1] OF ObjC.Id;
   gNewRuns, gScratch: PRuns;
   gInited: BOOLEAN;
+
+(* a fresh growable run vector, and grow-to-fit (heap-backed, no cap) *)
+PROCEDURE NewRuns (): PRuns;
+VAR p: PRuns;
+BEGIN NEW(p); p^.count := 0; p^.cap := 256; ALLOCATE(p^.a, p^.cap * TSIZE(Run)); RETURN p END NewRuns;
+
+PROCEDURE Reserve (p: PRuns; need: CARDINAL);
+VAR newcap, k: CARDINAL; na: PRunArr;
+BEGIN
+  IF need <= p^.cap THEN RETURN END;
+  newcap := p^.cap; WHILE newcap < need DO newcap := newcap * 2 END;
+  ALLOCATE(na, newcap * TSIZE(Run));
+  k := 0; WHILE k < p^.count DO na^[k] := p^.a^[k]; INC(k) END;
+  DEALLOCATE(p^.a, p^.cap * TSIZE(Run));
+  p^.a := na; p^.cap := newcap
+END Reserve;
 
 (* ---- M2 lexer over a wide buffer -> runs ---- *)
 PROCEDURE IsAlpha (c: CHAR): BOOLEAN;
@@ -55,10 +73,11 @@ END IsKeyword;
 
 PROCEDURE AddRun (p: PRuns; len: CARDINAL; kind: INTEGER);
 BEGIN
-  IF (p^.count > 0) AND (kind = kDefault) AND (p^.a[p^.count-1].kind = kDefault) THEN
-    p^.a[p^.count-1].len := p^.a[p^.count-1].len + len
-  ELSIF p^.count <= 16383 THEN
-    p^.a[p^.count].len := len; p^.a[p^.count].kind := kind; INC(p^.count)
+  IF (p^.count > 0) AND (kind = kDefault) AND (p^.a^[p^.count-1].kind = kDefault) THEN
+    p^.a^[p^.count-1].len := p^.a^[p^.count-1].len + len
+  ELSE
+    Reserve(p, p^.count + 1);
+    p^.a^[p^.count].len := len; p^.a^[p^.count].kind := kind; INC(p^.count)
   END
 END AddRun;
 
@@ -98,23 +117,24 @@ END Lex;
 PROCEDURE Splice (dst: PRuns; oldStart, oldEnd: CARDINAL; mid, out: PRuns);
 VAR ri, off, k: CARDINAL;
 BEGIN
+  Reserve(out, dst^.count + mid^.count + 4);       (* room for prefix + mid + suffix *)
   out^.count := 0; off := 0; ri := 0;
-  WHILE (ri < dst^.count) AND (off + dst^.a[ri].len <= oldStart) DO
-    out^.a[out^.count] := dst^.a[ri]; INC(out^.count); off := off + dst^.a[ri].len; INC(ri)
+  WHILE (ri < dst^.count) AND (off + dst^.a^[ri].len <= oldStart) DO
+    out^.a^[out^.count] := dst^.a^[ri]; INC(out^.count); off := off + dst^.a^[ri].len; INC(ri)
   END;
   IF (ri < dst^.count) AND (off < oldStart) THEN
-    out^.a[out^.count].len := oldStart - off; out^.a[out^.count].kind := dst^.a[ri].kind; INC(out^.count)
+    out^.a^[out^.count].len := oldStart - off; out^.a^[out^.count].kind := dst^.a^[ri].kind; INC(out^.count)
   END;
   k := 0;
-  WHILE k < mid^.count DO out^.a[out^.count] := mid^.a[k]; INC(out^.count); INC(k) END;
-  WHILE (ri < dst^.count) AND (off + dst^.a[ri].len <= oldEnd) DO off := off + dst^.a[ri].len; INC(ri) END;
+  WHILE k < mid^.count DO out^.a^[out^.count] := mid^.a^[k]; INC(out^.count); INC(k) END;
+  WHILE (ri < dst^.count) AND (off + dst^.a^[ri].len <= oldEnd) DO off := off + dst^.a^[ri].len; INC(ri) END;
   IF (ri < dst^.count) AND (off < oldEnd) THEN
-    out^.a[out^.count].len := (off + dst^.a[ri].len) - oldEnd; out^.a[out^.count].kind := dst^.a[ri].kind;
-    INC(out^.count); off := off + dst^.a[ri].len; INC(ri)
+    out^.a^[out^.count].len := (off + dst^.a^[ri].len) - oldEnd; out^.a^[out^.count].kind := dst^.a^[ri].kind;
+    INC(out^.count); off := off + dst^.a^[ri].len; INC(ri)
   END;
-  WHILE ri < dst^.count DO out^.a[out^.count] := dst^.a[ri]; INC(out^.count); INC(ri) END;
-  dst^.count := out^.count; k := 0;
-  WHILE k < out^.count DO dst^.a[k] := out^.a[k]; INC(k) END
+  WHILE ri < dst^.count DO out^.a^[out^.count] := dst^.a^[ri]; INC(out^.count); INC(ri) END;
+  Reserve(dst, out^.count); dst^.count := out^.count; k := 0;
+  WHILE k < out^.count DO dst^.a^[k] := out^.a^[k]; INC(k) END
 END Splice;
 
 CLASS RopeString;
@@ -142,7 +162,7 @@ CLASS RopeStore;
   BEGIN
     NEW(box); box^.r := TextRope.Empty();
     NEW(rs); rs.SetBox(box); ropeStr := CAST(ObjC.Id, rs);
-    NEW(runs); runs^.count := 0
+    runs := NewRuns()
   END Setup;
   PROCEDURE RelexEdit (editLoc, removed, inserted: CARDINAL);
   VAR lineStart, lineEnd, docLen, oldEnd: CARDINAL; sub: ARRAY [0..262143] OF CHAR; delta: INTEGER;
@@ -177,13 +197,13 @@ CLASS RopeStore;
   VAR rng: PNSRange; i, start: CARDINAL;
   BEGIN
     i := 0; start := 0;
-    WHILE (i < runs^.count) AND (start + runs^.a[i].len <= loc) DO start := start + runs^.a[i].len; INC(i) END;
+    WHILE (i < runs^.count) AND (start + runs^.a^[i].len <= loc) DO start := start + runs^.a^[i].len; INC(i) END;
     IF rangePtr # NIL THEN
       rng := CAST(PNSRange, rangePtr);
-      IF i < runs^.count THEN rng^.location := start; rng^.length := runs^.a[i].len
+      IF i < runs^.count THEN rng^.location := start; rng^.length := runs^.a^[i].len
       ELSE rng^.location := loc; rng^.length := 1 END
     END;
-    IF i < runs^.count THEN RETURN gKind[runs^.a[i].kind] ELSE RETURN gKind[kDefault] END
+    IF i < runs^.count THEN RETURN gKind[runs^.a^[i].kind] ELSE RETURN gKind[kDefault] END
   END AttributesAt;
   PROCEDURE SetAttrs (a: ObjC.Id; loc, len: CARDINAL) <* selector "setAttributes:range:" *>;
   BEGIN END SetAttrs;
@@ -231,7 +251,7 @@ BEGIN
   gKind[kComment] := MakeAttrs(0.0, 0.5, 0.0);
   gKind[kString]  := MakeAttrs(0.6, 0.1, 0.1);
   gKind[kNumber]  := MakeAttrs(0.5, 0.0, 0.5);
-  NEW(gNewRuns); NEW(gScratch);
+  gNewRuns := NewRuns(); gScratch := NewRuns();
   gInited := TRUE
 END EnsureInit;
 
