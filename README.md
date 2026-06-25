@@ -90,10 +90,10 @@ cargo build -p newm2-driver
 src/                Rust + LLVM compiler: lexer, sema, IR, LLVM codegen, runtime, driver
 library/macrtdef    Mac runtime interfaces  — Cocoa / ObjC / Proc / CG / CocoaNS
 library/macrtmod    Mac runtime implementation
-library/shareddef   portable runtime (Base64, Vector, StrUtil, Terminal model, …)
+library/shareddef   portable runtime (Base64, Vector, StrUtil, Terminal model, Ptcl, …)
 library/sharedmod
 library/isodef|isomod, pimdef|pimmod, rtdef, utildef|utilmod   stdlib (ISO 10514-1 + PIM 4)
-library/uidef|uimod, NewM2                                     shared UI (Ptcl) + compiler modules
+library/NewM2                                                  compiler-internal Modula-2 modules
 projects/macide     the MacM2 IDE + Cocoa demos + the rope text store + Ptcl tests
 docs/design         cocoa-classes.md, mac-text-store.md, …
 ```
