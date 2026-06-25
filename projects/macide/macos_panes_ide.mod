@@ -43,7 +43,7 @@ CLASS FlippedDoc;
 END FlippedDoc;
 
 VAR
-  win, content, outerSplit, innerSplit, sidebar, tabs, output, status, helpPane, searchField: Cocoa.Object;
+  win, content, outerSplit, rightStack, innerSplit, sidebar, tabs, output, status, helpPane, searchField: Cocoa.Object;
   projScroll, libScroll, projDoc, libDoc, editorArea, tabBar, tabDoc: Cocoa.Object;
   gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
@@ -105,6 +105,28 @@ END MakeSplit;
 PROCEDURE SetDivider (split: Cocoa.Object; index: INTEGER; pos: REAL);
 BEGIN ig := sfi(CAST(ObjC.Id, split), ObjC.Selector("setPosition:ofDividerAtIndex:"), pos, index) END SetDivider;
 
+(* Show/hide the help pane. When hidden it is REMOVED from rightStack so the
+   editor pane fills 100% (no leftover band); when shown it is re-added as the
+   rightmost pane (its right edge = the window's right edge) with a draggable
+   splitter. gHelpVisible tracks membership. *)
+PROCEDURE HelpShow (visible: BOOLEAN);
+BEGIN
+  IF visible THEN
+    IF NOT gHelpVisible THEN
+      Cocoa.AddSubview(rightStack, helpPane);
+      ig := s0(CAST(ObjC.Id, rightStack), ObjC.Selector("adjustSubviews"))   (* incorporate the new pane *)
+    END;
+    SetDivider(rightStack, 0, 560.0);
+    gHelpVisible := TRUE
+  ELSE
+    IF gHelpVisible THEN
+      Cocoa.RemoveView(helpPane);
+      ig := s0(CAST(ObjC.Id, rightStack), ObjC.Selector("adjustSubviews"))
+    END;
+    gHelpVisible := FALSE
+  END
+END HelpShow;
+
 (* an NSScrollView with a vertical scroller and a flipped document NSView. *)
 PROCEDURE MakeScroll (x, y, w, h: REAL; VAR doc: Cocoa.Object): Cocoa.Object;
 VAR sc: ObjC.Id; fd: FlippedDoc;
@@ -120,7 +142,7 @@ BEGIN
   RETURN CAST(Cocoa.Object, sc)
 END MakeScroll;
 
-PROCEDURE CtrlButton (x, y, w: REAL; title, selector: ARRAY OF CHAR): Cocoa.Object;
+PROCEDURE CtrlButton (x, y, w: REAL; title, selector: ARRAY OF CHAR; mask: INTEGER): Cocoa.Object;
 VAR b: ObjC.Id;
 BEGIN
   b := s0(s0(ObjC.GetClass("NSButton"), ObjC.Selector("alloc")), ObjC.Selector("init"));
@@ -128,6 +150,7 @@ BEGIN
   ig := sp(b, ObjC.Selector("setTitle:"), ObjC.NSString(title));
   ig := sp(b, ObjC.Selector("setTarget:"), ctrl);
   ig := sp(b, ObjC.Selector("setAction:"), ObjC.Selector(selector));
+  ig := sendIInt(b, ObjC.Selector("setAutoresizingMask:"), mask);
   RETURN CAST(Cocoa.Object, b)
 END CtrlButton;
 
@@ -259,8 +282,7 @@ VAR t: ARRAY [0..32767] OF CHAR;
 BEGIN
   Assign(title, t); Append(helpNL, t); Append(helpNL, t); Append(body, t);
   Cocoa.SetEditorText(helpPane, t);
-  gHelpVisible := TRUE;
-  ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE)
+  HelpShow(TRUE)
 END ShowAssist;
 
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
@@ -344,18 +366,16 @@ CLASS IDE;
       ELSE Cocoa.SetText(status, "Build/run reported errors.") END
     END
   END OnBuildRun;
-  PROCEDURE OnHelp (sender: ObjC.Id);              (* "onHelp:" — F1 toggles the help pane *)
+  PROCEDURE OnHelp (sender: ObjC.Id);              (* "onHelp:" — F1 shows/hides the help pane *)
   BEGIN
-    gHelpVisible := NOT gHelpVisible;
-    ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), NOT gHelpVisible);
+    HelpShow(NOT gHelpVisible);
     IF gHelpVisible THEN Cocoa.SetText(status, "Help shown (F1 to hide).")
     ELSE Cocoa.SetText(status, "Help hidden (F1 to show).") END
   END OnHelp;
   PROCEDURE OnHome (sender: ObjC.Id);             (* "onHome:" — reveal help, restoring its text *)
   BEGIN
     Cocoa.SetEditorText(helpPane, gHelpText);
-    gHelpVisible := TRUE;
-    ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), FALSE);
+    HelpShow(TRUE);
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
   PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘/ : completions at the cursor *)
@@ -420,11 +440,12 @@ BEGIN
   content := Cocoa.ContentView(win);
   NEW(ide); ctrl := CAST(ObjC.Id, ide);
 
-  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 76.0,  "Open", "onOpen:"));
-  Cocoa.AddSubview(content, CtrlButton(88.0,  604.0, 64.0,  "Save", "onSave:"));
-  Cocoa.AddSubview(content, CtrlButton(156.0, 604.0, 104.0, "Build & Run", "onBuildRun:"));
-  Cocoa.AddSubview(content, CtrlButton(264.0, 604.0, 92.0,  "✕ Close Tab", "onClose:"));
+  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 76.0,  "Open", "onOpen:", 8));
+  Cocoa.AddSubview(content, CtrlButton(88.0,  604.0, 64.0,  "Save", "onSave:", 8));
+  Cocoa.AddSubview(content, CtrlButton(156.0, 604.0, 104.0, "Build & Run", "onBuildRun:", 8));
+  Cocoa.AddSubview(content, CtrlButton(264.0, 604.0, 92.0,  "✕ Close Tab", "onClose:", 8));
   status := Cocoa.MakeLabel(362.0, 610.0, 330.0, 22.0, "Ready.");
+  ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 8);  (* stick top *)
   Cocoa.AddSubview(content, status);
   (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
   searchField := s0(s0(ObjC.GetClass("NSSearchField"), ObjC.Selector("alloc")), ObjC.Selector("init"));
@@ -433,9 +454,10 @@ BEGIN
   ig := sp(CAST(ObjC.Id, searchField), ObjC.Selector("setAction:"), ObjC.Selector("onCocoaSearch:"));
   ig := sp(s0(CAST(ObjC.Id, searchField), ObjC.Selector("cell")),
            ObjC.Selector("setPlaceholderString:"), ObjC.NSString("Find Cocoa class…"));
+  ig := sendIInt(CAST(ObjC.Id, searchField), ObjC.Selector("setAutoresizingMask:"), 9);  (* stick top-right *)
   Cocoa.AddSubview(content, searchField);
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
-  Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:"));
+  Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:", 9));
 
   outerSplit := MakeSplit(0.0, 0.0, 1100.0, 596.0, TRUE);
   ig := sendIInt(CAST(ObjC.Id, outerSplit), ObjC.Selector("setAutoresizingMask:"), 18);
@@ -450,9 +472,13 @@ BEGIN
   Cocoa.AddSubview(sidebar, projScroll);
   Cocoa.AddSubview(sidebar, libScroll);
 
-  innerSplit := MakeSplit(0.0, 0.0, 860.0, 596.0, FALSE);
+  (* rightStack is a 2-pane split: the editor/output centre | the help pane.
+     (Two 2-pane splits nest reliably; a single 3-pane split does not position.) *)
+  rightStack := MakeSplit(0.0, 0.0, 880.0, 596.0, TRUE);
+  innerSplit := MakeSplit(0.0, 0.0, 560.0, 596.0, FALSE);
   Cocoa.AddSubview(outerSplit, sidebar);
-  Cocoa.AddSubview(outerSplit, innerSplit);
+  Cocoa.AddSubview(outerSplit, rightStack);
+  Cocoa.AddSubview(rightStack, innerSplit);
 
   (* editor area = a custom tab bar (closeable tabs) over a tab-less NSTabView *)
   editorArea := MakeView(0.0, 0.0, 860.0, 390.0);
@@ -491,10 +517,8 @@ BEGIN
   HL("");
   HL("Drag the pane dividers to resize.  Cmd-Q quits.");
   Cocoa.SetEditorText(helpPane, gHelpText);
-  (* a slide-in help panel overlaying the right of the editor area; F1 toggles. *)
-  SetFrameOf(helpPane, 760.0, 0.0, 340.0, 596.0);
-  Cocoa.AddSubview(content, helpPane);
-  ig := sb(CAST(ObjC.Id, helpPane), ObjC.Selector("setHidden:"), TRUE);
+  (* the help / Assist pane joins rightStack (as the rightmost pane) only when
+     shown — see HelpShow; hidden, it is removed so the editor fills with no band *)
   gHelpVisible := FALSE;
 
   (* a real menu bar (App / File / Build / Help), set before RunApp *)
@@ -536,6 +560,7 @@ BEGIN
   SetDivider(outerSplit, 0, 210.0);
   SetDivider(innerSplit, 0, 390.0);
   SetDivider(sidebar, 0, 360.0);
+  gHelpVisible := FALSE;                  (* help starts out of the split (editor fills) *)
   Cocoa.SetText(status, "Ready — PROJECT (top) and LIBRARY (bottom). F1 = help.");
 
   Cocoa.RunApp;
