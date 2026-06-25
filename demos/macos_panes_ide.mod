@@ -43,7 +43,7 @@ CLASS FlippedDoc;
 END FlippedDoc;
 
 VAR
-  win, content, outerSplit, innerSplit, sidebar, tabs, output, status, helpPane: Cocoa.Object;
+  win, content, outerSplit, innerSplit, sidebar, tabs, output, status, helpPane, searchField: Cocoa.Object;
   projScroll, libScroll, projDoc, libDoc, editorArea, tabBar, tabDoc: Cocoa.Object;
   gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
@@ -370,6 +370,18 @@ CLASS IDE;
     IF n > 0 THEN Cocoa.SetText(status, "Completions in the right pane.")
     ELSE Cocoa.SetText(status, "No completions at this position.") END
   END OnComplete;
+  PROCEDURE OnCocoaSearch (sender: ObjC.Id);      (* "onCocoaSearch:" — search the Obj-C runtime *)
+  VAR q, res: ARRAY [0..16383] OF CHAR; n: INTEGER; sv: ObjC.Id; title: ARRAY [0..511] OF CHAR;
+  BEGIN
+    sv := s0(CAST(ObjC.Id, searchField), ObjC.Selector("stringValue"));
+    n := ObjC.GetString(sv, q);
+    IF q[0] = CHR(0) THEN Cocoa.SetText(status, "Type a Cocoa class name, then Enter."); RETURN END;
+    n := ObjC.FindClasses(q, res);
+    Assign("Cocoa classes matching '", title); Append(q, title); Append("'   (Name : Superclass):", title);
+    ShowAssist(title, res);
+    IF n > 0 THEN Cocoa.SetText(status, "Cocoa search — results in the right pane.")
+    ELSE Cocoa.SetText(status, "No Cocoa class matches that.") END
+  END OnCocoaSearch;
   PROCEDURE OnClose (sender: ObjC.Id);            (* "onClose:" — close the active tab (⌘W) *)
   BEGIN CloseTabAt(Cocoa.SelectedTab(tabs)) END OnClose;
   PROCEDURE OnCloseTab (sender: ObjC.Id);         (* "onCloseTab:" — the ✕ on a tab *)
@@ -412,8 +424,16 @@ BEGIN
   Cocoa.AddSubview(content, CtrlButton(88.0,  604.0, 64.0,  "Save", "onSave:"));
   Cocoa.AddSubview(content, CtrlButton(156.0, 604.0, 104.0, "Build & Run", "onBuildRun:"));
   Cocoa.AddSubview(content, CtrlButton(264.0, 604.0, 92.0,  "✕ Close Tab", "onClose:"));
-  status := Cocoa.MakeLabel(362.0, 610.0, 636.0, 22.0, "Ready.");
+  status := Cocoa.MakeLabel(362.0, 610.0, 330.0, 22.0, "Ready.");
   Cocoa.AddSubview(content, status);
+  (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
+  searchField := s0(s0(ObjC.GetClass("NSSearchField"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  ig := sf(CAST(ObjC.Id, searchField), ObjC.Selector("setFrame:"), 700.0, 605.0, 280.0, 26.0);
+  ig := sp(CAST(ObjC.Id, searchField), ObjC.Selector("setTarget:"), ctrl);
+  ig := sp(CAST(ObjC.Id, searchField), ObjC.Selector("setAction:"), ObjC.Selector("onCocoaSearch:"));
+  ig := sp(s0(CAST(ObjC.Id, searchField), ObjC.Selector("cell")),
+           ObjC.Selector("setPlaceholderString:"), ObjC.NSString("Find Cocoa class…"));
+  Cocoa.AddSubview(content, searchField);
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
   Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:"));
 

@@ -63,6 +63,10 @@ PROCEDURE SetCursor (textview: Id; offset: INTEGER);
    scroll it into view; returns the 1-based line number (0 if none). *)
 PROCEDURE GotoFirstError (textview: Id; output: ARRAY OF CHAR): INTEGER;
 
+(* Search the live Obj-C runtime for classes whose name contains `query`
+   (case-insensitive); writes `Name : Super` lines into `out`, returns matches. *)
+PROCEDURE FindClasses (query: ARRAY OF CHAR; VAR out: ARRAY OF CHAR): INTEGER;
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);

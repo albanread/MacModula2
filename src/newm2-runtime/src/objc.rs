@@ -1010,6 +1010,109 @@ pub extern "C-unwind" fn nm2_ide_goto_first_error(
     target as i64
 }
 
+/// `ObjC.FindClasses(query, VAR out)` — search the live Objective-C runtime for
+/// classes whose name contains `query` (case-insensitive), writing `Name : Super`
+/// lines into `out`. Returns the number of matches. This is "find Cocoa objects":
+/// every loaded class (NSWindow, NSView, NSButton, …) is searchable.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_find_classes(
+    query_ptr: *const u16,
+    query_high: u64,
+    out_ptr: *mut u16,
+    out_high: u64,
+) -> i64 {
+    bootstrap();
+    if out_ptr.is_null() {
+        return 0;
+    }
+    let query = {
+        if query_ptr.is_null() {
+            String::new()
+        } else {
+            let cap = (query_high as usize).saturating_add(1);
+            let units = unsafe { std::slice::from_raw_parts(query_ptr, cap) };
+            let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+            String::from_utf16_lossy(&units[..end])
+        }
+    }
+    .to_lowercase();
+    if query.is_empty() {
+        return 0;
+    }
+    let copy = sym_or_null("objc_copyClassList");
+    let getname = sym_or_null("class_getName");
+    let getsuper = sym_or_null("class_getSuperclass");
+    if copy.is_null() || getname.is_null() || getsuper.is_null() {
+        return 0;
+    }
+    let copy: extern "C" fn(*mut u32) -> *mut *mut c_void = unsafe { std::mem::transmute(copy) };
+    let getname: extern "C" fn(*mut c_void) -> *const i8 = unsafe { std::mem::transmute(getname) };
+    let getsuper: extern "C" fn(*mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(getsuper) };
+
+    let mut count: u32 = 0;
+    let list = copy(&mut count);
+    if list.is_null() {
+        return 0;
+    }
+    let mut hits: Vec<(String, String)> = Vec::new();
+    for i in 0..count as isize {
+        let cls = unsafe { *list.offset(i) };
+        if cls.is_null() {
+            continue;
+        }
+        let np = getname(cls);
+        if np.is_null() {
+            continue;
+        }
+        let name = unsafe { CStr::from_ptr(np) }.to_string_lossy().into_owned();
+        if name.to_lowercase().contains(&query) {
+            let sup = getsuper(cls);
+            let supname = if sup.is_null() {
+                String::new()
+            } else {
+                let sp = getname(sup);
+                if sp.is_null() {
+                    String::new()
+                } else {
+                    unsafe { CStr::from_ptr(sp) }.to_string_lossy().into_owned()
+                }
+            };
+            hits.push((name, supname));
+        }
+    }
+    let free = sym_or_null("free");
+    if !free.is_null() {
+        let free: extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(free) };
+        free(list as *mut c_void);
+    }
+    hits.sort();
+    let total = hits.len();
+    let mut s = String::new();
+    for (name, sup) in hits.iter().take(400) {
+        s.push_str(name);
+        if !sup.is_empty() {
+            s.push_str("  :  ");
+            s.push_str(sup);
+        }
+        s.push('\n');
+    }
+    if total > 400 {
+        s.push_str("… (");
+        s.push_str(&total.to_string());
+        s.push_str(" total)\n");
+    }
+    let utf16: Vec<u16> = s.encode_utf16().collect();
+    let n = utf16.len().min(out_high as usize);
+    unsafe {
+        for i in 0..n {
+            *out_ptr.add(i) = utf16[i];
+        }
+        *out_ptr.add(n) = 0;
+    }
+    total as i64
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).
