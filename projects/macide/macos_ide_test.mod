@@ -1,83 +1,121 @@
 MODULE macos_ide_test;
-(* Automated IDE testing with the in-repo Ptcl interpreter. The IDE's editor
-   operations are registered as Ptcl verbs (settext / gettext / save / load /
-   len / expect); a Ptcl script then drives them and asserts. Here it exercises a
-   load/save round-trip through the rope-backed editor (RopeEditor) — set text,
-   save to a file, clear, load it back, and assert the text matches. Headless
-   (no RunApp): prints PASS/FAIL. This is the harness to grow IDE tests in. *)
+(* Automated IDE testing with the in-repo Ptcl interpreter. IDE/editor operations
+   are registered as Ptcl verbs; scripts drive them and assert. Covers a load/save
+   round-trip, auto-indent (Enter copies the line's indent), and a build-&-run of a
+   program typed into the editor — all headless, printing PASS/FAIL per test.
+
+   Verbs:  settext {t}   gettext   save <p>   load <p>   len
+           setcursor <n>  enter     buildrun   expect <a> <b>                      *)
 FROM STextIO IMPORT WriteString, WriteLn;
-FROM Strings IMPORT Append, Equal;
-FROM SWholeIO IMPORT WriteCard;
+FROM Strings IMPORT Append, Equal, Length;
+FROM SYSTEM IMPORT CAST;
 IMPORT Ptcl;
 IMPORT Cocoa;
 IMPORT RopeEditor;
 IMPORT Proc;
 IMPORT ObjC;
 
+TYPE SendRange = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;
+
 VAR
   gEditor: ObjC.Id;
   script, out: ARRAY [0..16383] OF CHAR;
   nl: ARRAY [0..1] OF CHAR;
+  s0: ObjC.Send0; sp: ObjC.SendP; srange: SendRange;
 
-(* ---- IDE verbs, operating on the rope-backed editor ---- *)
-PROCEDURE CmdSetText (): BOOLEAN;
-VAR t: ARRAY [0..16383] OF CHAR;
+PROCEDURE Tv (): ObjC.Id;                      (* the editor's text view *)
+BEGIN RETURN s0(gEditor, ObjC.Selector("documentView")) END Tv;
+
+PROCEDURE CardToStr (n: CARDINAL; VAR s: ARRAY OF CHAR);
+VAR d: ARRAY [0..31] OF CHAR; i, j: CARDINAL;
+BEGIN
+  IF n = 0 THEN s[0] := '0'; s[1] := CHR(0); RETURN END;
+  i := 0; WHILE n > 0 DO d[i] := CHR(ORD('0') + (n MOD 10)); n := n DIV 10; INC(i) END;
+  j := 0; WHILE i > 0 DO DEC(i); s[j] := d[i]; INC(j) END; s[j] := CHR(0)
+END CardToStr;
+
+PROCEDURE CmdSetText (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR;
 BEGIN Ptcl.Arg(1, t); Cocoa.SetEditorText(gEditor, t); RETURN TRUE END CmdSetText;
 
-PROCEDURE CmdGetText (): BOOLEAN;
-VAR t: ARRAY [0..16383] OF CHAR;
+PROCEDURE CmdGetText (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR;
 BEGIN Cocoa.EditorText(gEditor, t); Ptcl.Result(t); RETURN TRUE END CmdGetText;
 
-PROCEDURE CmdSave (): BOOLEAN;
-VAR path, t: ARRAY [0..16383] OF CHAR; rc: INTEGER;
+PROCEDURE CmdSave (): BOOLEAN; VAR path, t: ARRAY [0..16383] OF CHAR; rc: INTEGER;
 BEGIN
   Ptcl.Arg(1, path); Cocoa.EditorText(gEditor, t); rc := Proc.WriteFile(path, t);
   IF rc = 0 THEN RETURN TRUE ELSE Ptcl.Fail("write failed"); RETURN FALSE END
 END CmdSave;
 
-PROCEDURE CmdLoad (): BOOLEAN;
-VAR path, t: ARRAY [0..16383] OF CHAR; n: INTEGER;
+PROCEDURE CmdLoad (): BOOLEAN; VAR path, t: ARRAY [0..16383] OF CHAR; n: INTEGER;
 BEGIN
   Ptcl.Arg(1, path); n := Proc.ReadFile(path, t);
   IF n >= 0 THEN Cocoa.SetEditorText(gEditor, t); RETURN TRUE
   ELSE Ptcl.Fail("read failed"); RETURN FALSE END
 END CmdLoad;
 
-PROCEDURE CmdExpect (): BOOLEAN;     (* expect <a> <b> : fail unless equal *)
-VAR a, b: ARRAY [0..16383] OF CHAR;
+PROCEDURE CmdLen (): BOOLEAN; VAR t: ARRAY [0..16383] OF CHAR; s: ARRAY [0..31] OF CHAR;
+BEGIN Cocoa.EditorText(gEditor, t); CardToStr(Length(t), s); Ptcl.Result(s); RETURN TRUE END CmdLen;
+
+PROCEDURE CmdSetCursor (): BOOLEAN; VAR ig: ObjC.Id;
+BEGIN ig := srange(Tv(), ObjC.Selector("setSelectedRange:"), VAL(CARDINAL, Ptcl.ArgInt(1)), 0); RETURN TRUE END CmdSetCursor;
+
+PROCEDURE CmdEnter (): BOOLEAN; VAR ig: ObjC.Id;
+BEGIN ig := sp(Tv(), ObjC.Selector("insertNewline:"), NIL); RETURN TRUE END CmdEnter;
+
+PROCEDURE CmdBuildRun (): BOOLEAN;
+VAR src, outp: ARRAY [0..16383] OF CHAR; s: ARRAY [0..31] OF CHAR; rc, ix: INTEGER;
+BEGIN
+  Cocoa.EditorText(gEditor, src);
+  ix := Proc.WriteFile("/tmp/ide_test_build.mod", src);
+  rc := Proc.RunCapture("./target/debug/newm2-driver run --library library /tmp/ide_test_build.mod 2>&1", outp);
+  CardToStr(VAL(CARDINAL, rc), s); Ptcl.Result(s); RETURN TRUE
+END CmdBuildRun;
+
+PROCEDURE CmdExpect (): BOOLEAN; VAR a, b: ARRAY [0..16383] OF CHAR;
 BEGIN
   Ptcl.Arg(1, a); Ptcl.Arg(2, b);
-  IF Equal(a, b) THEN Ptcl.Result("ok"); RETURN TRUE
-  ELSE Ptcl.Fail("mismatch"); RETURN FALSE END
+  IF Equal(a, b) THEN Ptcl.Result("ok"); RETURN TRUE ELSE Ptcl.Fail("mismatch"); RETURN FALSE END
 END CmdExpect;
 
-PROCEDURE SC (s: ARRAY OF CHAR);     (* append a script line *)
+PROCEDURE SC (s: ARRAY OF CHAR);
 BEGIN Append(s, script); Append(nl, script) END SC;
 
-VAR sample: ARRAY [0..255] OF CHAR;
+PROCEDURE Run (title: ARRAY OF CHAR);
+BEGIN
+  IF Ptcl.Eval(script, out) THEN WriteString("PASS  "); WriteString(title)
+  ELSE WriteString("FAIL  "); WriteString(title); WriteString("  ->  "); WriteString(out) END;
+  WriteLn; script[0] := CHR(0)
+END Run;
+
 BEGIN
   Cocoa.InitApp;
+  s0 := CAST(ObjC.Send0, ObjC.MsgSendPtr());
+  sp := CAST(ObjC.SendP, ObjC.MsgSendPtr());
+  srange := CAST(SendRange, ObjC.MsgSendPtr());
   gEditor := RopeEditor.Make(0.0, 0.0, 500.0, 300.0);
+  nl[0] := CHR(10); nl[1] := CHR(0); script[0] := CHR(0);
 
-  Ptcl.Register("settext", CmdSetText);
-  Ptcl.Register("gettext", CmdGetText);
-  Ptcl.Register("save", CmdSave);
-  Ptcl.Register("load", CmdLoad);
+  Ptcl.Register("settext", CmdSetText);   Ptcl.Register("gettext", CmdGetText);
+  Ptcl.Register("save", CmdSave);         Ptcl.Register("load", CmdLoad);
+  Ptcl.Register("len", CmdLen);           Ptcl.Register("setcursor", CmdSetCursor);
+  Ptcl.Register("enter", CmdEnter);       Ptcl.Register("buildrun", CmdBuildRun);
   Ptcl.Register("expect", CmdExpect);
 
-  sample := "MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.";
-
-  script[0] := CHR(0); nl[0] := CHR(10); nl[1] := CHR(0);
   SC("settext {MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.}");
   SC("save /tmp/ide_sample.mod");
-  SC("settext {}");                                          (* clear the editor *)
-  SC("expect [gettext] {}");                                 (* assert it cleared *)
-  SC("load /tmp/ide_sample.mod");                            (* read it back *)
+  SC("settext {}");
+  SC("expect [gettext] {}");
+  SC("load /tmp/ide_sample.mod");
   SC("expect [gettext] {MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.}");
+  Run("load/save round-trip");
 
-  IF Ptcl.Eval(script, out) THEN
-    WriteString("PASS — load/save round-trip through the rope editor"); WriteLn
-  ELSE
-    WriteString("FAIL — "); WriteString(out); WriteLn
-  END
+  SC("settext {    BEGIN}");        (* 4 spaces + BEGIN = 9 chars *)
+  SC("setcursor 9");
+  SC("enter");                      (* auto-indent: newline + 4 spaces -> 14 chars *)
+  SC("expect [len] 14");
+  Run("auto-indent");
+
+  SC('settext {MODULE H; FROM STextIO IMPORT WriteString; BEGIN WriteString("hi") END H.}');
+  SC("expect [buildrun] 0");
+  Run("build & run a typed program");
 END macos_ide_test.

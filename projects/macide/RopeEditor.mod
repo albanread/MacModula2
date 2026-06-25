@@ -192,6 +192,27 @@ CLASS RopeStore;
   BEGIN END FixAttributes;
 END RopeStore;
 
+(* an NSTextView that auto-indents: Enter copies the current line's leading
+   whitespace onto the new line *)
+CLASS RopeTextView;
+  <* cocoa "NSTextView" *>
+  PROCEDURE InsertNewline (sender: ObjC.Id) <* selector "insertNewline:" *>;
+  VAR loc, ls, i, k: CARDINAL; buf: ARRAY [0..65535] OF CHAR; ins: ARRAY [0..255] OF CHAR; me: ObjC.Id;
+  BEGIN
+    me := CAST(ObjC.Id, SELF);
+    loc := s0i(me, ObjC.Selector("selectedRange"));     (* NSRange.location is returned in x0 *)
+    ObjC.GetString(s0(me, ObjC.Selector("string")), buf);
+    ls := loc;
+    WHILE (ls > 0) AND (buf[ls-1] # CHR(10)) DO DEC(ls) END;
+    ins[0] := CHR(10); k := 1; i := ls;
+    WHILE (i < loc) AND ((buf[i] = ' ') OR (buf[i] = CHR(9))) AND (k < 254) DO
+      ins[k] := buf[i]; INC(k); INC(i)
+    END;
+    ins[k] := CHR(0);
+    ig := sp(me, ObjC.Selector("insertText:"), ObjC.NSString(ins))
+  END InsertNewline;
+END RopeTextView;
+
 PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;
 VAR d, color: ObjC.Id;
 BEGIN
@@ -216,27 +237,23 @@ BEGIN
 END EnsureInit;
 
 PROCEDURE Make (x, y, w, h: REAL): ObjC.Id;
-VAR store: RopeStore; sid, lm, container, tv, scroll: ObjC.Id;
+VAR store: RopeStore; tv: RopeTextView; sid, tvId, lm, scroll: ObjC.Id;
 BEGIN
   EnsureInit;
-  NEW(store); store.Setup;
-  sid := CAST(ObjC.Id, store);
-  lm := s0(s0(ObjC.GetClass("NSLayoutManager"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  NEW(store); store.Setup; sid := CAST(ObjC.Id, store);
+  NEW(tv); tvId := CAST(ObjC.Id, tv);                  (* an auto-indenting text view *)
+  lm := s0(tvId, ObjC.Selector("layoutManager"));
   ig := sb(lm, ObjC.Selector("setAllowsNonContiguousLayout:"), TRUE);
-  ig := sp(sid, ObjC.Selector("addLayoutManager:"), lm);
-  container := s0(ObjC.GetClass("NSTextContainer"), ObjC.Selector("alloc"));
-  container := s2f(container, ObjC.Selector("initWithSize:"), w, 10000000.0);
-  ig := sb(container, ObjC.Selector("setWidthTracksTextView:"), TRUE);
-  ig := sp(lm, ObjC.Selector("addTextContainer:"), container);
-  tv := s0(ObjC.GetClass("NSTextView"), ObjC.Selector("alloc"));
-  tv := sfc(tv, ObjC.Selector("initWithFrame:textContainer:"), 0.0, 0.0, w, h, container);
-  ig := sb(tv, ObjC.Selector("setVerticallyResizable:"), TRUE);
-  ig := sb(tv, ObjC.Selector("setHorizontallyResizable:"), FALSE);
-  ig := si(tv, ObjC.Selector("setAutoresizingMask:"), 2);   (* width sizable *)
+  ig := sp(lm, ObjC.Selector("replaceTextStorage:"), sid);   (* render the rope store *)
+  ig := sf(tvId, ObjC.Selector("setFrame:"), 0.0, 0.0, w, h);
+  ig := sb(tvId, ObjC.Selector("setVerticallyResizable:"), TRUE);
+  ig := sb(tvId, ObjC.Selector("setHorizontallyResizable:"), FALSE);
+  ig := si(tvId, ObjC.Selector("setAutoresizingMask:"), 2);   (* width sizable *)
+  ig := sb(s0(tvId, ObjC.Selector("textContainer")), ObjC.Selector("setWidthTracksTextView:"), TRUE);
   scroll := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
   scroll := sf(scroll, ObjC.Selector("initWithFrame:"), x, y, w, h);
   ig := sb(scroll, ObjC.Selector("setHasVerticalScroller:"), TRUE);
-  ig := sp(scroll, ObjC.Selector("setDocumentView:"), tv);
+  ig := sp(scroll, ObjC.Selector("setDocumentView:"), tvId);
   RETURN scroll
 END Make;
 
