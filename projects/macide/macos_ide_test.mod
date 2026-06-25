@@ -19,8 +19,9 @@ TYPE SendRange = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;
 
 VAR
   gEditor: ObjC.Id;
-  script, out: ARRAY [0..262143] OF CHAR;
+  script, out, big: ARRAY [0..262143] OF CHAR;
   nl: ARRAY [0..1] OF CHAR;
+  k: CARDINAL; ixx: INTEGER;
   s0: ObjC.Send0; sp: ObjC.SendP; srange: SendRange;
 
 PROCEDURE Tv (): ObjC.Id;                      (* the editor's text view *)
@@ -122,4 +123,15 @@ BEGIN
   SC('settext {MODULE H; FROM STextIO IMPORT WriteString; BEGIN WriteString("hi") END H.}');
   SC("expect [buildrun] 0");
   Run("build & run a typed program");
+
+  (* large-file truncation regression: a ~86K-char file (>> the old 4096 cap) must
+     load into the rope editor with every character intact (editor len == file len) *)
+  big[0] := CHR(0); k := 0;
+  WHILE k < 2000 DO
+    Append("  x := 0; (* a line of filler text here *)", big); Append(nl, big); INC(k)
+  END;
+  ixx := Proc.WriteFile("/tmp/ide_big.mod", big);
+  SC("load /tmp/ide_big.mod");
+  SC("expect [len] [filelen /tmp/ide_big.mod]");
+  Run("large-file load: no truncation");
 END macos_ide_test.
