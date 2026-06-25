@@ -1,0 +1,17 @@
+(* Sound — play audio and MIDI on macOS, in pure Modula-2. PlayMidi drives
+   AVMIDIPlayer (the built-in DLS synth); PlayWav drives NSSound. Both reach the
+   Cocoa / AVFoundation classes through the ObjC message-send bridge — the only
+   runtime help needed is ObjC.LoadFramework to dlopen AVFoundation. Both block
+   until playback ends. See library/macrtmod/Sound.mod. *)
+
+DEFINITION MODULE Sound;
+
+(* Play a Standard MIDI File (e.g. one written by SmfFile.WriteSmf) through the
+   built-in macOS synthesizer. Blocks until the tune finishes. *)
+PROCEDURE PlayMidi (path: ARRAY OF CHAR);
+
+(* Play an audio file (e.g. a .wav written by WavFile) via NSSound. Blocks until
+   playback ends. *)
+PROCEDURE PlayWav (path: ARRAY OF CHAR);
+
+END Sound.

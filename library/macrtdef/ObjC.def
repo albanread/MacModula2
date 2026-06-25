@@ -74,6 +74,11 @@ PROCEDURE LineNumbers (scrollview: Id);
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);
 
+(* dlopen a system framework by name (e.g. "AVFoundation") so its classes register
+   with the Obj-C runtime and become reachable via GetClass — for frameworks that
+   aren't auto-loaded at startup. *)
+PROCEDURE LoadFramework (name: ARRAY OF CHAR);
+
 (* Install a minimal Quit menu, activate, and run the AppKit event loop until
    the user quits (blocking) — the real interactive desktop run. *)
 PROCEDURE RunApp;

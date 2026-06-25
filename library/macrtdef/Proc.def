@@ -4,12 +4,18 @@
 
 DEFINITION MODULE Proc;
 
+FROM SYSTEM IMPORT ADDRESS;
+
 (* Run `cmd` via /bin/sh -c, capturing stdout+stderr into `output`. Returns the
    process exit code (-1 if it could not be started). *)
 PROCEDURE RunCapture (cmd: ARRAY OF CHAR; VAR output: ARRAY OF CHAR): INTEGER;
 
 (* Write `content` to `path` (UTF-8). Returns 0 on success, -1 on error. *)
 PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
+
+(* Write `len` raw bytes from `data` to `path` (binary — .wav / .mid output).
+   Returns 0 on success, -1 on error. *)
+PROCEDURE WriteBytes (path: ARRAY OF CHAR; data: ADDRESS; len: CARDINAL): INTEGER;
 
 (* Read `path` (UTF-8) into `content`. Returns the length, or -1 on error. *)
 PROCEDURE ReadFile (path: ARRAY OF CHAR; VAR content: ARRAY OF CHAR): INTEGER;

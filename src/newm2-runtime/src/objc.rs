@@ -1322,6 +1322,26 @@ pub extern "C-unwind" fn nm2_ide_line_numbers(scrollview: *mut c_void) {
     let _ = s_b(scrollview, reg(c"setRulersVisible:".as_ptr()), true);
 }
 
+/// `ObjC.LoadFramework(name)` — dlopen a system framework by name (e.g.
+/// "AVFoundation") so its classes register with the Obj-C runtime and become
+/// reachable from the bridge. The audio/MIDI players themselves are written in
+/// Modula-2 (library Sound.mod), driving AVMIDIPlayer / NSSound through ordinary
+/// message sends — only loading the framework needs the runtime's dlopen.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_load_framework(name_ptr: *const u16, name_high: u64) {
+    bootstrap();
+    let Some(name) = wide_to_cstring(name_ptr, name_high) else {
+        return;
+    };
+    let Ok(name) = name.to_str() else {
+        return;
+    };
+    let path = format!("/System/Library/Frameworks/{name}.framework/{name}");
+    if let Ok(c) = CString::new(path) {
+        unsafe { dlopen(c.as_ptr(), RTLD_NOW) };
+    }
+}
+
 /// `ObjC.Pump(seconds)` — run the Core Foundation run loop in the default mode
 /// for `seconds`, so a window appears and events are processed without blocking
 /// forever (the native, bounded substitute for `[NSApp run]` in a demo/test).

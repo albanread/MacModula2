@@ -205,3 +205,23 @@ pub extern "C-unwind" fn nm2_proc_write_file(
         Err(_) => -1,
     }
 }
+
+/// `Proc.WriteBytes(path, data, len)` — write `len` raw bytes from `data` to a
+/// file (binary; for .wav / .mid output). Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_write_bytes(
+    path_ptr: *const u16,
+    path_high: u64,
+    data: *const u8,
+    len: u64,
+) -> i64 {
+    let path = wide_to_string(path_ptr, path_high);
+    if data.is_null() {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    match std::fs::write(&path, bytes) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
