@@ -53,6 +53,7 @@ VAR
   gProjCount, gLibCount, gProjBtnCount, gLibBtnCount: INTEGER;
   gEditors: ARRAY [0..63] OF Cocoa.Object;
   gPaths: ARRAY [0..63] OF ARRAY [0..1023] OF CHAR;
+  gReadOnly: ARRAY [0..63] OF BOOLEAN;     (* TRUE for LIBRARY (reference) tabs *)
   gTabCount: INTEGER;
   s0: ObjC.Send0; sp: ObjC.SendP; sf: ObjC.SendFrame; sb: SendB2; sfi: SendFI;
   ig: ObjC.Id; ctrl: ObjC.Id;
@@ -182,10 +183,19 @@ BEGIN
   ed := Cocoa.MakeEditor(0.0, 0.0, 760.0, 420.0);
   Cocoa.SetEditorText(ed, text);
   Cocoa.HighlightEditor(ed);
-  (* make the controller the text view's delegate, so edits drive autosave *)
-  ig := sp(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setDelegate:"), ctrl);
+  (* PROJECT files are editable + autosaved (controller is the text-view delegate);
+     LIBRARY files open read-only — the library is reference from this IDE. *)
+  IF isLib THEN
+    ig := sb(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setEditable:"), FALSE);
+    Cocoa.SetText(status, "Opened (read-only reference): ")
+  ELSE
+    ig := sp(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setDelegate:"), ctrl)
+  END;
   it := Cocoa.AddTab(tabs, full, ed);
-  IF gTabCount <= 63 THEN gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); INC(gTabCount) END
+  IF gTabCount <= 63 THEN
+    gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); gReadOnly[gTabCount] := isLib;
+    INC(gTabCount)
+  END
 END OpenDoc;
 
 (* The IDE controller — a real NSObject; its methods are the toolbar actions. *)
@@ -201,6 +211,7 @@ CLASS IDE;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
+    IF gReadOnly[sel] THEN Cocoa.SetText(status, "Library file is read-only (reference)."); RETURN END;
     Cocoa.EditorText(gEditors[sel], src);
     ix := Proc.WriteFile(gPaths[sel], src);
     IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
@@ -245,7 +256,9 @@ CLASS IDE;
     IF sel < 0 THEN RETURN END;
     item := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("tabViewItemAtIndex:"), sel);
     ig := sp(CAST(ObjC.Id, tabs), ObjC.Selector("removeTabViewItem:"), item);
-    FOR i := sel TO gTabCount - 2 DO gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]) END;
+    FOR i := sel TO gTabCount - 2 DO
+      gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]); gReadOnly[i] := gReadOnly[i+1]
+    END;
     DEC(gTabCount);
     Cocoa.SetText(status, "Tab closed.")
   END OnClose;
