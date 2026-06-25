@@ -232,7 +232,7 @@ END CloseTabAt;
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
 PROCEDURE OpenDoc (tag: INTEGER);
-VAR full, text: ARRAY [0..32767] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN;
+VAR full, text: ARRAY [0..32767] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
 BEGIN
   isLib := tag >= LibBase;
   IF isLib THEN idx := tag - LibBase;
@@ -251,13 +251,16 @@ BEGIN
   ed := Cocoa.MakeEditor(0.0, 0.0, 760.0, 420.0);
   Cocoa.SetEditorText(ed, text);
   Cocoa.HighlightEditor(ed);
+  tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
+  ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);       (* ⌘Z / ⌘⇧Z *)
+  ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);      (* ⌘F find bar *)
   (* PROJECT files are editable + autosaved (controller is the text-view delegate);
      LIBRARY files open read-only — the library is reference from this IDE. *)
   IF isLib THEN
-    ig := sb(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setEditable:"), FALSE);
+    ig := sb(tv, ObjC.Selector("setEditable:"), FALSE);
     Cocoa.SetText(status, "Opened (read-only reference): ")
   ELSE
-    ig := sp(s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView")), ObjC.Selector("setDelegate:"), ctrl)
+    ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl)
   END;
   it := Cocoa.AddTab(tabs, full, ed);
   IF gTabCount <= 63 THEN
@@ -340,7 +343,7 @@ CLASS IDE;
   END TextDidChange;
 END IDE;
 
-VAR ide: IDE; appObj, menuBar, mApp, mFile, mBuild, mHelp: ObjC.Id; f1key: ARRAY [0..2] OF CHAR;
+VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id; f1key: ARRAY [0..2] OF CHAR;
 BEGIN
   s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
   sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
@@ -435,6 +438,19 @@ BEGIN
   AddItem(mFile, ctrl, "Open Folder…", "onOpen:", "o", 0);
   AddItem(mFile, ctrl, "Save", "onSave:", "s", 0);
   AddItem(mFile, ctrl, "Close Tab", "onClose:", "w", 0);
+  (* Edit menu — standard responder-chain actions (target nil -> the focused editor) *)
+  mEdit := AddMenu(menuBar, "Edit");
+  AddItem(mEdit, NIL, "Undo", "undo:", "z", 0);
+  AddItem(mEdit, NIL, "Redo", "redo:", "z", 120000H);       (* ⌘⇧Z *)
+  AddItem(mEdit, NIL, "Cut", "cut:", "x", 0);
+  AddItem(mEdit, NIL, "Copy", "copy:", "c", 0);
+  AddItem(mEdit, NIL, "Paste", "paste:", "v", 0);
+  AddItem(mEdit, NIL, "Select All", "selectAll:", "a", 0);
+  findItem := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));   (* Find… ⌘F *)
+  findItem := smi(findItem, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
+                  ObjC.NSString("Find…"), ObjC.Selector("performFindPanelAction:"), ObjC.NSString("f"));
+  ig := sendIInt(findItem, ObjC.Selector("setTag:"), 1);    (* NSFindPanelActionShowFindInterface *)
+  ig := sp(mEdit, ObjC.Selector("addItem:"), findItem);
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
   mHelp := AddMenu(menuBar, "Help");
