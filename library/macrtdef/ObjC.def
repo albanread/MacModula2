@@ -28,6 +28,7 @@ TYPE
   SendP    = PROCEDURE (Id, SEL, Id): Id;                   (* [obj msg: anObject]       *)
   SendFrame= PROCEDURE (Id, SEL, REAL, REAL, REAL, REAL): Id; (* [v initWithFrame: rect] *)
   SendF    = PROCEDURE (Id, SEL, REAL): Id;                 (* [obj msg: aFloat]         *)
+  Send0I   = PROCEDURE (Id, SEL): INTEGER;                  (* [obj msg] -> NSInteger    *)
   (* [win initWithContentRect: rect styleMask: m backing: b defer: d]
      NSRect (x,y,w,h) flattens to four CGFloat (REAL) registers on arm64. *)
   SendRect = PROCEDURE (Id, SEL, REAL, REAL, REAL, REAL, CARDINAL, CARDINAL, BOOLEAN): Id;

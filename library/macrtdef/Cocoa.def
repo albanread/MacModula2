@@ -1,0 +1,51 @@
+(* Cocoa — an ergonomic Modula-2 surface over AppKit, built on the ObjC bridge.
+
+   This is the "good runtime support" layer for building native macOS apps (and
+   the Mac Modula-2 IDE) without writing raw objc_msgSend casts. It is the macOS
+   analogue of the Windows build's WinShell / window runtime, but expressed as a
+   small set of clean constructors and operations.
+
+   Button actions are ordinary parameterless Modula-2 procedures: MakeButton is
+   given an ActionProc, and an internal Objective-C trampoline routes the click
+   back to it (keyed by the control's tag), so the caller never touches the
+   target/action or class-creation machinery. *)
+
+DEFINITION MODULE Cocoa;
+
+FROM SYSTEM IMPORT ADDRESS;
+
+TYPE
+  Object  = ADDRESS;          (* an Objective-C object (id) *)
+  Window  = Object;
+  View    = Object;
+  Control = Object;
+  ActionProc = PROCEDURE;     (* a button/menu action, written in Modula-2 *)
+
+(* application lifecycle *)
+PROCEDURE InitApp;                       (* shared NSApplication, regular policy *)
+PROCEDURE RunFor (seconds: REAL);        (* run the event loop for a while *)
+
+(* windows *)
+PROCEDURE MakeWindow (width, height: REAL; title: ARRAY OF CHAR): Window;
+PROCEDURE ContentView (w: Window): View;
+PROCEDURE ShowWindow (w: Window);        (* center + make key and order front *)
+
+(* view tree + capture *)
+PROCEDURE AddSubview (parent, child: View);
+PROCEDURE Snapshot (view: View; path: ARRAY OF CHAR): BOOLEAN;
+
+(* controls *)
+PROCEDURE MakeLabel (x, y, w, h: REAL; text: ARRAY OF CHAR): Control;
+PROCEDURE SetText (control: Control; text: ARRAY OF CHAR);
+
+PROCEDURE MakeEditor (x, y, w, h: REAL): View;          (* scrollable NSTextView *)
+PROCEDURE SetEditorText (editor: View; text: ARRAY OF CHAR);
+
+PROCEDURE MakeButton (x, y, w, h: REAL; title: ARRAY OF CHAR;
+                      action: ActionProc): Control;
+
+(* Programmatically click a button (fires its action through the trampoline) —
+   useful for scripting and headless testing. *)
+PROCEDURE Click (button: Control);
+
+END Cocoa.
