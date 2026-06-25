@@ -207,9 +207,13 @@ so common overrides need no annotation. Verified by `demos/macos_subclass.mod`
 (is-a NSView + an `isFlipped` override) and `demos/macos_canvas.mod` (a CG-drawn
 view rendered to PNG).
 
-Scope: **field-free** Cocoa subclasses today. A Cocoa superclass has its own
-ivars, so a subclass's `__m2` no longer sits at the native object-record offset —
-stateful Cocoa subclasses need real ivar-offset resolution (next step).
+**Stateful** Cocoa subclasses work too: a Cocoa superclass has its own ivars, so
+the subclass's `__m2` ivar sits after them (not at the native object-record
+offset). Field access on a Cocoa-rooted instance is therefore base-adjusted at
+runtime — `nm2_objc_field_base(obj) = obj + ivar_getOffset(__m2) - 8` — after
+which the same native field GEPs land in `__m2`. This is a no-op (delta 0) for
+NSObject/M2-rooted classes. Verified by `demos/macos_stateful_view.mod` (two
+`NSView` subclass instances with independent M2 state).
 
 ---
 
@@ -266,12 +270,10 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
   state, method inheritance.
 - **M2 subclasses of real Cocoa classes** via `<* cocoa "NSView" *>` — AppKit
   drives an M2 class as a genuine view (e.g. an M2 `drawRect:` that draws with
-  Core Graphics). Field-free for now.
+  Core Graphics), **including subclasses that hold their own M2 field state**
+  (runtime-adjusted ivar access).
 
 **Next:**
-- Real ivar-offset resolution, so **stateful** Cocoa subclasses work (the `__m2`
-  ivar no longer sits at the native offset under a Cocoa superclass, so field
-  access can't use native object-record GEPs — resolve `ivar_getOffset` at load).
 - `EXTERNAL` Cocoa class declarations (`CLASS NSWindow ["NSWindow"]; EXTERNAL;`)
   so inherited Cocoa methods are callable as typed M2 methods (today: via the
   `ObjC`/`Cocoa` bridge); selector pinning (`["initWithFrame:"]`) for
