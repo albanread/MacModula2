@@ -32,6 +32,7 @@ TYPE SendI_I = PROCEDURE (ObjC.Id, ObjC.SEL, INTEGER): INTEGER;
 
 VAR
   cls, obj: ObjC.Id;
+  a: Answers;                 (* an M2 object reference *)
   send0: ObjC.Send0;
   send0I: ObjC.Send0I;
   sendiI: SendI_I;
@@ -57,6 +58,18 @@ BEGIN
       WriteString("OK: arg method dispatched (triple:(14) = 42 -> _cmd slot correct)"); WriteLn
     ELSE
       WriteString("FAIL: arg method dispatch wrong (_cmd misaligned?)"); WriteLn
+    END;
+
+    (* The M2 surface: plain `NEW` makes a real Obj-C instance of the class. *)
+    NEW(a);
+    IF CAST(ObjC.Id, a) = NIL THEN
+      WriteString("FAIL: NEW(a) did not create an instance"); WriteLn
+    ELSIF send0I(CAST(ObjC.Id, a), ObjC.Selector("answer")) = 42 THEN
+      WriteString("OK: NEW(a) -> live Obj-C instance, a.answer = 42"); WriteLn;
+      DISPOSE(a);                 (* [a release]; a := NIL *)
+      IF a = NIL THEN WriteString("OK: DISPOSE(a) released and cleared the reference"); WriteLn END
+    ELSE
+      WriteString("FAIL: NEW(a) instance did not respond correctly"); WriteLn
     END
   END
 END macos_class.

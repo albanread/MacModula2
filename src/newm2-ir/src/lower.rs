@@ -5490,8 +5490,17 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 let Some(ast::Expr::Designator(target)) = args.first() else {
                     return false;
                 };
+                // macOS: a class instance is a real Obj-C object — `[p release]`
+                // rather than the native heap deallocate. See cocoa-classes.md.
+                let is_objc_obj = cfg!(target_os = "macos") && self.class_instance_info(target).is_some();
                 let ptr = self.eval_designator_val(target);
-                self.push(Inst::Deallocate { ptr });
+                if is_objc_obj {
+                    let addr = self.ctx.sema.types.builtin(Builtin::Address);
+                    let params = vec![IrParam { name: "obj".into(), ty: addr, is_var: false }];
+                    self.call_runtime("nm2_objc_release", params, None, vec![ptr]);
+                } else {
+                    self.push(Inst::Deallocate { ptr });
+                }
                 let lval = self.eval_lvalue(target);
                 let nil = self.emit_nil();
                 self.push(Inst::Store { ptr: lval, val: nil });
@@ -5769,6 +5778,28 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         class_name: &str,
         has_vtable: bool,
     ) {
+        // macOS (Max Mac Native): NEW(p) makes a real Obj-C instance —
+        // [[Class alloc] init] on the class the registrar built — so an M2
+        // object is a genuine Cocoa object. See docs/design/cocoa-classes.md.
+        if cfg!(target_os = "macos") {
+            let mangled = format!("M2.{}.{}", self.ctx.module_name(), class_name);
+            let addr = self.ctx.sema.types.builtin(Builtin::Address);
+            let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+            let name_ptr = self.fresh();
+            self.push(Inst::Const { dst: name_ptr, val: ConstVal::Str(mangled.clone()) });
+            let high = self.fresh();
+            let h = (mangled.chars().count() as i128 - 1).max(0);
+            self.push(Inst::Const { dst: high, val: ConstVal::Int(h) });
+            let params = vec![
+                IrParam { name: "name".into(), ty: addr, is_var: false },
+                IrParam { name: "high".into(), ty: card, is_var: false },
+            ];
+            let obj =
+                self.call_runtime("nm2_objc_new", params, Some(addr), vec![name_ptr, high]).unwrap();
+            let lval = self.eval_lvalue(d);
+            self.push(Inst::Store { ptr: lval, val: obj });
+            return;
+        }
         let obj = self.fresh();
         self.push(Inst::Allocate { dst: obj, ty: object_record });
         let lval = self.eval_lvalue(d);

@@ -263,6 +263,52 @@ pub extern "C-unwind" fn nm2_objc_nsstring(name: *const u16, high: u64) -> *mut 
     send(cls, sel, c.as_ptr())
 }
 
+/// macOS M2 object model: `NEW(p)` on a class-typed pointer — look up the
+/// registered Obj-C class by its mangled name and `[[Class alloc] init]` it, so
+/// an M2 object is a genuine Obj-C instance. Returns `nil` if the class is not
+/// registered (e.g. under the JIT, which does not yet run the registrar).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_new(name: *const u16, high: u64) -> *mut c_void {
+    bootstrap();
+    let Some(c) = wide_to_cstring(name, high) else {
+        return std::ptr::null_mut();
+    };
+    let get_class = sym_or_null("objc_getClass");
+    let reg_sel = sym_or_null("sel_registerName");
+    let msg_send = sym_or_null("objc_msgSend");
+    if get_class.is_null() || reg_sel.is_null() || msg_send.is_null() {
+        return std::ptr::null_mut();
+    }
+    let get_class: extern "C" fn(*const i8) -> *mut c_void =
+        unsafe { std::mem::transmute(get_class) };
+    let reg_sel: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg_sel) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg_send) };
+    let cls = get_class(c.as_ptr());
+    if cls.is_null() {
+        return std::ptr::null_mut();
+    }
+    let obj = send0(cls, reg_sel(c"alloc".as_ptr()));
+    send0(obj, reg_sel(c"init".as_ptr()))
+}
+
+/// macOS M2 object model: `DISPOSE(p)` on a class-typed pointer — `[p release]`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_release(obj: *mut c_void) {
+    if obj.is_null() {
+        return;
+    }
+    let reg_sel = sym_or_null("sel_registerName");
+    let msg_send = sym_or_null("objc_msgSend");
+    if reg_sel.is_null() || msg_send.is_null() {
+        return;
+    }
+    let reg_sel: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg_sel) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg_send) };
+    send0(obj, reg_sel(c"release".as_ptr()));
+}
+
 /// `ObjC.AllocateClass(super, name)` — begin defining a new Objective-C class
 /// (`objc_allocateClassPair`). Add methods, then `RegisterClass`.
 #[unsafe(no_mangle)]
