@@ -1290,11 +1290,25 @@ fn analyse_decl_body(
 /// Extract the class name from a `cocoa "NSView"` pragma body (lenient about
 /// spacing/punctuation). Returns the quoted name if the pragma is a cocoa one.
 fn parse_cocoa_pragma(body: &str) -> Option<String> {
-    let rest = body.trim().strip_prefix("cocoa")?;
+    // `cocoa "NSView"` — the superclass to root a subclass at. Require the quote
+    // right after `cocoa` (+ ws) so `cocoa_class` does not also match here.
+    let rest = body.trim().strip_prefix("cocoa")?.trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let inner = &rest[1..];
+    let q2 = inner.find('"')?;
+    Some(inner[..q2].to_string())
+}
+
+/// `<* cocoa_class "NSMutableArray" *>` — this M2 class IS that existing Obj-C
+/// class (an EXTERNAL binding). Returns the bound name.
+fn parse_cocoa_class_pragma(body: &str) -> Option<String> {
+    let rest = body.trim().strip_prefix("cocoa_class")?;
     let q1 = rest.find('"')?;
-    let after = &rest[q1 + 1..];
-    let q2 = after.find('"')?;
-    Some(after[..q2].to_string())
+    let inner = &rest[q1 + 1..];
+    let q2 = inner.find('"')?;
+    Some(inner[..q2].to_string())
 }
 
 /// Analyse a class method body. The receiver `SELF` (the class type) and the
@@ -6003,7 +6017,9 @@ fn resolve_class_decl(
     // Set before `validate` so the Cocoa-rooted abstract-method allowance applies.
     for member in &cd.members {
         if let ast::ClassMember::Pragma(p) = member {
-            if let Some(name) = parse_cocoa_pragma(&p.body) {
+            if let Some(name) = parse_cocoa_class_pragma(&p.body) {
+                ctx.classes.get_mut(cid).objc_class_name = Some(name);
+            } else if let Some(name) = parse_cocoa_pragma(&p.body) {
                 ctx.classes.get_mut(cid).objc_super = Some(name);
             }
         }
@@ -6196,7 +6212,8 @@ fn check_pragma_known(ctx: &mut Ctx, pr: &ast::Pragma) {
         || body.starts_with("ELSIF")
         || body.starts_with("ELSE")
         || body.starts_with("END")
-        || body.starts_with("cocoa") // <* cocoa "NSView" *> — macOS: root an M2 class at a Cocoa class
+        || body.starts_with("cocoa") // <* cocoa "NSView" *> / cocoa_class / selector — macOS Cocoa bindings
+        || body.starts_with("selector")
         || body.eq_ignore_ascii_case("GUI"); // <*GUI*> — link as a Windows GUI app (driver reads it)
     if !is_known {
         ctx.warning(pr.span, format!("unknown pragma: <*{body}*>"));

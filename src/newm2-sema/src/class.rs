@@ -49,6 +49,12 @@ pub struct ClassSymbol {
     /// after the Cocoa superclass's ivars (not at the native offset), so field
     /// access is base-adjusted at runtime. See docs/macm2-runtime.md.
     pub objc_super: Option<String>,
+    /// macOS: an EXTERNAL Cocoa class — this M2 declaration *is* the existing
+    /// Obj-C class of this name (`<* cocoa_class "NSMutableArray" *>`). It is not
+    /// registered (the class already exists); `NEW` allocs the real class and
+    /// method calls dispatch to it via objc_msgSend. Methods are ABSTRACT
+    /// signatures. A subclass `INHERIT`ing it registers under this name.
+    pub objc_class_name: Option<String>,
     /// `false` until the full definition has been analysed (forward decls
     /// start unresolved).
     pub body_resolved: bool,
@@ -148,6 +154,7 @@ impl ClassArena {
             is_interface: false,
             iid: None,
             objc_super: None,
+            objc_class_name: None,
             body_resolved: false,
             ptr_type: None,
             base: None,
@@ -183,12 +190,19 @@ impl ClassArena {
         let mut cur = Some(id);
         while let Some(c) = cur {
             let cls = self.get(c);
-            if cls.objc_super.is_some() {
+            if cls.objc_super.is_some() || cls.objc_class_name.is_some() {
                 return true;
             }
             cur = cls.base;
         }
         false
+    }
+
+    /// The Obj-C class name a `NEW` of `id` should allocate / a subclass should
+    /// register under: the EXTERNAL binding if this class is one, else None
+    /// (callers use the mangled `M2.<module>.<class>`).
+    pub fn objc_class_name(&self, id: ClassSymbolId) -> Option<&str> {
+        self.get(id).objc_class_name.as_deref()
     }
 
     pub fn len(&self) -> usize {

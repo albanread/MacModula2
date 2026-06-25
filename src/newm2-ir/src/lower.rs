@@ -237,7 +237,9 @@ pub fn lower_module_opts(
         // runtime at image load, so an M2 object *is* an Obj-C object. See
         // docs/design/cocoa-classes.md. The native vtable above still exists;
         // NEW/dispatch keep using it until the M0 NEW/dispatch stages land.
-        if cfg!(target_os = "macos") {
+        // An EXTERNAL Cocoa class (`<* cocoa_class "X" *>`) is the existing Obj-C
+        // class X — never registered; only subclasses of it and direct use are.
+        if cfg!(target_os = "macos") && class.objc_class_name.is_none() {
             let methods: Vec<ObjCMethod> = class
                 .vtable
                 .iter()
@@ -259,6 +261,10 @@ pub fn lower_module_opts(
                 s.clone()
             } else {
                 match class.base {
+                    // INHERIT an EXTERNAL Cocoa class -> register under its name.
+                    Some(b) if sema.classes.get(b).objc_class_name.is_some() => {
+                        sema.classes.get(b).objc_class_name.clone().unwrap()
+                    }
                     Some(b) => format!("M2.{}.{}", ir.name, sema.classes.get(b).name),
                     None => "NSObject".to_string(),
                 }
@@ -5892,7 +5898,15 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // [[Class alloc] init] on the class the registrar built — so an M2
         // object is a genuine Cocoa object. See docs/design/cocoa-classes.md.
         if cfg!(target_os = "macos") {
-            let mangled = format!("M2.{}.{}", self.ctx.module_name(), class_name);
+            // An EXTERNAL Cocoa class allocates the real Obj-C class by its bound
+            // name; an M2 class allocates its registered `M2.<module>.<class>`.
+            let mangled = self
+                .ctx
+                .sema
+                .classes
+                .lookup(class_name)
+                .and_then(|cid| self.ctx.sema.classes.objc_class_name(cid).map(String::from))
+                .unwrap_or_else(|| format!("M2.{}.{}", self.ctx.module_name(), class_name));
             let addr = self.ctx.sema.types.builtin(Builtin::Address);
             let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
             let name_ptr = self.fresh();
