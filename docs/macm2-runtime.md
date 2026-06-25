@@ -293,8 +293,13 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
   / `CocoaNS.NSView` etc. as typed M2 classes (qualified class types across
   modules, `NEW`, dotted calls, inheritance). See `demos/macos_cocoa_lib.mod`.
 
+- **Class methods & constructors** (`CLASS PROCEDURE`): a static method called as
+  `Type.M(args)` dispatches on the class object —
+  `objc_msgSend(objc_getClass(name), sel, args)`. Factory methods and
+  constructors (`NSColor.RedColor()`, `NSNumber.NumberWithInt(42)`,
+  `NSWindow.Alloc()`). cocoa-gen emits these from the metaclass.
+
 **Next:**
-- `CLASS PROCEDURE` constructors (`NSButton.New(frame)` → `alloc`+`initWithFrame:`).
 - Rewrite the IDE editor as a real `NSView` subclass; retire the hand-written
   trampoline / `Send*` layer.
 
