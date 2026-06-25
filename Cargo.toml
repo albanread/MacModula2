@@ -10,6 +10,7 @@ members = [
     "src/newm2-sema",
     "src/newm2-test-matrix",
     "src/newm2-winapi-gen",
+    "src/newm2-cocoa-gen",
     "tests/newm2-compat-tests",
     "tests/newm2-tests",
 ]
