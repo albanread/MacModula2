@@ -20,12 +20,21 @@ CLASS Answers;
   BEGIN
     RETURN 21
   END Half;
+  (* A method that takes an argument: exercises the hidden Obj-C `_cmd` slot —
+     without it, `x` would read the selector register instead of 14. *)
+  PROCEDURE Triple (x: INTEGER): INTEGER;
+  BEGIN
+    RETURN x * 3
+  END Triple;
 END Answers;
+
+TYPE SendI_I = PROCEDURE (ObjC.Id, ObjC.SEL, INTEGER): INTEGER;
 
 VAR
   cls, obj: ObjC.Id;
   send0: ObjC.Send0;
   send0I: ObjC.Send0I;
+  sendiI: SendI_I;
 
 BEGIN
   cls := ObjC.GetClass("M2.macos_class.Answers");
@@ -36,12 +45,18 @@ BEGIN
     (* It is a real Obj-C class: alloc/init it and message its M2 methods. *)
     send0  := CAST(ObjC.Send0,  ObjC.MsgSendPtr());
     send0I := CAST(ObjC.Send0I, ObjC.MsgSendPtr());
+    sendiI := CAST(SendI_I, ObjC.MsgSendPtr());
     obj := send0(send0(cls, ObjC.Selector("alloc")), ObjC.Selector("init"));
     IF (send0I(obj, ObjC.Selector("answer")) = 42)
        AND (send0I(obj, ObjC.Selector("half")) = 21) THEN
-      WriteString("OK: M2 methods dispatched via objc_msgSend (42, 21)"); WriteLn
+      WriteString("OK: nullary M2 methods dispatched via objc_msgSend (42, 21)"); WriteLn
     ELSE
-      WriteString("FAIL: method dispatch gave the wrong result"); WriteLn
+      WriteString("FAIL: nullary method dispatch gave the wrong result"); WriteLn
+    END;
+    IF sendiI(obj, ObjC.Selector("triple:"), 14) = 42 THEN
+      WriteString("OK: arg method dispatched (triple:(14) = 42 -> _cmd slot correct)"); WriteLn
+    ELSE
+      WriteString("FAIL: arg method dispatch wrong (_cmd misaligned?)"); WriteLn
     END
   END
 END macos_class.

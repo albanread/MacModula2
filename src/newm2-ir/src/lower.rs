@@ -1062,6 +1062,18 @@ fn lower_method(
     let ret_ty = sig.as_ref().and_then(|s| s.return_ty);
     let card_ty = ctx.sema.types.builtin(Builtin::Cardinal);
     let mut params = vec![IrParam { name: "SELF".into(), ty: class_ty, is_var: false }];
+    // macOS (Max Mac Native): an M2 method is registered as a real Obj-C IMP,
+    // which the runtime calls as `ret imp(id self, SEL _cmd, args…)`. Insert the
+    // hidden `_cmd` selector slot after SELF so the declared parameters land in
+    // the right registers under objc_msgSend. The body never names `_cmd`; it is
+    // a dead incoming argument. See docs/design/cocoa-classes.md.
+    if cfg!(target_os = "macos") {
+        params.push(IrParam {
+            name: "_cmd".into(),
+            ty: ctx.sema.types.builtin(Builtin::Address),
+            is_var: false,
+        });
+    }
     if let Some(s) = &sig {
         for p in &s.params {
             let name = p.name.clone().unwrap_or_default();
