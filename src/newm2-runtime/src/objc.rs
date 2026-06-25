@@ -24,6 +24,7 @@
 #![cfg(not(windows))]
 
 use core::ffi::c_void;
+use std::ffi::CStr;
 use std::ffi::CString;
 use std::sync::OnceLock;
 
@@ -108,6 +109,44 @@ pub extern "C-unwind" fn nm2_objc_sel(name: *const u16, high: u64) -> *mut c_voi
     }
     let f: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(f) };
     f(c.as_ptr())
+}
+
+/// `ObjC.GetString(nsstr, VAR dest)` — copy an `NSString`'s text into a (wide)
+/// M2 `ARRAY OF CHAR`, NUL-terminated. Returns the number of code units written.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_nsstring_to_wide(
+    nsstr: *mut c_void,
+    dest: *mut u16,
+    dest_high: u64,
+) -> u64 {
+    if nsstr.is_null() || dest.is_null() {
+        return 0;
+    }
+    let msg = sym_or_null("objc_msgSend");
+    let reg = sym_or_null("sel_registerName");
+    if msg.is_null() || reg.is_null() {
+        return 0;
+    }
+    let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+    let send: extern "C" fn(*mut c_void, *mut c_void) -> *const i8 =
+        unsafe { std::mem::transmute(msg) };
+    let utf8 = send(nsstr, reg(c"UTF8String".as_ptr()));
+    if utf8.is_null() {
+        return 0;
+    }
+    let text = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
+
+    let cap = (dest_high as usize).saturating_add(1); // capacity in u16 units
+    if cap == 0 {
+        return 0;
+    }
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let n = units.len().min(cap - 1);
+    for (i, &u) in units.iter().take(n).enumerate() {
+        unsafe { *dest.add(i) = u };
+    }
+    unsafe { *dest.add(n) = 0 };
+    n as u64
 }
 
 /// `ObjC.MsgSendPtr()` — the address of `objc_msgSend`, which M2 casts to a

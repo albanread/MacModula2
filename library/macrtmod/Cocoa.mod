@@ -107,6 +107,14 @@ BEGIN
   ignore := sendP(tv, Sel("setString:"), ObjC.NSString(text))
 END SetEditorText;
 
+PROCEDURE EditorText (editor: View; VAR dest: ARRAY OF CHAR);
+VAR tv, s: Object; n: INTEGER;
+BEGIN
+  tv := send0(editor, Sel("documentView"));
+  s := send0(tv, Sel("string"));
+  n := ObjC.GetString(s, dest)
+END EditorText;
+
 (* The Objective-C action method shared by every Cocoa button. It reads the
    sender's tag and invokes the Modula-2 ActionProc registered at that index. *)
 PROCEDURE TrampDispatch (self, cmd, sender: ObjC.Id);

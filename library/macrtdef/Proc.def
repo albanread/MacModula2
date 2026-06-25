@@ -1,0 +1,14 @@
+(* Proc — run external programs and write files, for the IDE's build/run.
+   The macOS analogue of the Windows build's RunProg. Bodies are provided by the
+   NewM2 runtime (src/newm2-runtime/src/proc.rs). *)
+
+DEFINITION MODULE Proc;
+
+(* Run `cmd` via /bin/sh -c, capturing stdout+stderr into `output`. Returns the
+   process exit code (-1 if it could not be started). *)
+PROCEDURE RunCapture (cmd: ARRAY OF CHAR; VAR output: ARRAY OF CHAR): INTEGER;
+
+(* Write `content` to `path` (UTF-8). Returns 0 on success, -1 on error. *)
+PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;
+
+END Proc.

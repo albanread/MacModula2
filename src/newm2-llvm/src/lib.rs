@@ -304,6 +304,9 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.AllocateClass".to_string(), "nm2_objc_allocate_class"));
         v.push(("ObjC.AddMethod".to_string(), "nm2_objc_add_method"));
         v.push(("ObjC.RegisterClass".to_string(), "nm2_objc_register_class"));
+        v.push(("ObjC.GetString".to_string(), "nm2_objc_nsstring_to_wide"));
+        v.push(("Proc.RunCapture".to_string(), "nm2_proc_run_capture"));
+        v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
     }
 
     v
@@ -1203,6 +1206,9 @@ fn for_each_runtime_binding(
         bind("ObjC.AllocateClass", newm2_runtime::objc::nm2_objc_allocate_class as *const ());
         bind("ObjC.AddMethod", newm2_runtime::objc::nm2_objc_add_method as *const ());
         bind("ObjC.RegisterClass", newm2_runtime::objc::nm2_objc_register_class as *const ());
+        bind("ObjC.GetString", newm2_runtime::objc::nm2_objc_nsstring_to_wide as *const ());
+        bind("Proc.RunCapture", newm2_runtime::proc::nm2_proc_run_capture as *const ());
+        bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
     }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());

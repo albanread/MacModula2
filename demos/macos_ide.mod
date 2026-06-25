@@ -1,23 +1,34 @@
 MODULE macos_ide;
-(* A native macOS IDE skeleton written with the ergonomic Cocoa runtime module —
-   no raw objc_msgSend in sight. A code editor, a status label, and a Build&Run
-   button whose action is an ordinary Modula-2 procedure. *)
+(* A working native macOS Modula-2 IDE skeleton: a code editor, an output pane,
+   a status line, and a Build&Run button whose Modula-2 action reads the editor
+   buffer, writes it to a file, runs the compiler as a subprocess, and shows the
+   captured output — all through the ergonomic Cocoa + Proc runtime modules. *)
 FROM STextIO IMPORT WriteString, WriteLn;
 FROM Strings IMPORT Append;
 IMPORT Cocoa;
+IMPORT Proc;
 
 VAR
-  win, content, editor, status, runBtn: Cocoa.Object;
+  win, content, editor, output, status, runBtn: Cocoa.Object;
   code, nl: ARRAY [0..2047] OF CHAR;
   ok: BOOLEAN;
 
 PROCEDURE Line(s: ARRAY OF CHAR);
 BEGIN Append(s, code); Append(nl, code) END Line;
 
-(* the Build & Run button's action — pure Modula-2 *)
+(* The Build & Run action — pure Modula-2. *)
 PROCEDURE OnRun;
+VAR src, out: ARRAY [0..8191] OF CHAR; rc, ig: INTEGER;
 BEGIN
-  Cocoa.SetText(status, "Build succeeded: 0 errors.  (the Modula-2 action ran)")
+  Cocoa.SetText(status, "Building...");
+  Cocoa.EditorText(editor, src);
+  ig := Proc.WriteFile("/tmp/ide_buffer.mod", src);
+  rc := Proc.RunCapture(
+          "./target/debug/newm2-driver run --library library /tmp/ide_buffer.mod 2>&1",
+          out);
+  Cocoa.SetEditorText(output, out);
+  IF rc = 0 THEN Cocoa.SetText(status, "Build & run succeeded (exit 0).")
+  ELSE Cocoa.SetText(status, "Build/run reported errors.") END
 END OnRun;
 
 BEGIN
@@ -32,24 +43,25 @@ BEGIN
   Line("END Hello.");
 
   Cocoa.InitApp;
-  win := Cocoa.MakeWindow(640.0, 420.0, "MacModula2 IDE");
+  win := Cocoa.MakeWindow(700.0, 620.0, "MacModula2 IDE");
   content := Cocoa.ContentView(win);
 
-  editor := Cocoa.MakeEditor(10.0, 70.0, 620.0, 338.0);
+  editor := Cocoa.MakeEditor(10.0, 320.0, 680.0, 286.0);
   Cocoa.SetEditorText(editor, code);
   Cocoa.AddSubview(content, editor);
 
-  status := Cocoa.MakeLabel(14.0, 30.0, 480.0, 22.0, "Ready.");
+  output := Cocoa.MakeEditor(10.0, 50.0, 680.0, 256.0);
+  Cocoa.SetEditorText(output, "(program output appears here)");
+  Cocoa.AddSubview(content, output);
+
+  status := Cocoa.MakeLabel(14.0, 16.0, 420.0, 22.0, "Ready.");
   Cocoa.AddSubview(content, status);
 
-  runBtn := Cocoa.MakeButton(516.0, 22.0, 116.0, 36.0, "Build & Run", OnRun);
+  runBtn := Cocoa.MakeButton(576.0, 10.0, 114.0, 34.0, "Build & Run", OnRun);
   Cocoa.AddSubview(content, runBtn);
 
-  Cocoa.ShowWindow(win);
-
-  ok := Cocoa.Snapshot(content, "/tmp/ide_before.png");
-  Cocoa.Click(runBtn);                      (* fire the button through the trampoline *)
-  ok := Cocoa.Snapshot(content, "/tmp/ide_after.png");
-  WriteString("IDE skeleton: snapshots written to /tmp/ide_before.png and /tmp/ide_after.png");
-  WriteLn
+  ok := Cocoa.Snapshot(content, "/tmp/ide_run_before.png");
+  Cocoa.Click(runBtn);
+  ok := Cocoa.Snapshot(content, "/tmp/ide_run_after.png");
+  WriteString("IDE build&run demo complete"); WriteLn
 END macos_ide.

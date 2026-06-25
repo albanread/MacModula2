@@ -81,6 +81,10 @@ pub mod win32_compat;
 #[cfg(not(windows))]
 pub mod objc;
 
+/// macOS subprocess + file helpers (RunProg analogue) for the IDE.
+#[cfg(not(windows))]
+pub mod proc;
+
 /// No-op `SYSTEM.COLLECT` / `SYSTEM.GCREPORT` for the manual-memory build.
 #[cfg(not(feature = "gc"))]
 mod gc_stubs;

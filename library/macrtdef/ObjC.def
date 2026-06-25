@@ -44,6 +44,9 @@ PROCEDURE MsgSendPtr (): ADDRESS;
 (* Build an autoreleased NSString* from a (wide) M2 string. *)
 PROCEDURE NSString (s: ARRAY OF CHAR): Id;
 
+(* Copy an NSString's text into a (wide) M2 ARRAY OF CHAR; returns the length. *)
+PROCEDURE GetString (nsstr: Id; VAR dest: ARRAY OF CHAR): INTEGER;
+
 (* Run the Core Foundation run loop for `seconds` (a bounded substitute for
    [NSApp run] — shows the window, processes events, then returns). *)
 PROCEDURE Pump (seconds: REAL);
