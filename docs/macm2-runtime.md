@@ -284,9 +284,14 @@ newm2-driver run   --library library demos/foo.mod   # ORC JIT
   usable from typed M2. Selector pinning (`<* selector "…" *>`) covers
   multi-keyword selectors.
 - **`cocoa-gen`** (`src/newm2-cocoa-gen`): the macOS analogue of winapi-gen —
-  introspects the Obj-C runtime (`class_copyMethodList` over the superclass
-  chain) and emits these EXTERNAL declarations for any class. `newm2-cocoa-gen
-  [Class…]` (default: a curated AppKit/Foundation set).
+  introspects the Obj-C runtime (`class_copyMethodList`) and emits EXTERNAL
+  declarations as an INHERIT chain (each class with its own methods, deduped
+  against ancestors), base-first over the inheritance closure of the requested
+  classes. `newm2-cocoa-gen [Class…]`; `COCOA_GEN_MODULE` sets the module name.
+- **`library/macrtdef/CocoaNS.def`** — a checked-in generated library (Foundation
+  + AppKit classes). A program `IMPORT CocoaNS` and uses `CocoaNS.NSMutableArray`
+  / `CocoaNS.NSView` etc. as typed M2 classes (qualified class types across
+  modules, `NEW`, dotted calls, inheritance). See `demos/macos_cocoa_lib.mod`.
 
 **Next:**
 - `CLASS PROCEDURE` constructors (`NSButton.New(frame)` → `alloc`+`initWithFrame:`).
