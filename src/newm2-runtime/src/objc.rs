@@ -327,6 +327,41 @@ pub extern "C-unwind" fn nm2_objc_field_base(obj: *mut c_void) -> *mut c_void {
     unsafe { obj.cast::<u8>().offset(off - 8).cast::<c_void>() }
 }
 
+/// macOS M2 object model: `ISMEMBER(obj, T)` / `GUARD` test — `[obj
+/// isKindOfClass: objc_getClass(name)]`. The Cocoa analogue of COM's
+/// QueryInterface probe: it walks the live object's real class chain, so it is
+/// correct for any Obj-C instance (our M2 objects included). Returns 1/0.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_is_kind_of(obj: *mut c_void, name: *const u16, high: u64) -> i64 {
+    if obj.is_null() {
+        return 0;
+    }
+    bootstrap();
+    let Some(c) = wide_to_cstring(name, high) else {
+        return 0;
+    };
+    let get_class = sym_or_null("objc_getClass");
+    let reg_sel = sym_or_null("sel_registerName");
+    let msg_send = sym_or_null("objc_msgSend");
+    if get_class.is_null() || reg_sel.is_null() || msg_send.is_null() {
+        return 0;
+    }
+    let get_class: extern "C" fn(*const i8) -> *mut c_void =
+        unsafe { std::mem::transmute(get_class) };
+    let reg_sel: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg_sel) };
+    let send: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool =
+        unsafe { std::mem::transmute(msg_send) };
+    let cls = get_class(c.as_ptr());
+    if cls.is_null() {
+        return 0;
+    }
+    if send(obj, reg_sel(c"isKindOfClass:".as_ptr()), cls) {
+        1
+    } else {
+        0
+    }
+}
+
 /// macOS M2 object model: `DISPOSE(p)` on a class-typed pointer — `[p release]`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_objc_release(obj: *mut c_void) {

@@ -2612,15 +2612,21 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         let sel = self.eval_expr(selector);
         let addr = self.ctx.sema.types.builtin(Builtin::Address);
         let bool_ty = self.ctx.sema.types.builtin(Builtin::Boolean);
-        // The selector's typeinfo, computed ONCE (null-safe).
-        let cand_ti = self
-            .call_runtime(
+        let on_macos = cfg!(target_os = "macos");
+        // The selector's typeinfo, computed ONCE (null-safe). On macOS the object
+        // is an Obj-C instance with no field-0 typeinfo, so each arm tests via
+        // `isKindOfClass:` instead (below) and this is unused.
+        let cand_ti = if on_macos {
+            self.emit_nil()
+        } else {
+            self.call_runtime(
                 "nm2_typeinfo_of",
                 vec![IrParam { name: "obj".into(), ty: addr, is_var: false }],
                 Some(addr),
                 vec![sel],
             )
-            .expect("nm2_typeinfo_of returns a value");
+            .expect("nm2_typeinfo_of returns a value")
+        };
 
         let join = self.builder.new_block("guard_join");
         let default_block = self.builder.new_block("guard_else");
@@ -2634,15 +2640,43 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // Test ladder: arm i runs iff nm2_rtti_isa(cand, &{Ti}.typeinfo); else the
         // next test, and after the last the default (ELSE / raise).
         for (i, arm) in arms.iter().enumerate() {
-            let target_ti = match self.guard_arm_class(&arm.guarded_type) {
-                Some(cid) => {
-                    let name = self.ctx.sema.classes.get(cid).name.clone();
-                    self.emit_global_ref(format!("{name}.typeinfo"), addr)
+            let matched = if on_macos {
+                // [sel isKindOfClass: getClass(arm class)] — the Cocoa membership test.
+                match self.guard_arm_class(&arm.guarded_type) {
+                    Some(cid) => {
+                        let cls = self.ctx.sema.classes.get(cid);
+                        let name = cls.objc_class_name.clone().unwrap_or_else(|| {
+                            format!("M2.{}.{}", self.ctx.module_name(), cls.name)
+                        });
+                        let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+                        let name_ptr = self.fresh();
+                        self.push(Inst::Const { dst: name_ptr, val: ConstVal::Str(name.clone()) });
+                        let high = self.fresh();
+                        let h = (name.chars().count() as i128 - 1).max(0);
+                        self.push(Inst::Const { dst: high, val: ConstVal::Int(h) });
+                        self.call_runtime(
+                            "nm2_objc_is_kind_of",
+                            vec![
+                                IrParam { name: "obj".into(), ty: addr, is_var: false },
+                                IrParam { name: "name".into(), ty: addr, is_var: false },
+                                IrParam { name: "high".into(), ty: card, is_var: false },
+                            ],
+                            Some(bool_ty),
+                            vec![sel, name_ptr, high],
+                        )
+                        .expect("nm2_objc_is_kind_of returns a value")
+                    }
+                    None => self.emit_const_bool(false),
                 }
-                None => self.emit_nil(), // unresolved type — sema already errored
-            };
-            let matched = self
-                .call_runtime(
+            } else {
+                let target_ti = match self.guard_arm_class(&arm.guarded_type) {
+                    Some(cid) => {
+                        let name = self.ctx.sema.classes.get(cid).name.clone();
+                        self.emit_global_ref(format!("{name}.typeinfo"), addr)
+                    }
+                    None => self.emit_nil(), // unresolved type — sema already errored
+                };
+                self.call_runtime(
                     "nm2_rtti_isa",
                     vec![
                         IrParam { name: "cand".into(), ty: addr, is_var: false },
@@ -2651,7 +2685,8 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     Some(bool_ty),
                     vec![cand_ti, target_ti],
                 )
-                .expect("nm2_rtti_isa returns a value");
+                .expect("nm2_rtti_isa returns a value")
+            };
             let next = if i + 1 < arms.len() {
                 self.builder.new_block("guard_test")
             } else {
@@ -4165,6 +4200,45 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         if self.ctx.sema.classes.get(cid0).is_interface
             || self.ctx.sema.classes.get(cid1).is_interface
         {
+            return Some(self.emit_const_bool(false));
+        }
+
+        // macOS: an M2 object is an Obj-C object, so a class membership test is
+        // `[value isKindOfClass: getClass(T)]` (the Cocoa analogue of the COM QI
+        // probe) — never the native field-0 RTTI walk, which would read the isa.
+        if cfg!(target_os = "macos") {
+            // `ISMEMBER(value, T)` — the standard form. (TYPE,TYPE) was folded above.
+            let (obj, target) = if !is_ty0 && is_ty1 {
+                (obj0, cid1)
+            } else if is_ty0 && !is_ty1 {
+                (obj1, cid0)
+            } else {
+                (obj0.or(obj1), cid1) // value/value: test against the second's static type
+            };
+            if let Some(obj) = obj {
+                let addr = self.ctx.sema.types.builtin(Builtin::Address);
+                let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+                let bool_ty = self.ctx.sema.types.builtin(Builtin::Boolean);
+                let cls = self.ctx.sema.classes.get(target);
+                let name = cls.objc_class_name.clone().unwrap_or_else(|| {
+                    format!("M2.{}.{}", self.ctx.module_name(), cls.name)
+                });
+                let name_ptr = self.fresh();
+                self.push(Inst::Const { dst: name_ptr, val: ConstVal::Str(name.clone()) });
+                let high = self.fresh();
+                let h = (name.chars().count() as i128 - 1).max(0);
+                self.push(Inst::Const { dst: high, val: ConstVal::Int(h) });
+                return self.call_runtime(
+                    "nm2_objc_is_kind_of",
+                    vec![
+                        IrParam { name: "obj".into(), ty: addr, is_var: false },
+                        IrParam { name: "name".into(), ty: addr, is_var: false },
+                        IrParam { name: "high".into(), ty: card, is_var: false },
+                    ],
+                    Some(bool_ty),
+                    vec![obj, name_ptr, high],
+                );
+            }
             return Some(self.emit_const_bool(false));
         }
 
