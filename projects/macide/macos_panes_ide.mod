@@ -29,19 +29,8 @@ CONST
   LibBase  = 1000;          (* sidebar tags >= LibBase address the library list *)
   RowH     = 27.0;
 
-TYPE SendB2 = PROCEDURE (ObjC.Id, ObjC.SEL, BOOLEAN): ObjC.Id;
-     SendFI = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, INTEGER): ObjC.Id;
-     SendMI = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.SEL, ObjC.Id): ObjC.Id;
-     SendRetI = PROCEDURE (ObjC.Id, ObjC.SEL): INTEGER;
-     Send2F = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
-
-(* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
-   NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
-CLASS FlippedDoc;
-  <* cocoa "NSView" *>
-  PROCEDURE IsFlipped (): BOOLEAN;
-  BEGIN RETURN TRUE END IsFlipped;
-END FlippedDoc;
+(* The send machinery is gone: every Cocoa call below uses the `[recv sel: args]`
+   message-send syntax, with Rect()/Point() building struct arguments. *)
 
 VAR
   win, content, outerSplit, rightStack, innerSplit, sidebar, tabs, output, status, editStat, helpPane, searchField: Cocoa.Object;
@@ -52,7 +41,6 @@ VAR
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
   gTabBarCount: INTEGER;
   gHelpVisible: BOOLEAN;
-  smi: SendMI;
   gHelpText: ARRAY [0..2047] OF CHAR;
   helpNL: ARRAY [0..1] OF CHAR;
   gProjDir, gLibDir: ARRAY [0..1023] OF CHAR;
@@ -63,21 +51,35 @@ VAR
   gPaths: ARRAY [0..63] OF ARRAY [0..1023] OF CHAR;
   gReadOnly: ARRAY [0..63] OF BOOLEAN;     (* TRUE for LIBRARY (reference) tabs *)
   gTabCount: INTEGER;
-  s0: ObjC.Send0; sp: ObjC.SendP; sf: ObjC.SendFrame; sb: SendB2; sfi: SendFI; s2f: Send2F;
-  ig: ObjC.Id; ctrl: ObjC.Id;
+  ctrl: ObjC.Id;
 
-PROCEDURE sendIInt (o: ObjC.Id; s: ObjC.SEL; n: INTEGER): ObjC.Id;
-VAR f: ObjC.SendI;
-BEGIN f := CAST(ObjC.SendI, ObjC.MsgSendPtr()); RETURN f(o, s, n) END sendIInt;
+(* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
+   NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
+CLASS FlippedDoc;
+  <* cocoa "NSView" *>
+  PROCEDURE IsFlipped (): BOOLEAN;
+  BEGIN RETURN TRUE END IsFlipped;
+END FlippedDoc;
+
+(* Build an NSRect / NSPoint value for a frame / scroll send.  With typed struct
+   args we pass a real struct, instead of the old 4-REAL HFA-packing cast trick. *)
+PROCEDURE Rect (x, y, w, h: REAL): ObjC.NSRect;
+VAR r: ObjC.NSRect;
+BEGIN r.origin.x := x; r.origin.y := y; r.size.width := w; r.size.height := h; RETURN r END Rect;
+
+PROCEDURE Point (px, py: REAL): ObjC.NSPoint;
+VAR p: ObjC.NSPoint;
+BEGIN p.x := px; p.y := py; RETURN p END Point;
+
+PROCEDURE Cls (name: ARRAY OF CHAR): ObjC.Id;   (* class object as a send receiver *)
+BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(name)) END Cls;
 
 PROCEDURE SetFrameOf (v: Cocoa.Object; x, y, w, h: REAL);
-BEGIN ig := sf(CAST(ObjC.Id, v), ObjC.Selector("setFrame:"), x, y, w, h) END SetFrameOf;
+BEGIN [CAST(ObjC.Id, v) setFrame: Rect(x, y, w, h)] END SetFrameOf;
 
 PROCEDURE MakeView (x, y, w, h: REAL): Cocoa.Object;   (* a plain NSView container *)
-VAR v: ObjC.Id;
 BEGIN
-  v := s0(ObjC.GetClass("NSView"), ObjC.Selector("alloc"));
-  RETURN CAST(Cocoa.Object, sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h))
+  RETURN CAST(Cocoa.Object, [[Cls("NSView") alloc] initWithFrame: Rect(x, y, w, h)])
 END MakeView;
 
 (* a horizontally-scrolling container (overlay scroller, so the tab bar slides
@@ -85,28 +87,25 @@ END MakeView;
 PROCEDURE MakeScrollH (x, y, w, h: REAL; VAR doc: Cocoa.Object): Cocoa.Object;
 VAR sc: ObjC.Id;
 BEGIN
-  sc := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
-  sc := sf(sc, ObjC.Selector("initWithFrame:"), x, y, w, h);
-  ig := sb(sc, ObjC.Selector("setHasHorizontalScroller:"), FALSE);  (* no scroll bar — tabs still
-                                       slide via trackpad and the auto-scroll-to-active *)
-  ig := sendIInt(sc, ObjC.Selector("setBorderType:"), 0);
+  sc := [[Cls("NSScrollView") alloc] initWithFrame: Rect(x, y, w, h)];
+  [sc setHasHorizontalScroller: FALSE];   (* no scroll bar — tabs slide via trackpad *)
+  [sc setBorderType: 0];
   doc := MakeView(0.0, 0.0, w, h);
-  ig := sp(sc, ObjC.Selector("setDocumentView:"), CAST(ObjC.Id, doc));
+  [sc setDocumentView: CAST(ObjC.Id, doc)];
   RETURN CAST(Cocoa.Object, sc)
 END MakeScrollH;
 
 PROCEDURE MakeSplit (x, y, w, h: REAL; sideBySide: BOOLEAN): Cocoa.Object;
 VAR v: ObjC.Id;
 BEGIN
-  v := s0(ObjC.GetClass("NSSplitView"), ObjC.Selector("alloc"));
-  v := sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h);
-  ig := sb(v, ObjC.Selector("setVertical:"), sideBySide);
-  ig := sendIInt(v, ObjC.Selector("setDividerStyle:"), 1);   (* thick, draggable — every split matches *)
+  v := [[Cls("NSSplitView") alloc] initWithFrame: Rect(x, y, w, h)];
+  [v setVertical: sideBySide];
+  [v setDividerStyle: 1];   (* thick, draggable — every split matches *)
   RETURN CAST(Cocoa.Object, v)
 END MakeSplit;
 
 PROCEDURE SetDivider (split: Cocoa.Object; index: INTEGER; pos: REAL);
-BEGIN ig := sfi(CAST(ObjC.Id, split), ObjC.Selector("setPosition:ofDividerAtIndex:"), pos, index) END SetDivider;
+BEGIN [CAST(ObjC.Id, split) setPosition: pos ofDividerAtIndex: index] END SetDivider;
 
 (* Show/hide the help pane. When hidden it is REMOVED from rightStack so the
    editor pane fills 100% (no leftover band); when shown it is re-added as the
@@ -117,14 +116,14 @@ BEGIN
   IF visible THEN
     IF NOT gHelpVisible THEN
       Cocoa.AddSubview(rightStack, helpPane);
-      ig := s0(CAST(ObjC.Id, rightStack), ObjC.Selector("adjustSubviews"))   (* incorporate the new pane *)
+      [CAST(ObjC.Id, rightStack) adjustSubviews]   (* incorporate the new pane *)
     END;
     SetDivider(rightStack, 0, 560.0);
     gHelpVisible := TRUE
   ELSE
     IF gHelpVisible THEN
       Cocoa.RemoveView(helpPane);
-      ig := s0(CAST(ObjC.Id, rightStack), ObjC.Selector("adjustSubviews"))
+      [CAST(ObjC.Id, rightStack) adjustSubviews]
     END;
     gHelpVisible := FALSE
   END
@@ -134,26 +133,25 @@ END HelpShow;
 PROCEDURE MakeScroll (x, y, w, h: REAL; VAR doc: Cocoa.Object): Cocoa.Object;
 VAR sc: ObjC.Id; fd: FlippedDoc;
 BEGIN
-  sc := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
-  sc := sf(sc, ObjC.Selector("initWithFrame:"), x, y, w, h);
-  ig := sb(sc, ObjC.Selector("setHasVerticalScroller:"), TRUE);
-  ig := sendIInt(sc, ObjC.Selector("setBorderType:"), 0);
+  sc := [[Cls("NSScrollView") alloc] initWithFrame: Rect(x, y, w, h)];
+  [sc setHasVerticalScroller: TRUE];
+  [sc setBorderType: 0];
   NEW(fd);
   doc := CAST(Cocoa.Object, fd);
   SetFrameOf(doc, 0.0, 0.0, w - 16.0, h);
-  ig := sp(sc, ObjC.Selector("setDocumentView:"), CAST(ObjC.Id, doc));
+  [sc setDocumentView: CAST(ObjC.Id, doc)];
   RETURN CAST(Cocoa.Object, sc)
 END MakeScroll;
 
 PROCEDURE CtrlButton (x, y, w: REAL; title, selector: ARRAY OF CHAR; mask: INTEGER): Cocoa.Object;
 VAR b: ObjC.Id;
 BEGIN
-  b := s0(s0(ObjC.GetClass("NSButton"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  ig := sf(b, ObjC.Selector("setFrame:"), x, y, w, 30.0);
-  ig := sp(b, ObjC.Selector("setTitle:"), ObjC.NSString(title));
-  ig := sp(b, ObjC.Selector("setTarget:"), ctrl);
-  ig := sp(b, ObjC.Selector("setAction:"), ObjC.Selector(selector));
-  ig := sendIInt(b, ObjC.Selector("setAutoresizingMask:"), mask);
+  b := [[Cls("NSButton") alloc] init];
+  [b setFrame: Rect(x, y, w, 30.0)];
+  [b setTitle: ObjC.NSString(title)];
+  [b setTarget: ctrl];
+  [b setAction: ObjC.Selector(selector)];
+  [b setAutoresizingMask: mask];
   RETURN CAST(Cocoa.Object, b)
 END CtrlButton;
 
@@ -161,11 +159,10 @@ END CtrlButton;
 PROCEDURE AddMenu (bar: ObjC.Id; title: ARRAY OF CHAR): ObjC.Id;
 VAR item, sub: ObjC.Id;
 BEGIN
-  item := s0(s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  sub := s0(ObjC.GetClass("NSMenu"), ObjC.Selector("alloc"));
-  sub := sp(sub, ObjC.Selector("initWithTitle:"), ObjC.NSString(title));
-  ig := sp(item, ObjC.Selector("setSubmenu:"), sub);
-  ig := sp(bar, ObjC.Selector("addItem:"), item);
+  item := [[Cls("NSMenuItem") alloc] init];
+  sub := [[Cls("NSMenu") alloc] initWithTitle: ObjC.NSString(title)];
+  [item setSubmenu: sub];
+  [bar addItem: item];
   RETURN sub
 END AddMenu;
 
@@ -173,12 +170,12 @@ END AddMenu;
 PROCEDURE AddItem (menu, target: ObjC.Id; title, action, key: ARRAY OF CHAR; modMask: INTEGER);
 VAR it: ObjC.Id;
 BEGIN
-  it := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));
-  it := smi(it, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
-            ObjC.NSString(title), ObjC.Selector(action), ObjC.NSString(key));
-  ig := sp(it, ObjC.Selector("setTarget:"), target);
-  IF modMask # 0 THEN ig := sendIInt(it, ObjC.Selector("setKeyEquivalentModifierMask:"), modMask) END;
-  ig := sp(menu, ObjC.Selector("addItem:"), it)
+  it := [[Cls("NSMenuItem") alloc] initWithTitle: ObjC.NSString(title)
+                                   action: ObjC.Selector(action)
+                                   keyEquivalent: ObjC.NSString(key)];
+  [it setTarget: target];
+  IF modMask # 0 THEN [it setKeyEquivalentModifierMask: modMask] END;
+  [menu addItem: it]
 END AddItem;
 
 PROCEDURE HL (s: ARRAY OF CHAR);   (* append a help line + newline *)
@@ -216,20 +213,19 @@ END RebuildList;
 
 (* [sender tag] — which tab a tab-bar button belongs to. *)
 PROCEDURE TagOf (o: ObjC.Id): INTEGER;
-VAR f: SendRetI;
-BEGIN f := CAST(SendRetI, ObjC.MsgSendPtr()); RETURN f(o, ObjC.Selector("tag")) END TagOf;
+BEGIN RETURN [o tag] END TagOf;
 
 (* a tab-bar button (filename or ✕): target = controller, carries its tab index. *)
 PROCEDURE TagButton (x, w: REAL; title, action: ARRAY OF CHAR; tag: INTEGER): Cocoa.Object;
 VAR b: ObjC.Id;
 BEGIN
-  b := s0(s0(ObjC.GetClass("NSButton"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  ig := sf(b, ObjC.Selector("setFrame:"), x, 2.0, w, 22.0);
-  ig := sp(b, ObjC.Selector("setTitle:"), ObjC.NSString(title));
-  ig := sp(b, ObjC.Selector("setTarget:"), ctrl);
-  ig := sp(b, ObjC.Selector("setAction:"), ObjC.Selector(action));
-  ig := sendIInt(b, ObjC.Selector("setTag:"), tag);
-  ig := sendIInt(b, ObjC.Selector("setBezelStyle:"), 1);   (* rounded/flat tab look *)
+  b := [[Cls("NSButton") alloc] init];
+  [b setFrame: Rect(x, 2.0, w, 22.0)];
+  [b setTitle: ObjC.NSString(title)];
+  [b setTarget: ctrl];
+  [b setAction: ObjC.Selector(action)];
+  [b setTag: tag];
+  [b setBezelStyle: 1];   (* rounded/flat tab look *)
   RETURN CAST(Cocoa.Object, b)
 END TagButton;
 
@@ -259,7 +255,7 @@ BEGIN
   SetFrameOf(tabDoc, 0.0, 0.0, totalW, 26.0);
   (* slide so the active tab is in view *)
   IF active >= 0 THEN
-    ig := s2f(CAST(ObjC.Id, tabDoc), ObjC.Selector("scrollPoint:"), FLOAT(active) * 150.0, 0.0)
+    [CAST(ObjC.Id, tabDoc) scrollPoint: Point(FLOAT(active) * 150.0, 0.0)]
   END
 END RebuildTabBar;
 
@@ -268,8 +264,8 @@ PROCEDURE CloseTabAt (idx: INTEGER);
 VAR i: INTEGER; item: ObjC.Id;
 BEGIN
   IF (idx < 0) OR (idx >= gTabCount) THEN RETURN END;
-  item := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("tabViewItemAtIndex:"), idx);
-  ig := sp(CAST(ObjC.Id, tabs), ObjC.Selector("removeTabViewItem:"), item);
+  item := [CAST(ObjC.Id, tabs) tabViewItemAtIndex: idx];
+  [CAST(ObjC.Id, tabs) removeTabViewItem: item];
   FOR i := idx TO gTabCount - 2 DO
     gEditors[i] := gEditors[i+1]; Assign(gPaths[i+1], gPaths[i]);
     Assign(gTabNames[i+1], gTabNames[i]); gReadOnly[i] := gReadOnly[i+1]
@@ -342,7 +338,7 @@ BEGIN
   i := 0;
   WHILE i < gTabCount DO
     IF Equal(gPaths[i], full) THEN
-      ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), i);
+      [CAST(ObjC.Id, tabs) selectTabViewItemAtIndex: i];
       RebuildTabBar; Cocoa.SetText(status, "Already open — switched to its tab."); RETURN
     END;
     INC(i)
@@ -351,14 +347,14 @@ BEGIN
   IF n < 0 THEN RETURN END;
   ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));  (* rope-backed editor *)
   Cocoa.SetEditorText(ed, text);                 (* colours itself; no HighlightEditor needed *)
-  tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
-  ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);       (* ⌘Z / ⌘⇧Z *)
-  ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);      (* ⌘F find bar *)
+  tv := [CAST(ObjC.Id, ed) documentView];
+  [tv setAllowsUndo: TRUE];       (* ⌘Z / ⌘⇧Z *)
+  [tv setUsesFindBar: TRUE];      (* ⌘F find bar *)
   (* delegate set for both kinds: autosave on edit + cursor status on selection.
      LIBRARY files open read-only — the library is reference from this IDE. *)
-  ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl);
+  [tv setDelegate: ctrl];
   IF isLib THEN
-    ig := sb(tv, ObjC.Selector("setEditable:"), FALSE);
+    [tv setEditable: FALSE];
     Cocoa.SetText(status, "Opened (read-only reference).")
   END;
   it := Cocoa.AddTab(tabs, full, ed);
@@ -385,15 +381,15 @@ CLASS IDE;
     IF gTabCount > 63 THEN Cocoa.SetText(status, "Too many tabs."); RETURN END;
     ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));
     Cocoa.SetEditorText(ed, "");
-    tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
-    ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);
-    ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);
-    ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl);
+    tv := [CAST(ObjC.Id, ed) documentView];
+    [tv setAllowsUndo: TRUE];
+    [tv setUsesFindBar: TRUE];
+    [tv setDelegate: ctrl];
     it := Cocoa.AddTab(tabs, "untitled", ed);
     gEditors[gTabCount] := ed; gPaths[gTabCount][0] := CHR(0);   (* empty path = untitled *)
     gReadOnly[gTabCount] := FALSE; Assign("untitled", gTabNames[gTabCount]);
     INC(gTabCount);
-    ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), gTabCount-1);
+    [CAST(ObjC.Id, tabs) selectTabViewItemAtIndex: gTabCount-1];
     RebuildTabBar;
     Cocoa.SetText(status, "New file — Save (Cmd-S) to name it.")
   END OnNew;
@@ -469,7 +465,7 @@ CLASS IDE;
   PROCEDURE OnCocoaSearch (sender: ObjC.Id);      (* "onCocoaSearch:" — search the Obj-C runtime *)
   VAR q, res: ARRAY [0..16383] OF CHAR; n: INTEGER; sv: ObjC.Id; title: ARRAY [0..511] OF CHAR;
   BEGIN
-    sv := s0(CAST(ObjC.Id, searchField), ObjC.Selector("stringValue"));
+    sv := [CAST(ObjC.Id, searchField) stringValue];
     n := ObjC.GetString(sv, q);
     IF q[0] = CHR(0) THEN Cocoa.SetText(status, "Type a Cocoa class name, then Enter."); RETURN END;
     n := ObjC.FindClasses(q, res);
@@ -484,7 +480,7 @@ CLASS IDE;
   BEGIN CloseTabAt(TagOf(sender)) END OnCloseTab;
   PROCEDURE OnSelectTab (sender: ObjC.Id);        (* "onSelectTab:" — click a tab name *)
   BEGIN
-    ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), TagOf(sender));
+    [CAST(ObjC.Id, tabs) selectTabViewItemAtIndex: TagOf(sender)];
     RebuildTabBar; ShowTabStatus
   END OnSelectTab;
   PROCEDURE TextViewDidChangeSelection (note: ObjC.Id) <* selector "textViewDidChangeSelection:" *>;
@@ -502,14 +498,11 @@ CLASS IDE;
 END IDE;
 
 (* --- live status-bar clock, driven by an Obj-C block ----------------------- *)
-(* Cls: a small class-lookup helper.  Tick: an NSTimer block whose invoke ABI is
-   void (^)(NSTimer), so as a plain M2 procedure its FIRST parameter is the block
-   itself, then the timer.  ObjC.MakeBlock wraps it; the Cocoa run loop calls back
-   into Modula-2 every second.  It reads module globals (gFmt, clock); the block
-   is global/capture-free, exactly what MakeBlock provides. *)
-PROCEDURE Cls (n: ARRAY OF CHAR): ObjC.Id;
-BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(n)) END Cls;
-
+(* Tick: an NSTimer block whose invoke ABI is void (^)(NSTimer), so as a plain M2
+   procedure its FIRST parameter is the block itself, then the timer.  ObjC.MakeBlock
+   wraps it; the Cocoa run loop calls back into Modula-2 every second.  It reads
+   module globals (gFmt, clock); the block is global/capture-free, exactly what
+   MakeBlock provides. *)
 PROCEDURE Tick (block, timer: ObjC.Id);
 VAR now: ObjC.Id; buf: ARRAY [0..63] OF CHAR; n: INTEGER;
 BEGIN
@@ -521,13 +514,6 @@ END Tick;
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id;
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
 BEGIN
-  s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
-  sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
-  sf  := CAST(ObjC.SendFrame, ObjC.MsgSendPtr());
-  sb  := CAST(SendB2,         ObjC.MsgSendPtr());
-  sfi := CAST(SendFI,         ObjC.MsgSendPtr());
-  s2f := CAST(Send2F,         ObjC.MsgSendPtr());
-  smi := CAST(SendMI,         ObjC.MsgSendPtr());
   gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
   Assign("library/pimmod", gProjDir);
   Assign("library/pimdef", gLibDir);
@@ -544,28 +530,27 @@ BEGIN
   Cocoa.AddSubview(content, CtrlButton(304.0, 604.0, 92.0,  "✕ Close Tab", "onClose:", 8));
   (* bottom status bar: messages on the left, current-tab editor status on the right *)
   status := Cocoa.MakeLabel(10.0, 4.0, 700.0, 18.0, "Ready.");
-  ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 34);  (* width + stick bottom *)
+  [CAST(ObjC.Id, status) setAutoresizingMask: 34];      (* width + stick bottom *)
   Cocoa.AddSubview(content, status);
   editStat := Cocoa.MakeLabel(720.0, 4.0, 270.0, 18.0, "");
-  ig := sendIInt(CAST(ObjC.Id, editStat), ObjC.Selector("setAutoresizingMask:"), 33);  (* stick bottom-right *)
+  [CAST(ObjC.Id, editStat) setAutoresizingMask: 33];    (* stick bottom-right *)
   Cocoa.AddSubview(content, editStat);
   clock := Cocoa.MakeLabel(995.0, 4.0, 95.0, 18.0, "");                 (* set live by the NSTimer block *)
-  ig := sendIInt(CAST(ObjC.Id, clock), ObjC.Selector("setAutoresizingMask:"), 33);
+  [CAST(ObjC.Id, clock) setAutoresizingMask: 33];
   Cocoa.AddSubview(content, clock);
   (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
-  searchField := s0(s0(ObjC.GetClass("NSSearchField"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  ig := sf(CAST(ObjC.Id, searchField), ObjC.Selector("setFrame:"), 700.0, 605.0, 280.0, 26.0);
-  ig := sp(CAST(ObjC.Id, searchField), ObjC.Selector("setTarget:"), ctrl);
-  ig := sp(CAST(ObjC.Id, searchField), ObjC.Selector("setAction:"), ObjC.Selector("onCocoaSearch:"));
-  ig := sp(s0(CAST(ObjC.Id, searchField), ObjC.Selector("cell")),
-           ObjC.Selector("setPlaceholderString:"), ObjC.NSString("Find Cocoa class…"));
-  ig := sendIInt(CAST(ObjC.Id, searchField), ObjC.Selector("setAutoresizingMask:"), 9);  (* stick top-right *)
+  searchField := [[Cls("NSSearchField") alloc] init];
+  [CAST(ObjC.Id, searchField) setFrame: Rect(700.0, 605.0, 280.0, 26.0)];
+  [CAST(ObjC.Id, searchField) setTarget: ctrl];
+  [CAST(ObjC.Id, searchField) setAction: ObjC.Selector("onCocoaSearch:")];
+  [[CAST(ObjC.Id, searchField) cell] setPlaceholderString: ObjC.NSString("Find Cocoa class…")];
+  [CAST(ObjC.Id, searchField) setAutoresizingMask: 9];  (* stick top-right *)
   Cocoa.AddSubview(content, searchField);
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
   Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:", 9));
 
   outerSplit := MakeSplit(0.0, 26.0, 1100.0, 570.0, TRUE);   (* leave 0..26 for the status bar *)
-  ig := sendIInt(CAST(ObjC.Id, outerSplit), ObjC.Selector("setAutoresizingMask:"), 18);
+  [CAST(ObjC.Id, outerSplit) setAutoresizingMask: 18];
   Cocoa.AddSubview(content, outerSplit);
 
   (* the sidebar is itself a split: PROJECT list (top) over LIBRARY list (bottom),
@@ -587,10 +572,10 @@ BEGIN
   (* editor area = a custom tab bar (closeable tabs) over a tab-less NSTabView *)
   editorArea := MakeView(0.0, 0.0, 860.0, 390.0);
   tabs := Cocoa.MakeTabView(0.0, 0.0, 860.0, 362.0);
-  ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setTabViewType:"), 6);     (* NSNoTabsNoBorder *)
-  ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("setAutoresizingMask:"), 18);
+  [CAST(ObjC.Id, tabs) setTabViewType: 6];     (* NSNoTabsNoBorder *)
+  [CAST(ObjC.Id, tabs) setAutoresizingMask: 18];
   tabBar := MakeScrollH(0.0, 362.0, 860.0, 28.0, tabDoc);
-  ig := sendIInt(CAST(ObjC.Id, tabBar), ObjC.Selector("setAutoresizingMask:"), 10);  (* width + stick to top *)
+  [CAST(ObjC.Id, tabBar) setAutoresizingMask: 10];  (* width + stick to top *)
   Cocoa.AddSubview(editorArea, tabs);
   Cocoa.AddSubview(editorArea, tabBar);
   gTabBarCount := 0;
@@ -626,8 +611,8 @@ BEGIN
   gHelpVisible := FALSE;
 
   (* a real menu bar (App / File / Build / Help), set before RunApp *)
-  appObj := s0(ObjC.GetClass("NSApplication"), ObjC.Selector("sharedApplication"));
-  menuBar := s0(s0(ObjC.GetClass("NSMenu"), ObjC.Selector("alloc")), ObjC.Selector("init"));
+  appObj := [Cls("NSApplication") sharedApplication];
+  menuBar := [[Cls("NSMenu") alloc] init];
   mApp := AddMenu(menuBar, "MacM2");
   AddItem(mApp, appObj, "Quit MacM2 IDE", "terminate:", "q", 0);
   mFile := AddMenu(menuBar, "File");
@@ -655,17 +640,17 @@ BEGIN
   downKey[0] := CHR(0F701H); downKey[1] := CHR(0);                       (* NSDownArrowFunctionKey *)
   AddItem(mEdit, NIL, "Move Line Up", "moveLineUp:", upKey, 980000H);    (* ⌥⌘↑ (+function) *)
   AddItem(mEdit, NIL, "Move Line Down", "moveLineDown:", downKey, 980000H); (* ⌥⌘↓ *)
-  findItem := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));   (* Find… ⌘F *)
-  findItem := smi(findItem, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
-                  ObjC.NSString("Find…"), ObjC.Selector("performFindPanelAction:"), ObjC.NSString("f"));
-  ig := sendIInt(findItem, ObjC.Selector("setTag:"), 1);    (* NSFindPanelActionShowFindInterface *)
-  ig := sp(mEdit, ObjC.Selector("addItem:"), findItem);
+  findItem := [[Cls("NSMenuItem") alloc] initWithTitle: ObjC.NSString("Find…")   (* Find… ⌘F *)
+                                         action: ObjC.Selector("performFindPanelAction:")
+                                         keyEquivalent: ObjC.NSString("f")];
+  [findItem setTag: 1];    (* NSFindPanelActionShowFindInterface *)
+  [mEdit addItem: findItem];
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
   mHelp := AddMenu(menuBar, "Help");
   f1key[0] := CHR(0F704H); f1key[1] := CHR(0);            (* NSF1FunctionKey *)
   AddItem(mHelp, ctrl, "Show / Hide Help", "onHelp:", f1key, 800000H);  (* function-key modifier *)
-  ig := sp(appObj, ObjC.Selector("setMainMenu:"), menuBar);
+  [appObj setMainMenu: menuBar];
 
   Cocoa.SetListAction(OpenDoc);
   RebuildList(FALSE);          (* project *)
