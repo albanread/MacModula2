@@ -3007,6 +3007,34 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         self.builder.switch_to(cont);
     }
 
+    /// Index check against a *runtime* upper bound `high` (the open-array HIGH):
+    /// trap if `adj` (unsigned) > `high`. 0 is always in range, and an underflow
+    /// (e.g. CARDINAL `i-1` at i=0) wraps to a huge value caught by `>`.
+    fn emit_index_bounds_check_high(&mut self, adj: ValueId, high: ValueId) {
+        let oob = self.fresh();
+        self.push(Inst::Binary { dst: oob, op: BinOp::UGt, lhs: adj, rhs: high });
+        let fail = self.builder.new_block("idx_oob");
+        let cont = self.builder.new_block("idx_ok");
+        self.terminate(Terminator::CondBr { cond: oob, t_block: fail, f_block: cont });
+        self.builder.switch_to(fail);
+        self.raise_m2_exception(0); // indexException
+        self.builder.switch_to(cont);
+    }
+
+    /// The runtime HIGH (max index) of an open-array variable named by `base`,
+    /// or None when `base` is not a single open-array parameter in scope.
+    fn open_array_index_high(&mut self, base: &ast::QualName) -> Option<ValueId> {
+        if base.segments.len() != 1 {
+            return None;
+        }
+        let hname = open_array_high_name(&base.segments[0]);
+        let binding = self.locals.get(hname.as_str()).copied()?;
+        let ptr = self.local_ptr(binding);
+        let dst = self.fresh();
+        self.push(Inst::Load { dst, ptr });
+        Some(dst)
+    }
+
     /// Emit a whole-number division-by-zero check: if `divisor` is 0 raise
     /// `wholeDivException`.
     fn emit_div_zero_check(&mut self, divisor: ValueId) {
@@ -3095,10 +3123,10 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             .into_iter()
             .find(|(_, rec)| self.resolve_field_index(*rec, name).is_some())?;
         let field_sel = ast::Selector::Field(name.clone(), d.base.span);
-        let mut ptr = self.apply_selector(with_ptr, Some(rec_ty), &field_sel);
+        let mut ptr = self.apply_selector(with_ptr, Some(rec_ty), &field_sel, None);
         let mut cur = self.selector_result_type(rec_ty, &field_sel);
         for sel in &d.selectors {
-            ptr = self.apply_selector(ptr, cur, sel);
+            ptr = self.apply_selector(ptr, cur, sel, None);
             cur = cur.and_then(|t| self.selector_result_type(t, sel));
         }
         Some(ptr)
@@ -3279,7 +3307,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             None => return None,
         };
         for sel in rest {
-            ptr = self.apply_selector(ptr, cur_ty, sel);
+            ptr = self.apply_selector(ptr, cur_ty, sel, None);
             cur_ty = cur_ty.and_then(|t| self.selector_result_type(t, sel));
         }
         Some(ptr)
@@ -5949,16 +5977,22 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             let mut ptr = self.emit_global_ref(self.module_static_name(&module_name, &member), ty);
             let mut current_ty = Some(ty);
             for sel in &d.selectors[consumed..] {
-                ptr = self.apply_selector(ptr, current_ty, sel);
+                ptr = self.apply_selector(ptr, current_ty, sel, None); // module global: no open-array HIGH
                 current_ty = current_ty.and_then(|current| self.selector_result_type(current, sel));
             }
             return ptr;
         }
 
+        // An index on an open-array variable is checked against its runtime HIGH.
+        let open_high = if d.selectors.iter().any(|s| matches!(s, ast::Selector::Index(_, _))) {
+            self.open_array_index_high(&d.base)
+        } else {
+            None
+        };
         let mut ptr = self.eval_base_ptr(&d.base);
         let mut current_ty = self.resolve_name_type(&d.base);
         for sel in &d.selectors {
-            ptr = self.apply_selector(ptr, current_ty, sel);
+            ptr = self.apply_selector(ptr, current_ty, sel, open_high);
             current_ty = current_ty.and_then(|ty| self.selector_result_type(ty, sel));
         }
         ptr
@@ -6164,6 +6198,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         base: ValueId,
         base_ty: Option<newm2_sema::TypeId>,
         sel: &ast::Selector,
+        open_high: Option<ValueId>, // open-array HIGH for an index bounds check
     ) -> ValueId {
         match sel {
             ast::Selector::Field(field_name, span) => {
@@ -6249,7 +6284,15 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     }
                     flat.unwrap()
                 } else {
-                    self.eval_expr(&indices[0])
+                    // Open array (no fixed dims): a single index checked against
+                    // the runtime HIGH companion when available.
+                    let raw = self.eval_expr(&indices[0]);
+                    if self.ctx.runtime_checks
+                        && let Some(high) = open_high
+                    {
+                        self.emit_index_bounds_check_high(raw, high);
+                    }
+                    raw
                 };
                 let dst = self.fresh();
                 self.push(Inst::IndexPtr { dst, base, index, elem_ty });
