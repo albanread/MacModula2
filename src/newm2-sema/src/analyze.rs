@@ -4158,7 +4158,22 @@ fn cocoa_kind_type(ctx: &mut Ctx, kind: &str) -> TypeId {
 /// type is cached and registered (register_cocoa_struct) so it is also declarable
 /// as ObjC.<Name>. Returns id for a malformed descriptor.
 fn synthesize_cocoa_struct(ctx: &mut Ctx, kind: &str) -> TypeId {
-    let inner = &kind[1..kind.len() - 1]; // "Name:kinds"
+    let inner = &kind[1..kind.len() - 1];
+    // Named form "Name|field:kind|field:kind…" — real field names from BridgeSupport.
+    if let Some((name, rest)) = inner.split_once('|') {
+        if let Some(&ty) = ctx.cocoa_struct_cache.get(name) {
+            return ty;
+        }
+        let mut fields = Vec::new();
+        for pair in rest.split('|') {
+            if let Some((fname, k)) = pair.split_once(':') {
+                let fty = cocoa_field_type(ctx, k.chars().next().unwrap_or('@'));
+                fields.push(crate::types::RecordFieldSlot { name: fname.to_string(), ty: fty });
+            }
+        }
+        return finish_cocoa_struct(ctx, name, fields);
+    }
+    // Positional fallback "Name:kinds" — fields f0..fn (no names available).
     let Some((name, kinds)) = inner.split_once(':') else {
         return ctx.types.builtin(Builtin::Address);
     };
@@ -4167,17 +4182,24 @@ fn synthesize_cocoa_struct(ctx: &mut Ctx, kind: &str) -> TypeId {
     }
     let mut fields = Vec::new();
     for (i, c) in kinds.chars().enumerate() {
-        let fty = match c {
-            'i' => ctx.types.builtin(Builtin::Integer),
-            'u' => ctx.types.builtin(Builtin::Cardinal),
-            'd' => ctx.types.builtin(Builtin::Real),
-            'B' => ctx.types.builtin(Builtin::Boolean),
-            _ => ctx.types.builtin(Builtin::Address), // '@' (pointer field)
-        };
+        let fty = cocoa_field_type(ctx, c);
         fields.push(crate::types::RecordFieldSlot { name: format!("f{i}"), ty: fty });
     }
-    let layout =
-        crate::types::RecordLayout { name: Some(name.to_string()), fields, variant: None };
+    finish_cocoa_struct(ctx, name, fields)
+}
+
+fn cocoa_field_type(ctx: &mut Ctx, c: char) -> TypeId {
+    match c {
+        'i' => ctx.types.builtin(Builtin::Integer),
+        'u' => ctx.types.builtin(Builtin::Cardinal),
+        'd' => ctx.types.builtin(Builtin::Real),
+        'B' => ctx.types.builtin(Builtin::Boolean),
+        _ => ctx.types.builtin(Builtin::Address), // '@' (pointer field)
+    }
+}
+
+fn finish_cocoa_struct(ctx: &mut Ctx, name: &str, fields: Vec<crate::types::RecordFieldSlot>) -> TypeId {
+    let layout = crate::types::RecordLayout { name: Some(name.to_string()), fields, variant: None };
     let ty = ctx.types.alloc(TypeKind::Record(layout));
     ctx.cocoa_struct_cache.insert(name.to_string(), ty);
     register_cocoa_struct(ctx, name, ty);

@@ -116,11 +116,83 @@ fn register_returnable(fields: &str) -> bool {
     size <= 16
 }
 
+/// Read an attribute `name='…'` / `name="…"` from an XML line.
+fn xml_attr(line: &str, name: &str) -> Option<String> {
+    let key = format!("{name}=");
+    let p = line.find(&key)? + key.len();
+    let q = line.as_bytes().get(p).copied()? as char; // ' or "
+    let rest = &line[p + 1..];
+    let end = rest.find(q)?;
+    Some(rest[..end].to_string())
+}
+
+/// Parse a *named* struct encoding `{EncName="f1"k1"f2"k2…}` (from BridgeSupport's
+/// type64) into (encoding-name, [(field-name, kind)]). Returns None for a struct
+/// with a non-scalar field (nested struct / pointer / array) — those keep
+/// positional fields. Kinds reuse scalar_kind.
+fn parse_named_struct(enc: &str) -> Option<(String, Vec<(String, String)>)> {
+    let s = enc.strip_prefix('{')?.strip_suffix('}')?;
+    let eq = s.find('=')?;
+    let encname = s[..eq].to_string();
+    let body = s[eq + 1..].as_bytes();
+    let mut i = 0;
+    let mut fields = Vec::new();
+    while i < body.len() {
+        if body[i] != b'"' {
+            return None; // expected a field name
+        }
+        i += 1;
+        let start = i;
+        while i < body.len() && body[i] != b'"' {
+            i += 1;
+        }
+        let fname = String::from_utf8_lossy(&body[start..i]).into_owned();
+        i += 1; // closing quote
+        let c = *body.get(i)? as char;
+        let kind = scalar_kind(&c.to_string())?; // nested/pointer/array -> None
+        fields.push((fname, kind.to_string()));
+        i += 1;
+    }
+    (!fields.is_empty()).then_some((encname, fields))
+}
+
+/// Load Cocoa struct field names from the system BridgeSupport metadata (the
+/// runtime method encodings omit them). Maps encoding-name -> [(field, kind)] for
+/// flat all-scalar structs; nested structs (e.g. CGRect) are left to the
+/// hand-written geometry records.
+fn load_bridgesupport() -> std::collections::HashMap<String, Vec<(String, String)>> {
+    let mut out = std::collections::HashMap::new();
+    for fw in ["Foundation", "AppKit", "CoreGraphics", "QuartzCore", "CoreImage"] {
+        let path = format!(
+            "/System/Library/Frameworks/{fw}.framework/Resources/BridgeSupport/{fw}.bridgesupport"
+        );
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let l = line.trim();
+            if !l.starts_with("<struct ") {
+                continue;
+            }
+            let Some(enc) = xml_attr(l, "type64").or_else(|| xml_attr(l, "type")) else {
+                continue;
+            };
+            let enc = enc.replace("&quot;", "\"");
+            if let Some((encname, fields)) = parse_named_struct(&enc) {
+                out.entry(encname).or_insert(fields);
+            }
+        }
+    }
+    out
+}
+
+type BridgeStructs = std::collections::HashMap<String, Vec<(String, String)>>;
+
 /// Normalize an encoding token to a return/argument *kind*. Named geometry structs
 /// keep their short tags (R/N/P/S — the compiler maps them to ObjC.NSRect/…);
 /// any other struct becomes a synthesizable descriptor `{<field kinds>}` (or `{`
 /// when it can't be flattened).
-fn kind_of(tok: &str) -> String {
+fn kind_of(tok: &str, bs: &BridgeStructs) -> String {
     if tok.starts_with('^') {
         return "@".to_string(); // pointer
     }
@@ -138,10 +210,18 @@ fn kind_of(tok: &str) -> String {
             return "N".to_string();
         }
         // Other named structs: synthesize iff register-returnable (so the ABI is
-        // reliable — HFA of ≤4 floats, or ≤16 bytes; sret structs are excluded)
-        // and the struct is named. Encoded "{Name:fieldkinds}".
+        // reliable — HFA of ≤4 floats, or ≤16 bytes; sret structs are excluded).
+        // Prefer real field names from BridgeSupport ("{Name|f1:k1|f2:k2}"); fall
+        // back to positional fields ("{Name:fieldkinds}").
         return match (struct_name(tok), flatten_struct(tok)) {
-            (Some(n), Some(f)) if register_returnable(&f) => format!("{{{n}:{f}}}"),
+            (Some(n), Some(f)) if register_returnable(&f) => match bs.get(&n) {
+                Some(named) => {
+                    let parts: Vec<String> =
+                        named.iter().map(|(fld, k)| format!("{fld}:{k}")).collect();
+                    format!("{{{n}|{}}}", parts.join("|"))
+                }
+                None => format!("{{{n}:{f}}}"),
+            },
             _ => "{".to_string(), // anonymous / sret / unsupported -> id
         };
     }
@@ -168,6 +248,7 @@ fn collect_selectors(
     cls: *mut c_void,
     out: &mut std::collections::HashMap<String, (String, Vec<String>)>,
     ambiguous: &mut HashSet<String>,
+    bs: &BridgeStructs,
 ) {
     let mut count: u32 = 0;
     let methods = (rt.copy_methods)(cls, &mut count);
@@ -188,8 +269,8 @@ fn collect_selectors(
         if toks.len() < 3 {
             continue; // need at least ret, self(@), _cmd(:)
         }
-        let ret = kind_of(&toks[0]).to_string();
-        let args: Vec<String> = toks[3..].iter().map(|t| kind_of(t).to_string()).collect();
+        let ret = kind_of(&toks[0], bs);
+        let args: Vec<String> = toks[3..].iter().map(|t| kind_of(t, bs)).collect();
         if args.len() != sel_name.matches(':').count() {
             continue; // encoding/arity disagreement — skip
         }
@@ -208,7 +289,7 @@ fn collect_selectors(
 /// Emit the selector database (JSON) to stdout: `{classes, selectors}`. Walks
 /// each requested class and its superclass chain (so inherited selectors are
 /// included) plus the metaclass (class methods).
-fn emit_json(rt: &Rt, classes: &[String]) {
+fn emit_json(rt: &Rt, classes: &[String], bs: &BridgeStructs) {
     let mut sels: std::collections::HashMap<String, (String, Vec<String>)> =
         std::collections::HashMap::new();
     let mut ambiguous: HashSet<String> = HashSet::new();
@@ -221,9 +302,9 @@ fn emit_json(rt: &Rt, classes: &[String]) {
                 unsafe { CStr::from_ptr((rt.class_get_name)(cur)) }.to_string_lossy().into_owned();
             if seen_cls.insert(n.clone()) {
                 class_names.push(n);
-                collect_selectors(rt, cur, &mut sels, &mut ambiguous);
+                collect_selectors(rt, cur, &mut sels, &mut ambiguous, bs);
                 let meta = (rt.object_get_class)(cur);
-                collect_selectors(rt, meta, &mut sels, &mut ambiguous);
+                collect_selectors(rt, meta, &mut sels, &mut ambiguous, bs);
             }
             cur = (rt.superclass)(cur);
         }
@@ -514,7 +595,8 @@ fn main() {
 
     // Selector-database mode (data for the compiler's typed sends + validation).
     if std::env::var("COCOA_GEN_JSON").is_ok() {
-        emit_json(&rt, &classes);
+        let bs = load_bridgesupport();
+        emit_json(&rt, &classes, &bs);
         return;
     }
 
