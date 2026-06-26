@@ -104,16 +104,13 @@ fn struct_name(tok: &str) -> Option<String> {
     Some(n)
 }
 
-/// True when a struct of these field kinds is returned in registers (so our
-/// synthesized record's ABI is reliable): a homogeneous float aggregate of up to
-/// 4 floats (d0..d3), or any aggregate of at most 16 bytes (x0/x1). Larger uses an
-/// indirect (sret) return, which we don't synthesize.
-fn register_returnable(fields: &str) -> bool {
-    if fields.chars().all(|c| c == 'd') && fields.len() <= 4 {
-        return true;
-    }
+/// True when we synthesize a record for this struct shape: any flat scalar struct
+/// of reasonable size. The compiler picks the return ABI from the record type —
+/// registers (x0/x1 or v0–v3) for ≤16-byte / HFA structs, sret (x8) for larger —
+/// so both are reliable. The size cap just rejects pathologically large structs.
+fn synthesizable_struct(fields: &str) -> bool {
     let size: usize = fields.chars().map(|c| if c == 'B' { 1 } else { 8 }).sum();
-    size <= 16
+    size <= 256
 }
 
 /// Read an attribute `name='…'` / `name="…"` from an XML line.
@@ -209,12 +206,11 @@ fn kind_of(tok: &str, bs: &BridgeStructs) -> String {
         if tok.starts_with("{_NSRange") || tok.starts_with("{NSRange") {
             return "N".to_string();
         }
-        // Other named structs: synthesize iff register-returnable (so the ABI is
-        // reliable — HFA of ≤4 floats, or ≤16 bytes; sret structs are excluded).
-        // Prefer real field names from BridgeSupport ("{Name|f1:k1|f2:k2}"); fall
+        // Other named structs: synthesize any reasonable flat struct (the compiler
+        // picks register vs sret return from the record type). Prefer real field names from BridgeSupport ("{Name|f1:k1|f2:k2}"); fall
         // back to positional fields ("{Name:fieldkinds}").
         return match (struct_name(tok), flatten_struct(tok)) {
-            (Some(n), Some(f)) if register_returnable(&f) => match bs.get(&n) {
+            (Some(n), Some(f)) if synthesizable_struct(&f) => match bs.get(&n) {
                 Some(named) => {
                     let parts: Vec<String> =
                         named.iter().map(|(fld, k)| format!("{fld}:{k}")).collect();
