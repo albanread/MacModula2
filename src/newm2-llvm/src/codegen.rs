@@ -393,38 +393,122 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
     /// Function type for an indirect (procedure-pointer) call, derived from the
     /// PROCEDURE type `sig`. Matches the native ABI used for direct calls: a
     /// VAR param is a pointer, an open-array param is a (ptr, i64-HIGH) pair.
-    fn indirect_fn_type(&self, sig: newm2_sema::TypeId) -> FunctionType<'ctx> {
+    /// Lower an indirect call through `fn_ptr` with PROCEDURE type `sig`. Matches the
+    /// native ABI: a VAR param is a pointer, an open-array param is a (ptr, i64-HIGH)
+    /// pair, an arm64-indirect record return is sret (caller buffer in x8), and an
+    /// arm64-indirect record argument is byval (a pointer to a caller copy). The
+    /// sret/byval handling is explicit because LLVM's by-value aggregate convention
+    /// does not match the C/objc_msgSend ABI for a call through a pointer.
+    fn emit_indirect_call(
+        &self,
+        sig: newm2_sema::TypeId,
+        fn_ptr: inkwell::values::PointerValue<'ctx>,
+        args: &[ValueId],
+        dst: Option<ValueId>,
+        vals: &mut HashMap<ValueId, BasicValueEnum<'ctx>>,
+    ) {
         let ptr_ty = self.ctx.ptr_type(inkwell::AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
-        if let TypeKind::Proc { params, return_ty } = self.types.get(sig) {
-            let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
-            for p in params {
-                let is_open = matches!(self.types.get(p.ty), TypeKind::OpenArray { .. });
-                if p.mode == newm2_sema::types::ParamMode::Var {
-                    param_types.push(ptr_ty.into());
-                } else {
-                    param_types.push(self.llvm_type(p.ty).into());
-                }
-                if is_open {
-                    param_types.push(i64_ty.into());
+
+        let (return_ty, params) = match self.types.get(sig) {
+            TypeKind::Proc { return_ty, params } => (*return_ty, Some(params.clone())),
+            _ => (None, None),
+        };
+
+        // Unknown signature: variadic i64(...) fallback (preserves the Windows x64
+        // by-reference behaviour for proc-pointer calls without a known sig).
+        let Some(params) = params else {
+            let arg_vals: Vec<BasicMetadataValueEnum<'ctx>> =
+                args.iter().map(|a| self.val_of(a, vals).into()).collect();
+            let fty = i64_ty.fn_type(&[], true);
+            let call =
+                self.builder.build_indirect_call(fty, fn_ptr, &arg_vals, "indcall").unwrap();
+            if let Some(d) = dst {
+                if let Some(ret) = call.try_as_basic_value().basic() {
+                    vals.insert(d, ret);
                 }
             }
-            match return_ty {
-                None => self.ctx.void_type().fn_type(&param_types, false),
-                Some(t) => self.llvm_type(*t).fn_type(&param_types, false),
+            return;
+        };
+
+        let sret_struct = return_ty.and_then(|t| self.record_indirect_type(t));
+        let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
+        let mut call_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
+        // (param index, struct type, attribute name) for sret/byval type attributes.
+        let mut type_attrs: Vec<(u32, StructType<'ctx>, &'static str)> = Vec::new();
+
+        let sret_buf = sret_struct.map(|st| {
+            let buf = self.builder.build_alloca(st, "sret.buf").unwrap();
+            type_attrs.push((call_args.len() as u32, st, "sret"));
+            param_types.push(ptr_ty.into());
+            call_args.push(buf.into());
+            buf
+        });
+
+        // Walk params and the (open-array-expanded) arg list together.
+        let mut ai = 0usize;
+        for p in &params {
+            if ai >= args.len() {
+                break;
             }
+            let is_open = matches!(self.types.get(p.ty), TypeKind::OpenArray { .. });
+            let val = self.val_of(&args[ai], vals);
+            if p.mode == newm2_sema::types::ParamMode::Var {
+                param_types.push(ptr_ty.into());
+                call_args.push(val.into());
+            } else if let Some(st) = self.record_indirect_type(p.ty) {
+                // arm64 AAPCS passes a >16-byte struct argument indirectly: the
+                // caller copies it and passes a *plain pointer* to the copy in a GP
+                // register. (LLVM's `byval` is the wrong tool here — it can lower to
+                // by-value-on-stack, which objc_msgSend's IMP does not expect.)
+                let buf = self.builder.build_alloca(st, "arg.copy").unwrap();
+                self.builder.build_store(buf, val).unwrap();
+                param_types.push(ptr_ty.into());
+                call_args.push(buf.into());
+            } else {
+                param_types.push(self.llvm_type(p.ty).into());
+                call_args.push(val.into());
+            }
+            ai += 1;
+            if is_open && ai < args.len() {
+                param_types.push(i64_ty.into());
+                call_args.push(self.val_of(&args[ai], vals).into());
+                ai += 1;
+            }
+        }
+
+        let fty = if sret_struct.is_some() {
+            self.ctx.void_type().fn_type(&param_types, false)
         } else {
-            // Unknown signature: fall back to a variadic i64(...) type.
-            i64_ty.fn_type(&[], true)
+            match return_ty {
+                Some(t) => self.llvm_type(t).fn_type(&param_types, false),
+                None => self.ctx.void_type().fn_type(&param_types, false),
+            }
+        };
+        let call = self.builder.build_indirect_call(fty, fn_ptr, &call_args, "indcall").unwrap();
+        for (idx, st, kind) in type_attrs {
+            let kind_id = inkwell::attributes::Attribute::get_named_enum_kind_id(kind);
+            let attr = self.ctx.create_type_attribute(kind_id, st.as_any_type_enum());
+            call.add_attribute(inkwell::attributes::AttributeLoc::Param(idx), attr);
+        }
+        if let Some(d) = dst {
+            if let Some(buf) = sret_buf {
+                let loaded =
+                    self.builder.build_load(sret_struct.unwrap(), buf, "sret.val").unwrap();
+                vals.insert(d, loaded);
+            } else if let Some(ret) = call.try_as_basic_value().basic() {
+                vals.insert(d, ret);
+            }
         }
     }
 
-    /// arm64 AAPCS: a record is returned indirectly (sret, in x8) when it is larger
+    /// arm64 AAPCS: a record is passed/returned **indirectly** when it is larger
     /// than 16 bytes and is *not* a homogeneous float aggregate of ≤4 members
-    /// (those go in v0–v3). Returns the LLVM struct type for such a record. LLVM's
-    /// by-value aggregate return does not match the C/objc_msgSend sret ABI for an
-    /// indirect (function-pointer) call, so we implement sret explicitly.
-    fn record_sret_type(&self, ty: newm2_sema::TypeId) -> Option<StructType<'ctx>> {
+    /// (those go in registers). Returns the LLVM struct type for such a record.
+    /// Used for both sret returns (x8) and byval args (a pointer to a copy) —
+    /// LLVM's by-value aggregate handling does not match the C/objc_msgSend ABI for
+    /// an indirect (function-pointer) call, so we implement both explicitly.
+    fn record_indirect_type(&self, ty: newm2_sema::TypeId) -> Option<StructType<'ctx>> {
         if !matches!(self.types.get(ty), TypeKind::Record(_)) {
             return None;
         }
@@ -472,26 +556,6 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
         (size, floats, total)
     }
 
-    /// Like `indirect_fn_type` but for an sret call: `void (ptr sret, <params…>)`.
-    fn sret_fn_type(&self, sig: newm2_sema::TypeId) -> FunctionType<'ctx> {
-        let ptr_ty = self.ctx.ptr_type(inkwell::AddressSpace::default());
-        let i64_ty = self.ctx.i64_type();
-        let mut param_types: Vec<BasicMetadataTypeEnum<'ctx>> = vec![ptr_ty.into()];
-        if let TypeKind::Proc { params, .. } = self.types.get(sig) {
-            for p in params {
-                let is_open = matches!(self.types.get(p.ty), TypeKind::OpenArray { .. });
-                if p.mode == newm2_sema::types::ParamMode::Var {
-                    param_types.push(ptr_ty.into());
-                } else {
-                    param_types.push(self.llvm_type(p.ty).into());
-                }
-                if is_open {
-                    param_types.push(i64_ty.into());
-                }
-            }
-        }
-        self.ctx.void_type().fn_type(&param_types, false)
-    }
 
     // ---- Global declarations ------------------------------------------------
 
@@ -1623,52 +1687,7 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
             }
             Inst::IndCall { dst, callee, sig, args } => {
                 let fn_ptr = self.val_of(callee, vals).into_pointer_value();
-                let arg_vals: Vec<BasicMetadataValueEnum<'ctx>> =
-                    args.iter().map(|a| self.val_of(a, vals).into()).collect();
-                let ret_ty = match self.types.get(*sig) {
-                    TypeKind::Proc { return_ty, .. } => *return_ty,
-                    _ => None,
-                };
-                // A struct returned indirectly (arm64 sret, in x8): the caller must
-                // allocate the result buffer and pass it as an `sret`-attributed
-                // first argument. LLVM's by-value aggregate return does not set up
-                // x8 for an indirect call, so objc_msgSend would write the result
-                // through a garbage x8 (the [NSView frameTransform] bus error).
-                if let Some(sret_struct) = ret_ty.and_then(|t| self.record_sret_type(t)) {
-                    let buf = self.builder.build_alloca(sret_struct, "sret.buf").unwrap();
-                    let mut sret_args: Vec<BasicMetadataValueEnum<'ctx>> =
-                        Vec::with_capacity(arg_vals.len() + 1);
-                    sret_args.push(buf.into());
-                    sret_args.extend(arg_vals);
-                    let fty = self.sret_fn_type(*sig);
-                    let call = self
-                        .builder
-                        .build_indirect_call(fty, fn_ptr, &sret_args, "indcall")
-                        .unwrap();
-                    let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("sret");
-                    let attr = self.ctx.create_type_attribute(kind, sret_struct.as_any_type_enum());
-                    call.add_attribute(inkwell::attributes::AttributeLoc::Param(0), attr);
-                    if let Some(d) = dst {
-                        let loaded =
-                            self.builder.build_load(sret_struct, buf, "sret.val").unwrap();
-                        vals.insert(*d, loaded);
-                    }
-                } else {
-                    // Build the call's function type from the procedure-pointer's
-                    // signature so the ABI matches the callee exactly (a variadic
-                    // i64(...) fallback corrupts the Windows x64 stack for
-                    // by-reference args — the device-dispatch / scanner case).
-                    let fty = self.indirect_fn_type(*sig);
-                    let call = self
-                        .builder
-                        .build_indirect_call(fty, fn_ptr, &arg_vals, "indcall")
-                        .unwrap();
-                    if let Some(d) = dst {
-                        if let Some(ret) = call.try_as_basic_value().basic() {
-                            vals.insert(*d, ret);
-                        }
-                    }
-                }
+                self.emit_indirect_call(*sig, fn_ptr, args, *dst, vals);
                 self.emit_safepoint_if_gc();
             }
             Inst::SetOp { dst, op, lhs, rhs } => {
