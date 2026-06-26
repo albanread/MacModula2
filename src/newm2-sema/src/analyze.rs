@@ -6294,10 +6294,24 @@ fn resolve_class_decl(
                 }
             },
             None => {
-                // For a single-segment name, emit the diagnostic here; a
-                // qualified miss already reported inside `resolve_symbol`.
+                // For a single-segment name, resolve it here; a qualified miss
+                // was already reported inside `resolve_symbol`.
                 if base_qn.segments.len() == 1 {
-                    ctx.error(base_qn.span, format!("unknown class '{base_name}'"));
+                    if ctx.cocoa_db.classes.contains(&base_name) {
+                        // A bare base that names a known Cocoa class is not an
+                        // error: resolve it straight from the Cocoa metadata.
+                        // `INHERIT NSView` then means exactly `<* cocoa "NSView"
+                        // *>` — root this M2 class at that Obj-C class by name
+                        // (base stays None; the superclass is bound at runtime
+                        // via objc_getClass). Normal Modula-2 syntax, no pragma
+                        // and no IMPORT, yet still typo-safe: an *unknown* bare
+                        // base name remains the error below. Reaching a Cocoa
+                        // class not in the metadata is what `<* cocoa "X" *>`
+                        // (any name, unchecked) is still for.
+                        ctx.classes.get_mut(cid).objc_super = Some(base_name);
+                    } else {
+                        ctx.error(base_qn.span, format!("unknown class '{base_name}'"));
+                    }
                 }
             }
         }
