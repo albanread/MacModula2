@@ -201,6 +201,7 @@ struct Ctx {
     designator_types: HashMap<SpanKey, TypeId>,
     selector_bindings: HashMap<SpanKey, SelectorBinding>,
     objc_send_sigs: HashMap<SpanKey, TypeId>,
+    cocoa_db: crate::cocoadb::CocoaDb,
     resolved_names: HashMap<SpanKey, ResolvedName>,
     diagnostics: Vec<Diagnostic>,
     pervasive: ScopeId,
@@ -269,6 +270,7 @@ impl Ctx {
             designator_types: HashMap::new(),
             selector_bindings: HashMap::new(),
             objc_send_sigs: HashMap::new(),
+            cocoa_db: crate::cocoadb::CocoaDb::default(),
             resolved_names: HashMap::new(),
             diagnostics: Vec::new(),
             pervasive,
@@ -409,6 +411,15 @@ fn check_module_graph_impl(
 ) -> SemaResult {
     let mut ctx = Ctx::new();
     ctx.strict = strict;
+    // Load the Cocoa selector database (extension 3) from beside the ObjC bindings
+    // (library/macrtdef/cocoa-selectors.json) when this graph uses Cocoa. Drives
+    // typed message-send results + selector arity validation; absent = id default.
+    if let Some(mid) = graph.lookup("ObjC")
+        && let Some(def) = &graph.get(mid).def_path
+        && let Some(dir) = def.parent()
+    {
+        ctx.cocoa_db = crate::cocoadb::CocoaDb::load(&dir.join("cocoa-selectors.json"));
+    }
     // Modules whose interface came from the cache (re-interned, not checked):
     // they skip the interface-resolution sub-phases and body analysis below.
     let mut cached: std::collections::HashSet<ModuleId> = std::collections::HashSet::new();
@@ -4096,6 +4107,20 @@ fn expr_span(expr: &ast::Expr) -> Span {
     }
 }
 
+/// Map a Cocoa selector-database return *kind* to an M2 type for a message send.
+/// Struct (`{`) and void (`v`) returns currently fall back to `id` — typed struct
+/// returns (NSRange/NSRect) are a follow-up.
+fn cocoa_kind_type(ctx: &mut Ctx, kind: char) -> TypeId {
+    let b = match kind {
+        'i' => Builtin::Integer,
+        'u' => Builtin::Cardinal,
+        'd' => Builtin::Real,
+        'B' => Builtin::Boolean,
+        _ => Builtin::Address, // '@' ':' '*' 'v' '{' '?'
+    };
+    ctx.types.builtin(b)
+}
+
 fn annotate_expr(ctx: &mut Ctx, expr: &ast::Expr, ty: TypeId) {
     ctx.note_expr_type(expr_span(expr), ty);
 }
@@ -5299,7 +5324,7 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
         // for IR, and yield `ObjC.Id` (typed/struct returns will come from the
         // selector database, extension 3). The selector string lives on the AST
         // node and is read directly by IR lowering.
-        ast::Expr::ObjcSend { recv, args, span, .. } => {
+        ast::Expr::ObjcSend { recv, selector, args, span } => {
             let addr = ctx.types.builtin(Builtin::Address);
             let _ = analyse_expr(ctx, recv, scope);
             let mut params = vec![
@@ -5310,10 +5335,28 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
                 let aty = analyse_expr(ctx, a, scope).unwrap_or(addr);
                 params.push(ProcParam { mode: ParamMode::Value, ty: aty });
             }
-            let sig = ctx.types.alloc(TypeKind::Proc { params, return_ty: Some(addr) });
+            // Result type from the selector database (extension 3); `id` by default.
+            // An unknown selector (likely a typo) is flagged only under --strict, so
+            // normal builds aren't noisy about selectors the partial DB doesn't cover.
+            let result = match ctx.cocoa_db.lookup(selector) {
+                Some(s) => cocoa_kind_type(ctx, s.ret),
+                None => {
+                    if ctx.strict && !ctx.cocoa_db.is_empty() {
+                        ctx.warning(
+                            *span,
+                            format!(
+                                "Objective-C selector '{selector}' is not in the selector \
+                                 database (typo, or a class the DB doesn't cover)"
+                            ),
+                        );
+                    }
+                    addr
+                }
+            };
+            let sig = ctx.types.alloc(TypeKind::Proc { params, return_ty: Some(result) });
             ctx.note_objc_send_sig(*span, sig);
-            ctx.note_expr_type(*span, addr);
-            Some(addr)
+            ctx.note_expr_type(*span, result);
+            Some(result)
         }
     }
 }

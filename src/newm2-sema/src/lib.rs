@@ -9,6 +9,7 @@
 
 pub mod analyze;
 pub mod class;
+pub mod cocoadb;
 pub mod completion;
 pub mod describe;
 pub mod heapcheck;
