@@ -209,8 +209,14 @@ record per struct shape rather than relying only on a hardcoded set:
   the copy. `[v setFrameTransform: m]` round-trips a CGAffineTransform. So struct
   passing is now **bidirectional** for every ABI class. All indirect-call ABI lives
   in `emit_indirect_call` (VAR ptr, open-array ptr+HIGH, sret, large-struct copy).
-- Remaining frontier for fully-dynamic Cocoa: Obj-C block literals (M2 closure →
-  block bridge, for real completion handlers / comparators).
+- **Obj-C block literals** ✅ — `ObjC.MakeBlock(invoke: ADDRESS): Id` wraps an M2
+  procedure as a Cocoa block (`nm2_objc_make_block` builds a capture-free *global*
+  `Block_literal` whose `invoke` is the procedure). The procedure uses the block
+  invoke ABI: its first parameter is the block itself, then the block's args — so
+  no trampoline. Verified two ways: an `NSComparator` driving
+  `sortedArrayUsingComparator:` ([3,1,2] → [1,2,3]), and a live status-bar clock in
+  the IDE driven by an `NSTimer` block (the run loop calls back into M2 every
+  second). This closes the last gap: Cocoa can now call *into* Modula-2.
 
 ### Follow-ups landed after the initial three
 - **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and

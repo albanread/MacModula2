@@ -16,7 +16,7 @@ MODULE macos_panes_ide;
    list (each a flipped NSView document inside an NSScrollView). The controller
    and the flipped list views are ordinary Modula-2 classes that ARE Cocoa
    objects; the toolbar buttons' actions are the controller's methods. *)
-FROM SYSTEM IMPORT CAST;
+FROM SYSTEM IMPORT CAST, ADDRESS;
 FROM STextIO IMPORT WriteString, WriteLn;
 FROM Strings IMPORT Assign, Append, Equal;
 IMPORT ObjC;
@@ -46,6 +46,8 @@ END FlippedDoc;
 VAR
   win, content, outerSplit, rightStack, innerSplit, sidebar, tabs, output, status, editStat, helpPane, searchField: Cocoa.Object;
   projScroll, libScroll, projDoc, libDoc, editorArea, tabBar, tabDoc: Cocoa.Object;
+  clock: Cocoa.Object;          (* status-bar clock label, driven by an NSTimer block *)
+  gFmt: ObjC.Id;                (* shared NSDateFormatter for the clock *)
   gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
   gTabBarCount: INTEGER;
@@ -499,6 +501,23 @@ CLASS IDE;
   END TextDidChange;
 END IDE;
 
+(* --- live status-bar clock, driven by an Obj-C block ----------------------- *)
+(* Cls: a small class-lookup helper.  Tick: an NSTimer block whose invoke ABI is
+   void (^)(NSTimer), so as a plain M2 procedure its FIRST parameter is the block
+   itself, then the timer.  ObjC.MakeBlock wraps it; the Cocoa run loop calls back
+   into Modula-2 every second.  It reads module globals (gFmt, clock); the block
+   is global/capture-free, exactly what MakeBlock provides. *)
+PROCEDURE Cls (n: ARRAY OF CHAR): ObjC.Id;
+BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(n)) END Cls;
+
+PROCEDURE Tick (block, timer: ObjC.Id);
+VAR now: ObjC.Id; buf: ARRAY [0..63] OF CHAR; n: INTEGER;
+BEGIN
+  now := [gFmt stringFromDate: [Cls("NSDate") date]];
+  n := ObjC.GetString(now, buf);
+  Cocoa.SetText(clock, buf)
+END Tick;
+
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id;
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
 BEGIN
@@ -527,9 +546,12 @@ BEGIN
   status := Cocoa.MakeLabel(10.0, 4.0, 700.0, 18.0, "Ready.");
   ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 34);  (* width + stick bottom *)
   Cocoa.AddSubview(content, status);
-  editStat := Cocoa.MakeLabel(720.0, 4.0, 370.0, 18.0, "");
+  editStat := Cocoa.MakeLabel(720.0, 4.0, 270.0, 18.0, "");
   ig := sendIInt(CAST(ObjC.Id, editStat), ObjC.Selector("setAutoresizingMask:"), 33);  (* stick bottom-right *)
   Cocoa.AddSubview(content, editStat);
+  clock := Cocoa.MakeLabel(995.0, 4.0, 95.0, 18.0, "");                 (* set live by the NSTimer block *)
+  ig := sendIInt(CAST(ObjC.Id, clock), ObjC.Selector("setAutoresizingMask:"), 33);
+  Cocoa.AddSubview(content, clock);
   (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
   searchField := s0(s0(ObjC.GetClass("NSSearchField"), ObjC.Selector("alloc")), ObjC.Selector("init"));
   ig := sf(CAST(ObjC.Id, searchField), ObjC.Selector("setFrame:"), 700.0, 605.0, 280.0, 26.0);
@@ -656,6 +678,16 @@ BEGIN
   SetDivider(sidebar, 0, 360.0);
   gHelpVisible := FALSE;                  (* help starts out of the split (editor fills) *)
   Cocoa.SetText(status, "Ready — PROJECT (top) and LIBRARY (bottom). F1 = help.");
+
+  (* Live clock in the status bar, driven by an Obj-C block (ObjC.MakeBlock):
+     the Cocoa run loop fires the NSTimer every second and calls Tick - an M2
+     procedure — back through the block.  Proof the M2 -> block bridge works. *)
+  gFmt := [[Cls("NSDateFormatter") alloc] init];
+  [gFmt setDateFormat: ObjC.NSString("HH:mm:ss")];
+  [Cls("NSTimer") scheduledTimerWithTimeInterval: 1.0
+                  repeats: TRUE
+                  block: ObjC.MakeBlock(CAST(ADDRESS, Tick))];
+  Tick(NIL, NIL);                        (* show the time immediately *)
 
   Cocoa.RunApp;
   WriteString("MacM2 IDE closed."); WriteLn

@@ -305,6 +305,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.AllocateClass".to_string(), "nm2_objc_allocate_class"));
         v.push(("ObjC.AddMethod".to_string(), "nm2_objc_add_method"));
         v.push(("ObjC.RegisterClass".to_string(), "nm2_objc_register_class"));
+        v.push(("ObjC.MakeBlock".to_string(), "nm2_objc_make_block"));
         v.push(("ObjC.GetString".to_string(), "nm2_objc_nsstring_to_wide"));
         v.push(("ObjC.Highlight".to_string(), "nm2_ide_highlight"));
         v.push(("ObjC.MarkErrors".to_string(), "nm2_ide_mark_errors"));

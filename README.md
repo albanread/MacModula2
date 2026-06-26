@@ -40,8 +40,19 @@ END IDEController;
 - Subclass any Cocoa class: `<* cocoa "NSView" *>`, `<* cocoa "NSTextStorage" *>`,
   `<* cocoa_class "NSMutableArray" *>` (bind to an existing class). `GUARD` /
   `ISMEMBER` use `isKindOfClass:` (the Cocoa analogue of COM's `QueryInterface`).
+- **Message sends** without hand-casts: `[recv sel: a withThing: b]`, as an
+  expression or a statement. Return and argument types come from a data-driven
+  selector database (`cocoa-gen` reflecting the live runtime), so `REAL` / `CARDINAL`
+  / struct returns pick the right ABI automatically.
+- **Structs, both ways**: passing/returning a struct works for every arm64 ABI class
+  — registers, HFA in `v0–v3`, `sret` in `x8`, and large-by-pointer. Structs are
+  synthesized as named, declarable records (`VAR r: ObjC.NSEdgeInsets`) with **real
+  field names** read from the system's BridgeSupport metadata (`[v alignmentRectInsets].top`).
+- **Blocks**: `ObjC.MakeBlock(CAST(ADDRESS, proc))` wraps an M2 procedure as a Cocoa
+  block, so Cocoa can call *into* Modula-2 — comparators, `enumerate…UsingBlock:`,
+  completion handlers, `NSTimer` blocks (the IDE's status-bar clock is one).
 
-See `docs/design/cocoa-classes.md` for the full design.
+See `docs/design/cocoa-classes.md` and `docs/design/cocoa-send.md` for the design.
 
 ## Mac-native, feature by feature
 
