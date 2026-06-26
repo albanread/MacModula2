@@ -59,8 +59,25 @@ fn kind_of(tok: &str) -> &'static str {
     if tok.starts_with('^') {
         return "@"; // pointer
     }
-    if tok.starts_with('{') || tok.starts_with('[') || tok.starts_with('(') {
-        return "{"; // struct / array / union
+    if tok.starts_with('{') {
+        // Name the common Cocoa geometry structs so the compiler can return them
+        // as ObjC.NSRange/NSPoint/NSSize/NSRect (register-passed); others stay "{".
+        if tok.starts_with("{CGRect") || tok.starts_with("{NSRect") {
+            return "R";
+        }
+        if tok.starts_with("{CGPoint") || tok.starts_with("{NSPoint") {
+            return "P";
+        }
+        if tok.starts_with("{CGSize") || tok.starts_with("{NSSize") {
+            return "S";
+        }
+        if tok.starts_with("{_NSRange") || tok.starts_with("{NSRange") {
+            return "N";
+        }
+        return "{";
+    }
+    if tok.starts_with('[') || tok.starts_with('(') {
+        return "{"; // array / union
     }
     match tok {
         "@" | "#" | "*" => "@",

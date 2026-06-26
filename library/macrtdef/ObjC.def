@@ -20,6 +20,15 @@ TYPE
   SEL   = ADDRESS;   (* an interned selector        *)
   Class = ADDRESS;   (* a class object              *)
 
+  (* Cocoa geometry value types, laid out to match the C ABI so a [recv sel] that
+     returns one is passed in registers correctly (NSRange in x0/x1; NSPoint/NSSize
+     in d0/d1; NSRect as a 4-double HFA in d0..d3). The selector database maps a
+     struct return kind to these — see docs/design/cocoa-send.md. *)
+  NSRange = RECORD location, length: CARDINAL END;
+  NSPoint = RECORD x, y: REAL END;
+  NSSize  = RECORD width, height: REAL END;
+  NSRect  = RECORD origin: NSPoint; size: NSSize END;
+
   (* objc_msgSend signatures. CAST(MsgSendPtr(), <one of these>) then call. *)
   Send0    = PROCEDURE (Id, SEL): Id;                       (* [obj msg]                 *)
   SendB    = PROCEDURE (Id, SEL, BOOLEAN): Id;              (* [obj msg: aBool]          *)

@@ -202,6 +202,7 @@ struct Ctx {
     selector_bindings: HashMap<SpanKey, SelectorBinding>,
     objc_send_sigs: HashMap<SpanKey, TypeId>,
     cocoa_db: crate::cocoadb::CocoaDb,
+    cocoa_objc_mid: Option<ModuleId>, // the ObjC module (for resolving NSRange/NSRect/…)
     resolved_names: HashMap<SpanKey, ResolvedName>,
     diagnostics: Vec<Diagnostic>,
     pervasive: ScopeId,
@@ -271,6 +272,7 @@ impl Ctx {
             selector_bindings: HashMap::new(),
             objc_send_sigs: HashMap::new(),
             cocoa_db: crate::cocoadb::CocoaDb::default(),
+            cocoa_objc_mid: None,
             resolved_names: HashMap::new(),
             diagnostics: Vec::new(),
             pervasive,
@@ -414,11 +416,13 @@ fn check_module_graph_impl(
     // Load the Cocoa selector database (extension 3) from beside the ObjC bindings
     // (library/macrtdef/cocoa-selectors.json) when this graph uses Cocoa. Drives
     // typed message-send results + selector arity validation; absent = id default.
-    if let Some(mid) = graph.lookup("ObjC")
-        && let Some(def) = &graph.get(mid).def_path
-        && let Some(dir) = def.parent()
-    {
-        ctx.cocoa_db = crate::cocoadb::CocoaDb::load(&dir.join("cocoa-selectors.json"));
+    if let Some(mid) = graph.lookup("ObjC") {
+        ctx.cocoa_objc_mid = Some(mid);
+        if let Some(def) = &graph.get(mid).def_path
+            && let Some(dir) = def.parent()
+        {
+            ctx.cocoa_db = crate::cocoadb::CocoaDb::load(&dir.join("cocoa-selectors.json"));
+        }
     }
     // Modules whose interface came from the cache (re-interned, not checked):
     // they skip the interface-resolution sub-phases and body analysis below.
@@ -4108,17 +4112,31 @@ fn expr_span(expr: &ast::Expr) -> Span {
 }
 
 /// Map a Cocoa selector-database return *kind* to an M2 type for a message send.
-/// Struct (`{`) and void (`v`) returns currently fall back to `id` — typed struct
-/// returns (NSRange/NSRect) are a follow-up.
+/// Geometry structs resolve to ObjC.NSRange/NSPoint/NSSize/NSRect (register-passed
+/// per the C ABI); other structs (`{`) and void (`v`) fall back to `id`.
 fn cocoa_kind_type(ctx: &mut Ctx, kind: char) -> TypeId {
-    let b = match kind {
-        'i' => Builtin::Integer,
-        'u' => Builtin::Cardinal,
-        'd' => Builtin::Real,
-        'B' => Builtin::Boolean,
-        _ => Builtin::Address, // '@' ':' '*' 'v' '{' '?'
-    };
-    ctx.types.builtin(b)
+    let addr = ctx.types.builtin(Builtin::Address);
+    match kind {
+        'i' => ctx.types.builtin(Builtin::Integer),
+        'u' => ctx.types.builtin(Builtin::Cardinal),
+        'd' => ctx.types.builtin(Builtin::Real),
+        'B' => ctx.types.builtin(Builtin::Boolean),
+        'N' => cocoa_record_type(ctx, "NSRange").unwrap_or(addr),
+        'P' => cocoa_record_type(ctx, "NSPoint").unwrap_or(addr),
+        'S' => cocoa_record_type(ctx, "NSSize").unwrap_or(addr),
+        'R' => cocoa_record_type(ctx, "NSRect").unwrap_or(addr),
+        _ => addr, // '@' ':' '*' 'v' '{' '?'
+    }
+}
+
+/// Resolve a geometry record type by name from the ObjC module's scope.
+fn cocoa_record_type(ctx: &Ctx, name: &str) -> Option<TypeId> {
+    let mid = ctx.cocoa_objc_mid?;
+    let scope = *ctx.module_scopes.get(&mid)?;
+    match &ctx.scopes.lookup(scope, name)?.kind {
+        SymbolKind::Type(ty) => Some(*ty),
+        _ => None,
+    }
 }
 
 fn annotate_expr(ctx: &mut Ctx, expr: &ast::Expr, ty: TypeId) {
