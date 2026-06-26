@@ -182,11 +182,18 @@ record per struct shape rather than relying only on a hardcoded set:
   hand-written ObjC.def records for ergonomic nested field names (`.origin.x`).
 - Any **other** struct return: cocoa-gen flattens its encoding to scalar field
   kinds and, if it is **register-returnable** (HFA of ≤4 floats, or ≤16 bytes —
-  sret returns are excluded so the ABI stays reliable) and named, emits
-  `{Name:fieldkinds}`. Sema synthesizes a record named after the NS struct (fields
-  `f0..fn`) and registers it as a Type symbol in the ObjC scope, so it is both
-  returned correctly *and* declarable (`VAR r: ObjC.NSEdgeInsets`). Value access
-  also works directly: `[v alignmentRectInsets].f1`.
+  sret returns are excluded so the ABI stays reliable), synthesizes a record.
+  Sema names it after the NS struct and registers it as a Type symbol in the ObjC
+  scope, so it is returned correctly, declarable (`VAR r: ObjC.NSEdgeInsets`), and
+  value-accessible (`[v alignmentRectInsets].top`).
+- **Field names** come from a real data source, not f0/f1: the runtime method
+  encodings drop struct field names, but macOS ships them in **BridgeSupport** XML
+  (`type64='{NSEdgeInsets="top"d"left"d…}'`, for PyObjC/RubyCocoa). cocoa-gen reads
+  the .bridgesupport files into encoding-name → named fields, so a synthesized
+  struct gets its real members (`.top/.left/.bottom/.right`) — in code and in the
+  editor's autocomplete. (Our own .def files are generated from the runtime, so
+  they're circular — no names there.) BridgeSupport-less / nested structs fall back
+  to positional `f0..fn`.
 - sret structs (e.g. the 6-double `transformStruct`) still fall back to `id` — a
   future item is the indirect-return ABI for those.
 
