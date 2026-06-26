@@ -19,7 +19,7 @@ design and the implementation plan.
 ## Goals
 
 1. Preserve source compatibility where practical.
-2. Keep Windows wide-string interop honest.
+2. Keep wide-string (UTF-16) interop honest.
 3. Add a true one-code-point scalar type.
 4. Let the compiler choose sensible defaults without hiding
    representation changes from the programmer.
@@ -30,12 +30,12 @@ design and the implementation plan.
 NewM2 keeps these names stable and adds one new type:
 
 - `ACHAR`: 8-bit narrow character unit.
-- `UCHAR`: 16-bit wide character unit, intended for Win32 / UTF-16 interop.
+- `UCHAR`: 16-bit wide character unit, intended for UTF-16 interop (e.g. macOS `NSString`).
 - `CHAR32`: 32-bit Unicode scalar value, one code point per element.
 
 `UCHAR` is **not** redefined to mean a 32-bit code point. That would
 break the expectation that `ARRAY OF UCHAR` is the wide-string type
-used by Windows-facing APIs.
+used by UTF-16 APIs (e.g. macOS `NSString`).
 
 ## Default `CHAR` and plain string mode
 
@@ -115,7 +115,7 @@ The three character families have different semantics:
 
 This means:
 
-- `UCHAR` arrays are suitable for UTF-16 / Win32 interop.
+- `UCHAR` arrays are suitable for UTF-16 interop.
 - `CHAR32` arrays are suitable for code-point indexing.
 - Neither `UCHAR` nor `CHAR32` implies one user-visible grapheme per
   element.
@@ -224,10 +224,10 @@ Explicit `ACHAR`, `UCHAR`, and `CHAR32` remain stable across all modes.
 
 ## Runtime and FFI policy
 
-### Windows interop
+### Native-string interop
 
-- Win32 `...A` APIs consume `ACHAR` strings.
-- Win32 `...W` APIs consume `UCHAR` strings.
+- Narrow (UTF-8 / ANSI) APIs consume `ACHAR` strings.
+- Wide (UTF-16) APIs — e.g. macOS `NSString` via the Obj-C bridge — consume `UCHAR` strings.
 - `CHAR32` values/strings require explicit conversion before crossing
   those boundaries.
 
@@ -389,13 +389,13 @@ The runtime must not blur these into one helper family.
 - bootstrap terminal helpers may exist as host-environment operations
   against stdin/stdout for bring-up and testing
 - real terminal and file/channel I/O should live in modules later, once
-  the Windows binding surface is defined
+  the native binding surface (Cocoa / POSIX) is defined
 - file/channel helpers operate on an explicit runtime object or handle
 - `TextIO`-style source interfaces may wrap either one, but the low-level
   ABI should not pretend they are the same thing
 
-For Windows specifically, terminal I/O and file I/O may ultimately use
-different host APIs even when the source-level surface looks similar.
+On macOS, terminal I/O and file I/O may ultimately use different host APIs
+(POSIX / Foundation) even when the source-level surface looks similar.
 
 #### Current implementation status
 
@@ -407,7 +407,7 @@ The intended long-term split is:
 
 - runtime shims stay minimal and exist mainly for JIT/bootstrap support
 - real terminal/file/channel behavior is implemented in modules once
-  NewM2 can bind the relevant Windows APIs cleanly
+  NewM2 can bind the relevant macOS APIs (Cocoa / Foundation / POSIX) cleanly
 
 So the immediate rule is:
 
@@ -474,7 +474,7 @@ So the immediate rule is:
    required explicit narrowing.
 4. Add string conversion tests proving that no silent family conversion
    occurs.
-5. Add Win32 interop tests that confirm `UCHAR` remains 16-bit.
+5. Add UTF-16 interop tests that confirm `UCHAR` remains 16-bit.
 6. Add text I/O tests proving that narrow, wide, and code-point paths do
   not collapse onto the same runtime buffer contract.
 
