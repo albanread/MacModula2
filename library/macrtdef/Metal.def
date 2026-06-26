@@ -1,0 +1,15 @@
+DEFINITION MODULE Metal;
+(* The single C entry point into Metal — everything else in the Metal API is an
+   Obj-C selector reached from Modula-2 via the [recv sel: args] bridge. The Metal
+   framework is dlopen'd by the runtime at startup, so an EXTERNAL binding with no
+   body (exactly like CG.def's CoreGraphics entry points) is all that is needed.
+
+   MTLCreateSystemDefaultDevice() returns the system default id<MTLDevice>; from
+   it, [device newCommandQueue], [device newLibraryWithSource:options:error:],
+   [device newBufferWithBytes:length:options:], etc. are all ordinary sends. *)
+
+FROM SYSTEM IMPORT ADDRESS;
+
+PROCEDURE CreateSystemDefaultDevice ["MTLCreateSystemDefaultDevice" EXTERNAL] (): ADDRESS;
+
+END Metal.
