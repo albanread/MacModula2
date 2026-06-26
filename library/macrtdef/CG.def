@@ -30,5 +30,10 @@ PROCEDURE MoveToPoint       ["CGContextMoveToPoint" EXTERNAL]       (c: Context;
 PROCEDURE AddLineToPoint    ["CGContextAddLineToPoint" EXTERNAL]    (c: Context; x, y: REAL);
 PROCEDURE StrokePath        ["CGContextStrokePath" EXTERNAL]        (c: Context);
 PROCEDURE FillPath          ["CGContextFillPath" EXTERNAL]          (c: Context);
+PROCEDURE BeginPath         ["CGContextBeginPath" EXTERNAL]         (c: Context);
+PROCEDURE ClosePath         ["CGContextClosePath" EXTERNAL]         (c: Context);
+
+(* arc: centre (x, y), radius, angles in radians; clockwise = 0 or 1 *)
+PROCEDURE AddArc            ["CGContextAddArc" EXTERNAL]            (c: Context; x, y, radius, startAngle, endAngle: REAL; clockwise: INTEGER);
 
 END CG.
