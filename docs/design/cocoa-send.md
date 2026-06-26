@@ -175,12 +175,20 @@ M2-closure → Obj-C block bridge. Larger; design separately.
    the runtime HIGH companion (the LineSpan silent-OOB class of bug now traps).
 7. **4c** — big-frame warning. **4d** — Obj-C block literals. pending.
 
-### On struct return coverage
-Typed struct returns are deliberately a **bounded set**: only `NSRange`/`NSPoint`/
-`NSSize`/`NSRect`, whose layouts we model as ObjC.def records so LLVM applies the
-ABI for free. Any other struct return stays kind `{` → falls back to `id`. Adding
-one means adding its record type (and trusting its C layout); there is no generic
-"any struct" path.
+### On struct return coverage — now a general synthesizer
+The Obj-C type encoding *is* the struct layout, so the compiler synthesizes a
+record per struct shape rather than relying only on a hardcoded set:
+- The four geometry types (`NSRange`/`NSPoint`/`NSSize`/`NSRect`) keep their
+  hand-written ObjC.def records for ergonomic nested field names (`.origin.x`).
+- Any **other** struct return: cocoa-gen flattens its encoding to scalar field
+  kinds and, if it is **register-returnable** (HFA of ≤4 floats, or ≤16 bytes —
+  sret returns are excluded so the ABI stays reliable) and named, emits
+  `{Name:fieldkinds}`. Sema synthesizes a record named after the NS struct (fields
+  `f0..fn`) and registers it as a Type symbol in the ObjC scope, so it is both
+  returned correctly *and* declarable (`VAR r: ObjC.NSEdgeInsets`). Value access
+  also works directly: `[v alignmentRectInsets].f1`.
+- sret structs (e.g. the 6-double `transformStruct`) still fall back to `id` — a
+  future item is the indirect-return ABI for those.
 
 ### Follow-ups landed after the initial three
 - **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and
