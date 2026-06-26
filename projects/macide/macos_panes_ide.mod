@@ -18,7 +18,7 @@ MODULE macos_panes_ide;
    objects; the toolbar buttons' actions are the controller's methods. *)
 FROM SYSTEM IMPORT CAST;
 FROM STextIO IMPORT WriteString, WriteLn;
-FROM Strings IMPORT Assign, Append;
+FROM Strings IMPORT Assign, Append, Equal;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT Proc;
@@ -288,8 +288,18 @@ END ShowAssist;
 
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
+PROCEDURE Basename (path: ARRAY OF CHAR; VAR name: ARRAY OF CHAR);   (* file part of a path *)
+VAR i, j, start: CARDINAL;
+BEGIN
+  start := 0; i := 0;
+  WHILE path[i] # CHR(0) DO IF path[i] = '/' THEN start := i+1 END; INC(i) END;
+  j := 0; i := start;
+  WHILE path[i] # CHR(0) DO name[j] := path[i]; INC(i); INC(j) END;
+  name[j] := CHR(0)
+END Basename;
+
 PROCEDURE OpenDoc (tag: INTEGER);
-VAR full, text: ARRAY [0..262143] OF CHAR; ed, it: Cocoa.Object; n, idx: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
+VAR full, text: ARRAY [0..262143] OF CHAR; ed, it: Cocoa.Object; n, idx, i: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
 BEGIN
   isLib := tag >= LibBase;
   IF isLib THEN idx := tag - LibBase;
@@ -302,6 +312,15 @@ BEGIN
   IF Proc.IsDir(full) THEN
     IF isLib THEN Assign(full, gLibDir) ELSE Assign(full, gProjDir) END;
     RebuildList(isLib); RETURN
+  END;
+  (* already open? switch to its tab instead of loading a second copy *)
+  i := 0;
+  WHILE i < gTabCount DO
+    IF Equal(gPaths[i], full) THEN
+      ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), i);
+      RebuildTabBar; Cocoa.SetText(status, "Already open — switched to its tab."); RETURN
+    END;
+    INC(i)
   END;
   n := Proc.ReadFile(full, text);
   IF n < 0 THEN RETURN END;
@@ -336,12 +355,45 @@ CLASS IDE;
   BEGIN
     IF Cocoa.OpenFolder(path) THEN Assign(path, gProjDir); RebuildList(FALSE) END
   END OnOpen;
+  PROCEDURE OnNew (sender: ObjC.Id);               (* "onNew:" — a fresh, untitled, editable tab *)
+  VAR ed, it: Cocoa.Object; tv: ObjC.Id;
+  BEGIN
+    IF gTabCount > 63 THEN Cocoa.SetText(status, "Too many tabs."); RETURN END;
+    ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));
+    Cocoa.SetEditorText(ed, "");
+    tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
+    ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);
+    ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);
+    ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl);
+    it := Cocoa.AddTab(tabs, "untitled", ed);
+    gEditors[gTabCount] := ed; gPaths[gTabCount][0] := CHR(0);   (* empty path = untitled *)
+    gReadOnly[gTabCount] := FALSE; Assign("untitled", gTabNames[gTabCount]);
+    INC(gTabCount);
+    ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), gTabCount-1);
+    RebuildTabBar;
+    Cocoa.SetText(status, "New file — Save (Cmd-S) to name it.")
+  END OnNew;
+  PROCEDURE OnSaveAs (sender: ObjC.Id);            (* "onSaveAs:" — choose a path, then save *)
+  VAR sel, ix: INTEGER; src: ARRAY [0..262143] OF CHAR; path: ARRAY [0..1023] OF CHAR;
+  BEGIN
+    sel := Cocoa.SelectedTab(tabs);
+    IF sel < 0 THEN RETURN END;
+    IF NOT ObjC.SavePanel(path) THEN RETURN END;   (* user cancelled *)
+    Cocoa.EditorText(gEditors[sel], src);
+    ix := Proc.WriteFile(path, src);
+    IF ix = 0 THEN
+      Assign(path, gPaths[sel]); gReadOnly[sel] := FALSE;
+      Basename(path, gTabNames[sel]); RebuildTabBar;
+      Cocoa.SetText(status, "Saved.")
+    ELSE Cocoa.SetText(status, "Save As failed.") END
+  END OnSaveAs;
   PROCEDURE OnSave (sender: ObjC.Id);              (* "onSave:" *)
   VAR sel, ix: INTEGER; src: ARRAY [0..262143] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
     IF gReadOnly[sel] THEN Cocoa.SetText(status, "Library file is read-only (reference)."); RETURN END;
+    IF gPaths[sel][0] = CHR(0) THEN SELF.OnSaveAs(sender); RETURN END;   (* untitled -> Save As *)
     Cocoa.EditorText(gEditors[sel], src);
     ix := Proc.WriteFile(gPaths[sel], src);
     IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
@@ -416,6 +468,7 @@ CLASS IDE;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
+    IF gPaths[sel][0] = CHR(0) THEN RETURN END;     (* untitled: no autosave until named *)
     Cocoa.EditorText(gEditors[sel], src);
     ix := Proc.WriteFile(gPaths[sel], src);
     IF ix = 0 THEN Cocoa.SetText(status, "Autosaved.") END
@@ -441,11 +494,12 @@ BEGIN
   content := Cocoa.ContentView(win);
   NEW(ide); ctrl := CAST(ObjC.Id, ide);
 
-  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 76.0,  "Open", "onOpen:", 8));
-  Cocoa.AddSubview(content, CtrlButton(88.0,  604.0, 64.0,  "Save", "onSave:", 8));
-  Cocoa.AddSubview(content, CtrlButton(156.0, 604.0, 104.0, "Build & Run", "onBuildRun:", 8));
-  Cocoa.AddSubview(content, CtrlButton(264.0, 604.0, 92.0,  "✕ Close Tab", "onClose:", 8));
-  status := Cocoa.MakeLabel(362.0, 610.0, 330.0, 22.0, "Ready.");
+  Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 56.0,  "New", "onNew:", 8));
+  Cocoa.AddSubview(content, CtrlButton(68.0,  604.0, 64.0,  "Open", "onOpen:", 8));
+  Cocoa.AddSubview(content, CtrlButton(136.0, 604.0, 56.0,  "Save", "onSave:", 8));
+  Cocoa.AddSubview(content, CtrlButton(196.0, 604.0, 104.0, "Build & Run", "onBuildRun:", 8));
+  Cocoa.AddSubview(content, CtrlButton(304.0, 604.0, 92.0,  "✕ Close Tab", "onClose:", 8));
+  status := Cocoa.MakeLabel(404.0, 610.0, 290.0, 22.0, "Ready.");
   ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 8);  (* stick top *)
   Cocoa.AddSubview(content, status);
   (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
@@ -527,8 +581,10 @@ BEGIN
   mApp := AddMenu(menuBar, "MacM2");
   AddItem(mApp, appObj, "Quit MacM2 IDE", "terminate:", "q", 0);
   mFile := AddMenu(menuBar, "File");
+  AddItem(mFile, ctrl, "New", "onNew:", "n", 0);                 (* ⌘N *)
   AddItem(mFile, ctrl, "Open Folder…", "onOpen:", "o", 0);
   AddItem(mFile, ctrl, "Save", "onSave:", "s", 0);
+  AddItem(mFile, ctrl, "Save As…", "onSaveAs:", "s", 120000H);   (* ⌘⇧S *)
   AddItem(mFile, ctrl, "Close Tab", "onClose:", "w", 0);
   (* Edit menu — standard responder-chain actions (target nil -> the focused editor) *)
   mEdit := AddMenu(menuBar, "Edit");
