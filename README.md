@@ -120,6 +120,15 @@ cargo build -p newm2-driver
 ./target/debug/newm2-driver run --library library projects/macide/macos_panes_ide.mod
 ```
 
+Or package it as a double-clickable **`.app`** — bundles the editor *and* the
+compiler/JIT toolchain, so Build & Run and autocomplete work with no dev checkout
+and no Xcode at run time:
+
+```sh
+scripts/build-macapp.sh                 # writes dist/MacM2 IDE.app  (--debug for a fast build)
+open "dist/MacM2 IDE.app"
+```
+
 ## Repository layout
 
 ```

@@ -5,6 +5,9 @@
 # Archives / large blobs.
 *.zip
 
+# macOS .app bundle build output (scripts/build-macapp.sh).
+/dist/
+
 # C#/.NET build artifacts (windows_api tooling, when present).
 **/obj/
 **/bin/
