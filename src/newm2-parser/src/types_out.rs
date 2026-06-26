@@ -886,6 +886,23 @@ fn format_expr(expr: &Expr) -> String {
                 format!("[{r} {selector}]")
             }
         }
+        Expr::Postfix { base, selectors, .. } => {
+            let mut s = format_expr(base);
+            for sel in selectors {
+                match sel {
+                    Selector::Field(n, _) => s.push_str(&format!(".{n}")),
+                    Selector::Deref(_) => s.push('^'),
+                    Selector::Index(ixs, _) => {
+                        let parts: Vec<String> = ixs.iter().map(format_expr).collect();
+                        s.push_str(&format!("[{}]", parts.join(", ")));
+                    }
+                    Selector::TypeGuard(qn, _) => {
+                        s.push_str(&format!("({})", qn.segments.join(".")));
+                    }
+                }
+            }
+            s
+        }
     }
 }
 

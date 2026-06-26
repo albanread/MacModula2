@@ -499,6 +499,31 @@ fn expr_inline(e: &Expr) -> String {
             s.push(']');
             s
         }
+        Expr::Postfix { base, selectors, .. } => {
+            let mut s = expr_inline(base);
+            for sel in selectors {
+                match sel {
+                    Selector::Field(n, _) => {
+                        let _ = write!(s, ".{n}");
+                    }
+                    Selector::Deref(_) => s.push('^'),
+                    Selector::Index(ixs, _) => {
+                        s.push('[');
+                        for (i, e) in ixs.iter().enumerate() {
+                            if i > 0 {
+                                s.push_str(", ");
+                            }
+                            s.push_str(&expr_inline(e));
+                        }
+                        s.push(']');
+                    }
+                    Selector::TypeGuard(qn, _) => {
+                        let _ = write!(s, "({})", qn.segments.join("."));
+                    }
+                }
+            }
+            s
+        }
     }
 }
 

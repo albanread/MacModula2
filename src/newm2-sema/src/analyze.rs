@@ -4106,7 +4106,8 @@ fn expr_span(expr: &ast::Expr) -> Span {
         | ast::Expr::Binary(_, _, _, span)
         | ast::Expr::Unary(_, _, span)
         | ast::Expr::Set { span, .. }
-        | ast::Expr::ObjcSend { span, .. } => *span,
+        | ast::Expr::ObjcSend { span, .. }
+        | ast::Expr::Postfix { span, .. } => *span,
         ast::Expr::Designator(designator) => designator.span,
     }
 }
@@ -4136,6 +4137,29 @@ fn cocoa_record_type(ctx: &Ctx, name: &str) -> Option<TypeId> {
     match &ctx.scopes.lookup(scope, name)?.kind {
         SymbolKind::Type(ty) => Some(*ty),
         _ => None,
+    }
+}
+
+/// The type after one postfix selector (`^`, `.field`, `[i]`) applied to `ty` —
+/// for `Expr::Postfix` on a non-designator base (e.g. `CAST(P,x)^.field`).
+fn step_selector_type(ctx: &Ctx, ty: TypeId, sel: &ast::Selector) -> Option<TypeId> {
+    match sel {
+        ast::Selector::Deref(_) => match ctx.types.get(ty) {
+            TypeKind::Pointer { base } => Some(*base),
+            _ => None,
+        },
+        ast::Selector::Field(name, _) => match ctx.types.get(ty) {
+            TypeKind::Record(layout) => {
+                layout.fields.iter().find(|f| f.name == *name).map(|f| f.ty)
+            }
+            _ => None,
+        },
+        ast::Selector::Index(_, _) => match ctx.types.get(ty) {
+            TypeKind::Array { base, .. } => Some(*base),
+            TypeKind::OpenArray { base } => Some(*base),
+            _ => None,
+        },
+        ast::Selector::TypeGuard(_, _) => Some(ty),
     }
 }
 
@@ -5375,6 +5399,22 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             ctx.note_objc_send_sig(*span, sig);
             ctx.note_expr_type(*span, result);
             Some(result)
+        }
+        // Postfix selectors on a non-designator base (e.g. `CAST(P,x)^.field`):
+        // type the base, then step the type through each selector.
+        ast::Expr::Postfix { base, selectors, span } => {
+            let mut cur = analyse_expr(ctx, base, scope);
+            for sel in selectors {
+                if let ast::Selector::Index(ixs, _) = sel {
+                    for ix in ixs {
+                        let _ = analyse_expr(ctx, ix, scope);
+                    }
+                }
+                cur = cur.and_then(|t| step_selector_type(ctx, t, sel));
+            }
+            let ty = cur.unwrap_or_else(|| ctx.types.builtin(Builtin::Address));
+            ctx.note_expr_type(*span, ty);
+            Some(ty)
         }
     }
 }

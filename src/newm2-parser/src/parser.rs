@@ -9,7 +9,7 @@
 //! carries through to diagnostics.
 
 use crate::ast::*;
-use newm2_lexer::{Keyword, Span, StringLiteral, Token, TokenKind};
+use newm2_lexer::{Keyword, SourcePosition, Span, StringLiteral, Token, TokenKind};
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
@@ -2091,7 +2091,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let e = self.parse_expr()?;
                 self.expect_kind(TokenKind::RParen, "')'")?;
-                Ok(e)
+                self.parse_postfix(e, start.start) // (expr)^ etc.
             }
             // Objective-C message send: `[recv sel]` (unary) or
             // `[recv kw: a kw2: b]` (keyword). A leading `[` is unambiguous —
@@ -2120,12 +2120,13 @@ impl<'a> Parser<'a> {
                     selector = first; // unary message
                 }
                 let end = self.expect_kind(TokenKind::RBracket, "']'")?;
-                Ok(Expr::ObjcSend {
+                let send = Expr::ObjcSend {
                     recv: Box::new(recv),
                     selector,
                     args,
                     span: Span { start: start.start, end: end.end },
-                })
+                };
+                self.parse_postfix(send, start.start) // [recv sel]^ etc.
             }
             TokenKind::LBrace => {
                 self.parse_set_constructor(None)
@@ -2184,11 +2185,12 @@ impl<'a> Parser<'a> {
                         }
                     }
                     let end = self.expect_kind(TokenKind::RParen, "')'")?;
-                    Ok(Expr::Call(
+                    let call = Expr::Call(
                         Box::new(expr),
                         args,
                         Span { start: start.start, end: end.end },
-                    ))
+                    );
+                    self.parse_postfix(call, start.start) // CAST(P,x)^.f, f(x)^, …
                 } else {
                     let _ = dz_end;
                     Ok(expr)
@@ -2289,6 +2291,54 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Designator { base, selectors, span: Span { start: start.start, end } })
+    }
+
+    /// Apply trailing postfix selectors (`^`, `.field`, `[i]`) to a non-designator
+    /// primary (a call/cast result, a parenthesised expr, a message send). Returns
+    /// the base unchanged when none follow, else an `Expr::Postfix`.
+    fn parse_postfix(&mut self, base: Expr, start: SourcePosition) -> Result<Expr, ParseError> {
+        let mut selectors = Vec::new();
+        let mut end = start;
+        loop {
+            match self.peek_kind() {
+                TokenKind::Dot
+                    if matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Ident(_))) =>
+                {
+                    self.bump();
+                    let (n, ns) = self.expect_ident()?;
+                    selectors.push(Selector::Field(n, ns));
+                    end = ns.end;
+                }
+                TokenKind::LBracket => {
+                    let s = self.peek().span;
+                    self.bump();
+                    let mut indices = Vec::new();
+                    if !self.at_kind(&TokenKind::RBracket) {
+                        loop {
+                            indices.push(self.parse_expr()?);
+                            if !self.eat_kind(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    let e = self.expect_kind(TokenKind::RBracket, "']'")?;
+                    selectors.push(Selector::Index(indices, Span { start: s.start, end: e.end }));
+                    end = e.end;
+                }
+                TokenKind::Caret => {
+                    let s = self.peek().span;
+                    self.bump();
+                    selectors.push(Selector::Deref(s));
+                    end = s.end;
+                }
+                _ => break,
+            }
+        }
+        if selectors.is_empty() {
+            Ok(base)
+        } else {
+            Ok(Expr::Postfix { base: Box::new(base), selectors, span: Span { start, end } })
+        }
     }
 
     fn parse_set_constructor(&mut self, type_name: Option<QualName>) -> Result<Expr, ParseError> {

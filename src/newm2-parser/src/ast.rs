@@ -327,6 +327,10 @@ pub enum Expr {
     /// full keyword selector ("sel:more:") or a bare unary name; `args` are the
     /// keyword arguments in order. Lowers to `objc_msgSend(recv, @sel, args…)`.
     ObjcSend { recv: Box<Expr>, selector: String, args: Vec<Expr>, span: Span },
+    /// Postfix selectors applied to a non-designator primary, e.g. `CAST(P,x)^.f`
+    /// or `[recv sel]^`. `base` is the primary; `selectors` are `^` / `.field` /
+    /// `[i]` applied in order.
+    Postfix { base: Box<Expr>, selectors: Vec<Selector>, span: Span },
 }
 
 /// A *designator* — a name optionally followed by `.f`, `[i,…]`, or `^`.

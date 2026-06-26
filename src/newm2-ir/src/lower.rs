@@ -3240,7 +3240,49 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 self.push(Inst::IndCall { dst: Some(dst), callee: msgsend, sig, args: arg_vals });
                 dst
             }
+            // Postfix selectors on a value base — `CAST(P,x)^.field` etc. Compute
+            // the address, then load.
+            ast::Expr::Postfix { base, selectors, .. } => match self.eval_postfix_addr(base, selectors)
+            {
+                Some(ptr) => {
+                    let dst = self.fresh();
+                    self.push(Inst::Load { dst, ptr });
+                    dst
+                }
+                None => self.eval_expr(base), // unsupported shape: evaluate base for effect
+            },
         }
+    }
+
+    /// Address of a postfix chain whose base evaluates to a pointer value:
+    /// `base^`, `base^.field`, `base^[i]`. Requires a leading `^` (the pointer
+    /// value is itself the pointed-to object's address). Returns None otherwise.
+    fn eval_postfix_addr(&mut self, base: &ast::Expr, selectors: &[ast::Selector]) -> Option<ValueId> {
+        let (first, rest) = selectors.split_first()?;
+        if !matches!(first, ast::Selector::Deref(_)) {
+            return None;
+        }
+        let base_ty = self.ctx.sema.expr_type(self.ctx.mid, expr_span(base));
+        let v = self.eval_expr(base); // pointer value = address of the pointed-to object
+        let mut cur_ty = base_ty.and_then(|t| self.selector_result_type(t, first));
+        // Attach the pointee type to the raw pointer so any field/index GEP that
+        // follows is well-typed (the designator path types its base the same way).
+        let mut ptr = match cur_ty {
+            Some(rec) => {
+                let typed = self.fresh();
+                self.push(Inst::TypedPtr { dst: typed, src: v, ty: rec });
+                typed
+            }
+            // Without the pointee type a field/index GEP can't be formed safely;
+            // a bare `^` (no further selectors) just loads the pointed-to value.
+            None if rest.is_empty() => v,
+            None => return None,
+        };
+        for sel in rest {
+            ptr = self.apply_selector(ptr, cur_ty, sel);
+            cur_ty = cur_ty.and_then(|t| self.selector_result_type(t, sel));
+        }
+        Some(ptr)
     }
 
     /// Emit a named constant of type `ty`. A RECORD/ARRAY aggregate is carried
@@ -6473,6 +6515,7 @@ fn expr_span(expr: &ast::Expr) -> Span {
         ast::Expr::Designator(designator) => designator.span,
         ast::Expr::Set { span, .. } => *span,
         ast::Expr::ObjcSend { span, .. } => *span,
+        ast::Expr::Postfix { span, .. } => *span,
     }
 }
 

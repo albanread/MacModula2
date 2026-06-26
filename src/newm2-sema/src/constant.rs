@@ -204,6 +204,10 @@ pub fn eval_const(expr: &Expr, lookup: ConstLookup) -> Result<ConstValue, EvalEr
             *span,
             "an Objective-C message send is not a constant expression".to_string(),
         )),
+        Expr::Postfix { span, .. } => Err(EvalError::new(
+            *span,
+            "a postfix dereference/field expression is not a constant".to_string(),
+        )),
     }
 }
 
