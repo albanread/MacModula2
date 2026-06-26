@@ -2458,6 +2458,13 @@ impl<'a> Parser<'a> {
                     Ok(Stmt::Call(Expr::Designator(dz), start))
                 }
             }
+            // `[recv sel: args]` as a statement — an Objective-C message send whose
+            // result is discarded (e.g. `[arr addObject: x];`, `[player stop];`).
+            TokenKind::LBracket => {
+                let e = self.parse_factor()?;
+                let end = self.toks[self.pos.saturating_sub(1)].span.end;
+                Ok(Stmt::Call(e, Span { start: start.start, end }))
+            }
             _ => self.err(format!("expected statement, found {:?}", self.peek_kind())),
         }
     }
