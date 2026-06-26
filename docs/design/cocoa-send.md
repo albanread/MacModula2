@@ -170,6 +170,16 @@ M2-closure → Obj-C block bridge. Larger; design separately.
 5. **4a** — postfix-on-primary parser refactor (`CAST(P,x)^.field`). pending.
 6. **4b/4c** — bounds-check mode, big-frame warning. **4d** — blocks. pending.
 
+### Follow-ups landed after the initial three
+- **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and
+  a send returning one yields `ObjC.NSRange`/`NSPoint`/`NSSize`/`NSRect` (records in
+  ObjC.def laid out to the C ABI). `[view frame]` → NSRect (4-double HFA in d0–d3),
+  `[s rangeOfString:]` → NSRange (x0/x1). Verified.
+- **Bare send statements** ✅ — `[player stop];` / `[arr addObject: x];` parse as a
+  statement (Stmt::Call of an ObjcSend); sema + IR already handled it.
+- **Real-code proof** ✅ — library/macrtmod/Sound.mod now drives AVMIDIPlayer/NSSound
+  entirely via `[recv sel: args]`, no Send* casts.
+
 ### Notes from implementation
 - **Arity validation is unnecessary**: a keyword selector's `:` count *always*
   equals the parsed argument count, so a send can't be built with the wrong arity.
