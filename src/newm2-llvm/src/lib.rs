@@ -1238,6 +1238,7 @@ fn for_each_runtime_binding(
         bind("ObjC.AllocateClass", newm2_runtime::objc::nm2_objc_allocate_class as *const ());
         bind("ObjC.AddMethod", newm2_runtime::objc::nm2_objc_add_method as *const ());
         bind("ObjC.RegisterClass", newm2_runtime::objc::nm2_objc_register_class as *const ());
+        bind("ObjC.MakeBlock", newm2_runtime::objc::nm2_objc_make_block as *const ());
         // Compiler-internal helpers for the native M2 object model on Cocoa:
         // NEW(p) -> [[Class alloc] init], DISPOSE(p) -> [p release]. Bound by
         // their raw symbol names because codegen calls them directly.

@@ -437,6 +437,59 @@ pub extern "C-unwind" fn nm2_objc_register_class(cls: *mut c_void) {
     f(cls);
 }
 
+// The Objective-C block ABI (clang's Block_private.h). A capture-free *global*
+// block is a fixed five-word literal pointing at an invoke function and a
+// descriptor; copy/release are no-ops on it, so it is safe to hand to APIs that
+// store the block (timers, completion handlers).
+#[repr(C)]
+struct BlockDescriptor {
+    reserved: usize,
+    size: usize,
+}
+
+#[repr(C)]
+struct BlockLiteral {
+    isa: *const c_void,
+    flags: i32,
+    reserved: i32,
+    invoke: *const c_void,
+    descriptor: *const BlockDescriptor,
+}
+
+const BLOCK_IS_GLOBAL: i32 = 1 << 28;
+
+/// `ObjC.MakeBlock(invoke)` — wrap a plain C-ABI function as an Objective-C block,
+/// so an M2 procedure can be passed to any Cocoa API taking a block (comparators,
+/// `enumerate…UsingBlock:`, completion handlers, `NSTimer` blocks, …).
+///
+/// `invoke` must have the block invoke ABI — `ret invoke(void *block, <args…>)` —
+/// i.e. a module-level M2 procedure whose *first* parameter is the block itself
+/// (an `ObjC.Id`, usually ignored) followed by the block's real parameters, e.g.
+/// `PROCEDURE Cmp (blk, a, b: ObjC.Id): INTEGER` for `NSComparator`.
+///
+/// The block is a global (capture-free) block: it lives for the program's lifetime,
+/// so the wrapped procedure must not depend on per-call captured state.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_make_block(invoke: *mut c_void) -> *mut c_void {
+    bootstrap();
+    let isa = sym_or_null("_NSConcreteGlobalBlock");
+    if isa.is_null() || invoke.is_null() {
+        return std::ptr::null_mut();
+    }
+    let descriptor = Box::into_raw(Box::new(BlockDescriptor {
+        reserved: 0,
+        size: std::mem::size_of::<BlockLiteral>(),
+    }));
+    let literal = Box::into_raw(Box::new(BlockLiteral {
+        isa: isa as *const c_void,
+        flags: BLOCK_IS_GLOBAL,
+        reserved: 0,
+        invoke: invoke as *const c_void,
+        descriptor,
+    }));
+    literal as *mut c_void
+}
+
 /// An `NSRect` / `CGRect` — four CGFloat (f64) passed in v0–v3 on arm64.
 #[repr(C)]
 #[derive(Clone, Copy)]

@@ -118,4 +118,17 @@ PROCEDURE AllocateClass (super: Class; name: ARRAY OF CHAR): Class;
 PROCEDURE AddMethod (cls: Class; sel: SEL; imp: ADDRESS; typeEncoding: ARRAY OF CHAR): BOOLEAN;
 PROCEDURE RegisterClass (cls: Class);
 
+(* --- Obj-C block literals ------------------------------------------------- *)
+(* Wrap an M2 procedure as a Cocoa block, so it can be passed to any API taking
+   a block (comparators, enumerate…UsingBlock:, completion handlers, timers).
+   The procedure must use the block invoke ABI: its FIRST parameter is the block
+   itself (an Id, usually ignored), followed by the block's real parameters:
+
+       PROCEDURE Cmp (blk, a, b: Id): INTEGER;   (* an NSComparator *)
+       ...
+       sorted := [arr sortedArrayUsingComparator: ObjC.MakeBlock(CAST(ADDRESS, Cmp))];
+
+   The block is global (capture-free): it lives for the program's lifetime. *)
+PROCEDURE MakeBlock (invoke: ADDRESS): Id;
+
 END ObjC.
