@@ -170,7 +170,17 @@ M2-closure → Obj-C block bridge. Larger; design separately.
 5. **4a** — postfix selectors on call/cast results (`CAST(P,x)^.field`). ✅ done
    (Expr::Postfix; IR attaches the pointee type via TypedPtr then reuses
    apply_selector; also covers `^`, `^[i]`).
-6. **4b/4c** — bounds-check mode, big-frame warning. **4d** — blocks. pending.
+6. **4b** — index bounds checks. ✅ done. Fixed arrays already trapped (default on,
+   `--no-runtime-checks` to disable); added the missing **open-array** check against
+   the runtime HIGH companion (the LineSpan silent-OOB class of bug now traps).
+7. **4c** — big-frame warning. **4d** — Obj-C block literals. pending.
+
+### On struct return coverage
+Typed struct returns are deliberately a **bounded set**: only `NSRange`/`NSPoint`/
+`NSSize`/`NSRect`, whose layouts we model as ObjC.def records so LLVM applies the
+ABI for free. Any other struct return stays kind `{` → falls back to `id`. Adding
+one means adding its record type (and trusting its C layout); there is no generic
+"any struct" path.
 
 ### Follow-ups landed after the initial three
 - **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and
