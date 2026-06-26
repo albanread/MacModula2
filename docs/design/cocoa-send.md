@@ -203,9 +203,14 @@ record per struct shape rather than relying only on a hardcoded set:
   (`flatten_struct` recurses), so they are usable today (`.f0..fn`); proper nested
   field names are a polish item. The four geometry structs keep their hand-written
   nested records for `.origin.x`.
-- Remaining frontier for fully-dynamic Cocoa: struct *arguments* (passing a struct
-  by value *into* a send — the dual of sret, e.g. `valueWithCATransform3D:`) and
-  Obj-C block literals.
+- **Struct arguments** ✅ — the dual of sret: a struct passed *by value into* a
+  send. Register/HFA structs (≤16 B) go by value; a large (>16 B non-HFA) struct is
+  passed indirectly per AAPCS — the caller copies it and passes a plain pointer to
+  the copy. `[v setFrameTransform: m]` round-trips a CGAffineTransform. So struct
+  passing is now **bidirectional** for every ABI class. All indirect-call ABI lives
+  in `emit_indirect_call` (VAR ptr, open-array ptr+HIGH, sret, large-struct copy).
+- Remaining frontier for fully-dynamic Cocoa: Obj-C block literals (M2 closure →
+  block bridge, for real completion handlers / comparators).
 
 ### Follow-ups landed after the initial three
 - **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and
