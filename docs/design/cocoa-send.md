@@ -181,11 +181,16 @@ record per struct shape rather than relying only on a hardcoded set:
 - The four geometry types (`NSRange`/`NSPoint`/`NSSize`/`NSRect`) keep their
   hand-written ObjC.def records for ergonomic nested field names (`.origin.x`).
 - Any **other** struct return: cocoa-gen flattens its encoding to scalar field
-  kinds and, if it is **register-returnable** (HFA of ≤4 floats, or ≤16 bytes —
-  sret returns are excluded so the ABI stays reliable), synthesizes a record.
-  Sema names it after the NS struct and registers it as a Type symbol in the ObjC
-  scope, so it is returned correctly, declarable (`VAR r: ObjC.NSEdgeInsets`), and
-  value-accessible (`[v alignmentRectInsets].top`).
+  kinds and (any flat struct ≤256 B) synthesizes a record. Sema names it after the
+  NS struct and registers it as a Type symbol in the ObjC scope, so it is returned
+  correctly, declarable (`VAR r: ObjC.NSEdgeInsets`), and value-accessible
+  (`[v alignmentRectInsets].top`).
+- **Return ABI** is picked from the record type, both classes reliable: ≤16-byte /
+  HFA-of-≤4-floats structs in registers (x0/x1, v0–v3); larger structs via **sret**
+  (x8). The sret path is explicit in codegen (`record_sret_type` + the `sret` arg
+  attribute on `Inst::IndCall`) — LLVM's by-value aggregate return does NOT set up
+  x8 for an indirect call, which is why `[v frameTransform]` (CGAffineTransform, 48 B)
+  bus-errored before. Now large structs (transforms, matrices) return correctly.
 - **Field names** come from a real data source, not f0/f1: the runtime method
   encodings drop struct field names, but macOS ships them in **BridgeSupport** XML
   (`type64='{NSEdgeInsets="top"d"left"d…}'`, for PyObjC/RubyCocoa). cocoa-gen reads
@@ -194,8 +199,13 @@ record per struct shape rather than relying only on a hardcoded set:
   editor's autocomplete. (Our own .def files are generated from the runtime, so
   they're circular — no names there.) BridgeSupport-less / nested structs fall back
   to positional `f0..fn`.
-- sret structs (e.g. the 6-double `transformStruct`) still fall back to `id` — a
-  future item is the indirect-return ABI for those.
+- **Nested** non-geometry structs already synthesize as *flat positional* records
+  (`flatten_struct` recurses), so they are usable today (`.f0..fn`); proper nested
+  field names are a polish item. The four geometry structs keep their hand-written
+  nested records for `.origin.x`.
+- Remaining frontier for fully-dynamic Cocoa: struct *arguments* (passing a struct
+  by value *into* a send — the dual of sret, e.g. `valueWithCATransform3D:`) and
+  Obj-C block literals.
 
 ### Follow-ups landed after the initial three
 - **Struct returns** ✅ — the DB now names the geometry structs (kinds N/P/S/R), and
