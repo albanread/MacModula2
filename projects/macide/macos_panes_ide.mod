@@ -99,7 +99,7 @@ BEGIN
   v := s0(ObjC.GetClass("NSSplitView"), ObjC.Selector("alloc"));
   v := sf(v, ObjC.Selector("initWithFrame:"), x, y, w, h);
   ig := sb(v, ObjC.Selector("setVertical:"), sideBySide);
-  ig := sendIInt(v, ObjC.Selector("setDividerStyle:"), 2);
+  ig := sendIInt(v, ObjC.Selector("setDividerStyle:"), 1);   (* thick, draggable — every split matches *)
   RETURN CAST(Cocoa.Object, v)
 END MakeSplit;
 
@@ -467,7 +467,6 @@ BEGIN
   (* the sidebar is itself a split: PROJECT list (top) over LIBRARY list (bottom),
      with a thick, draggable divider between the two scrolling lists *)
   sidebar := MakeSplit(0.0, 0.0, 220.0, 596.0, FALSE);
-  ig := sendIInt(CAST(ObjC.Id, sidebar), ObjC.Selector("setDividerStyle:"), 1);  (* thick *)
   projScroll := MakeScroll(0.0, 0.0, 220.0, 360.0, projDoc);
   libScroll := MakeScroll(0.0, 0.0, 220.0, 230.0, libDoc);
   Cocoa.AddSubview(sidebar, projScroll);
