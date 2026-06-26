@@ -167,7 +167,9 @@ M2-closure → Obj-C block bridge. Larger; design separately.
 3. **3b** — sema loads the DB → typed send results (REAL/CARDINAL/… not just id).
    ✅ done.
 4. **3c** — `--strict` unknown-selector validation (typo detection). ✅ done.
-5. **4a** — postfix-on-primary parser refactor (`CAST(P,x)^.field`). pending.
+5. **4a** — postfix selectors on call/cast results (`CAST(P,x)^.field`). ✅ done
+   (Expr::Postfix; IR attaches the pointee type via TypedPtr then reuses
+   apply_selector; also covers `^`, `^[i]`).
 6. **4b/4c** — bounds-check mode, big-frame warning. **4d** — blocks. pending.
 
 ### Follow-ups landed after the initial three
