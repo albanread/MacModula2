@@ -3219,6 +3219,27 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 }
                 acc
             }
+            // `[recv sel: args]` -> objc_msgSend(recv, @sel, args…). Same machinery
+            // as a Cocoa method dispatch; the signature was synthesised by sema.
+            ast::Expr::ObjcSend { recv, selector, args, span } => {
+                let recv_val = self.eval_expr(recv);
+                let sel = self.objc_str_call("nm2_objc_sel", selector);
+                let addr = self.ctx.sema.types.builtin(Builtin::Address);
+                let msgsend =
+                    self.call_runtime("nm2_objc_msgsend_ptr", vec![], Some(addr), vec![]).unwrap();
+                let mut arg_vals = vec![recv_val, sel];
+                for a in args {
+                    arg_vals.push(self.eval_expr(a));
+                }
+                let sig = self
+                    .ctx
+                    .sema
+                    .objc_send_sig(self.ctx.mid, *span)
+                    .expect("objc send signature recorded by sema");
+                let dst = self.fresh();
+                self.push(Inst::IndCall { dst: Some(dst), callee: msgsend, sig, args: arg_vals });
+                dst
+            }
         }
     }
 
@@ -6451,6 +6472,7 @@ fn expr_span(expr: &ast::Expr) -> Span {
         | ast::Expr::Unary(_, _, span) => *span,
         ast::Expr::Designator(designator) => designator.span,
         ast::Expr::Set { span, .. } => *span,
+        ast::Expr::ObjcSend { span, .. } => *span,
     }
 }
 

@@ -200,6 +200,10 @@ pub fn eval_const(expr: &Expr, lookup: ConstLookup) -> Result<ConstValue, EvalEr
             members.sort();
             Ok(ConstValue::Set(members))
         }
+        Expr::ObjcSend { span, .. } => Err(EvalError::new(
+            *span,
+            "an Objective-C message send is not a constant expression".to_string(),
+        )),
     }
 }
 

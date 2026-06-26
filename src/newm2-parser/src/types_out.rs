@@ -871,6 +871,21 @@ fn format_expr(expr: &Expr) -> String {
                 format!("{}{{{elems}}}", prefix)
             }
         }
+        Expr::ObjcSend { recv, selector, args, .. } => {
+            let r = format_expr(recv);
+            if selector.contains(':') {
+                let parts: Vec<&str> = selector.split(':').collect();
+                let mut s = format!("[{r}");
+                for (i, a) in args.iter().enumerate() {
+                    let kw = parts.get(i).copied().unwrap_or("");
+                    s.push_str(&format!(" {kw}: {}", format_expr(a)));
+                }
+                s.push(']');
+                s
+            } else {
+                format!("[{r} {selector}]")
+            }
+        }
     }
 }
 

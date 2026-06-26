@@ -491,6 +491,14 @@ fn expr_inline(e: &Expr) -> String {
             s.push('}');
             s
         }
+        Expr::ObjcSend { recv, selector, args, .. } => {
+            let mut s = format!("[{} {selector}", expr_inline(recv));
+            for a in args {
+                let _ = write!(s, " {}", expr_inline(a));
+            }
+            s.push(']');
+            s
+        }
     }
 }
 

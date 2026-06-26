@@ -137,6 +137,9 @@ pub struct SemaResult {
     pub expr_types: HashMap<SpanKey, TypeId>,
     pub designator_types: HashMap<SpanKey, TypeId>,
     pub selector_bindings: HashMap<SpanKey, SelectorBinding>,
+    /// Synthesized `objc_msgSend` PROCEDURE signature for each `[recv sel:]` send,
+    /// keyed by the send's span (built in sema, consumed by IR lowering).
+    pub objc_send_sigs: HashMap<SpanKey, TypeId>,
     pub resolved_names: HashMap<SpanKey, ResolvedName>,
     pub diagnostics: Vec<Diagnostic>,
     /// The `ScopeId` of the pervasive (built-in) scope.
@@ -158,6 +161,10 @@ impl SemaResult {
 
     pub fn selector_binding(&self, module: ModuleId, span: Span) -> Option<SelectorBinding> {
         self.selector_bindings.get(&SpanKey::new(module, span)).copied()
+    }
+
+    pub fn objc_send_sig(&self, module: ModuleId, span: Span) -> Option<TypeId> {
+        self.objc_send_sigs.get(&SpanKey::new(module, span)).copied()
     }
 
     pub fn resolved_name(&self, module: ModuleId, span: Span) -> Option<&SymbolKind> {
@@ -193,6 +200,7 @@ struct Ctx {
     expr_types: HashMap<SpanKey, TypeId>,
     designator_types: HashMap<SpanKey, TypeId>,
     selector_bindings: HashMap<SpanKey, SelectorBinding>,
+    objc_send_sigs: HashMap<SpanKey, TypeId>,
     resolved_names: HashMap<SpanKey, ResolvedName>,
     diagnostics: Vec<Diagnostic>,
     pervasive: ScopeId,
@@ -260,6 +268,7 @@ impl Ctx {
             expr_types: HashMap::new(),
             designator_types: HashMap::new(),
             selector_bindings: HashMap::new(),
+            objc_send_sigs: HashMap::new(),
             resolved_names: HashMap::new(),
             diagnostics: Vec::new(),
             pervasive,
@@ -336,6 +345,10 @@ impl Ctx {
 
     fn note_selector_binding(&mut self, span: Span, binding: SelectorBinding) {
         self.selector_bindings.insert(SpanKey::new(self.current_module, span), binding);
+    }
+
+    fn note_objc_send_sig(&mut self, span: Span, sig: TypeId) {
+        self.objc_send_sigs.insert(SpanKey::new(self.current_module, span), sig);
     }
 
     fn note_name_resolution(&mut self, span: Span, sym: &Symbol) {
@@ -483,6 +496,7 @@ fn check_module_graph_impl(
         expr_types: ctx.expr_types,
         designator_types: ctx.designator_types,
         selector_bindings: ctx.selector_bindings,
+        objc_send_sigs: ctx.objc_send_sigs,
         resolved_names: ctx.resolved_names,
         diagnostics: ctx.diagnostics,
         pervasive: ctx.pervasive,
@@ -4076,7 +4090,8 @@ fn expr_span(expr: &ast::Expr) -> Span {
         | ast::Expr::Call(_, _, span)
         | ast::Expr::Binary(_, _, _, span)
         | ast::Expr::Unary(_, _, span)
-        | ast::Expr::Set { span, .. } => *span,
+        | ast::Expr::Set { span, .. }
+        | ast::Expr::ObjcSend { span, .. } => *span,
         ast::Expr::Designator(designator) => designator.span,
     }
 }
@@ -5278,6 +5293,27 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             };
             ctx.note_expr_type(*span, ty);
             Some(ty)
+        }
+        // `[recv sel: args]` — an Obj-C message send. Type the receiver and args,
+        // synthesise the objc_msgSend signature `(id, SEL, args…) : id`, stash it
+        // for IR, and yield `ObjC.Id` (typed/struct returns will come from the
+        // selector database, extension 3). The selector string lives on the AST
+        // node and is read directly by IR lowering.
+        ast::Expr::ObjcSend { recv, args, span, .. } => {
+            let addr = ctx.types.builtin(Builtin::Address);
+            let _ = analyse_expr(ctx, recv, scope);
+            let mut params = vec![
+                ProcParam { mode: ParamMode::Value, ty: addr }, // receiver (id)
+                ProcParam { mode: ParamMode::Value, ty: addr }, // _cmd (SEL)
+            ];
+            for a in args {
+                let aty = analyse_expr(ctx, a, scope).unwrap_or(addr);
+                params.push(ProcParam { mode: ParamMode::Value, ty: aty });
+            }
+            let sig = ctx.types.alloc(TypeKind::Proc { params, return_ty: Some(addr) });
+            ctx.note_objc_send_sig(*span, sig);
+            ctx.note_expr_type(*span, addr);
+            Some(addr)
         }
     }
 }

@@ -323,6 +323,10 @@ pub enum Expr {
     Unary(UnaryOp, Box<Expr>, Span),
     /// `{ … }` set constructor.
     Set { type_name: Option<QualName>, elements: Vec<SetElem>, span: Span },
+    /// `[recv sel: a more: b]` — an Objective-C message send. `selector` is the
+    /// full keyword selector ("sel:more:") or a bare unary name; `args` are the
+    /// keyword arguments in order. Lowers to `objc_msgSend(recv, @sel, args…)`.
+    ObjcSend { recv: Box<Expr>, selector: String, args: Vec<Expr>, span: Span },
 }
 
 /// A *designator* — a name optionally followed by `.f`, `[i,…]`, or `^`.

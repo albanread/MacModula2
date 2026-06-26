@@ -2093,6 +2093,40 @@ impl<'a> Parser<'a> {
                 self.expect_kind(TokenKind::RParen, "')'")?;
                 Ok(e)
             }
+            // Objective-C message send: `[recv sel]` (unary) or
+            // `[recv kw: a kw2: b]` (keyword). A leading `[` is unambiguous —
+            // `[` is otherwise only a postfix array index after a designator.
+            TokenKind::LBracket => {
+                self.bump(); // [
+                let recv = self.parse_expr()?;
+                let (first, _) = self.expect_ident()?;
+                let mut selector = String::new();
+                let mut args = Vec::new();
+                if self.at_kind(&TokenKind::Colon) {
+                    self.bump(); // :
+                    selector.push_str(&first);
+                    selector.push(':');
+                    args.push(self.parse_expr()?);
+                    while matches!(self.peek_kind(), TokenKind::Ident(_))
+                        && matches!(self.peek_at(1).map(|t| &t.kind), Some(TokenKind::Colon))
+                    {
+                        let (kw, _) = self.expect_ident()?;
+                        self.bump(); // :
+                        selector.push_str(&kw);
+                        selector.push(':');
+                        args.push(self.parse_expr()?);
+                    }
+                } else {
+                    selector = first; // unary message
+                }
+                let end = self.expect_kind(TokenKind::RBracket, "']'")?;
+                Ok(Expr::ObjcSend {
+                    recv: Box::new(recv),
+                    selector,
+                    args,
+                    span: Span { start: start.start, end: end.end },
+                })
+            }
             TokenKind::LBrace => {
                 self.parse_set_constructor(None)
             }
