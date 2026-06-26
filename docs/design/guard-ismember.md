@@ -124,7 +124,7 @@ becomes a `BitCast` that is **dominated by a real RTTI check**, so a drifted tag
 structurally impossible (there is no tag). The same two test primitives also let us
 **unify the native-class and COM-interface worlds**: a GUARD arm whose guarded type is a
 COM `INTERFACE` lowers to `QueryInterface` by IID. This directly closes the
-"GUARD-on-interface frontier" that `docs/design/com-interfaces.md` flagged as blocked on
+"GUARD-on-interface frontier" that was previously blocked on
 the bound temp's AddRef/Release lifecycle — we *solve* that lifecycle here rather than
 deferring it.
 
@@ -164,7 +164,7 @@ tests QI, and an object may satisfy several arms (a coclass that is-a `TextGridB
 test (so we never dereference a null object to read its RTTI). The comparison uses the
 same lowering `EMPTY` lowers to, so literal `NIL` and `EMPTY` both route to `ELSE`.
 
-> **NIL-safety scope (inherited from `com-interfaces.md:355-360`).** GUARD/ISMEMBER
+> **NIL-safety scope.** GUARD/ISMEMBER
 > guarantee *NIL-selector → ELSE* only. They provide **no** protection against
 > dangling/freed interface pointers or garbage class references — exactly the contract of
 > today's method dispatch, which also blindly loads field 0. Do not market the NIL check
@@ -339,7 +339,7 @@ heuristic). Let `S` = selector static type, `T` = arm type:
   IUnknown-rooted vtable at field 0), accept any interface `T` — `QueryInterface` may
   legally cross to an unrelated interface at runtime.
 - **Interface `T` on a NATIVE-class selector `S`:** **compile error** until producer-side
-  tear-off QI synthesis lands (`com-interfaces.md:197-280` confirms it is unimplemented).
+  tear-off QI synthesis lands (it is unimplemented).
   A native object's field 0 is the M2 class vtable, **not** `IUnknown`, so a blind field-0
   QI would be a wrong-vtable call, not a clean `E_NOINTERFACE`. Message:
   *"GUARD to an interface requires an interface selector; native coclass → interface
@@ -840,7 +840,7 @@ nested-GUARD-RETURN}`; **`t-90-284`:** consume a synthetic foreign-COM object vi
 
 **Phase 4 — polish + docs (S, ~0.5 d).**
 Exhaustiveness/unreachable-arm diagnostic tuning; EMPTY-selector folding; close the
-`com-interfaces.md` "GUARD-on-interface frontier"; conformance-suite gates. **Gate
+"GUARD-on-interface frontier"; conformance-suite gates. **Gate
 `t-90-285`:** the soft-keyword regression suite (`guard`/`as`/`ismember` as identifiers).
 
 Total ~7–8 working days. Phases 0–2 deliver the Surface.mod retirement and the conformance
@@ -863,7 +863,7 @@ exception-through-interface-arm release is an explicitly-gated follow-up beyond 
    then, a GUARD-on-interface inside an `EXCEPT` is a compile error, not a silent leak.
 3. **Producer-side COM is unimplemented.** Interface arms work only for *consuming* foreign
    COM objects (interface selector). Narrowing a native M2 coclass to an implemented
-   interface is a sema error until tear-off QI synthesis lands (`com-interfaces.md`).
+   interface is a sema error until tear-off QI synthesis lands.
 4. **Aggregation / tear-off identity.** A QI'd pointer is not the selector's pointer; forbid
    identity comparison of the bound temp against the selector and document that
    re-entering GUARD for the same interface may yield a different pointer.

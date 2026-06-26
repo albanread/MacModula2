@@ -11,12 +11,12 @@ is the *how*; this is the *what we will not compromise on*.
 2. **LLVM via `inkwell`.** Single source of truth for codegen. Pinned
    to the same major version as the sister project NewCP.
 3. **64-bit-first.** No 32-bit mode.
-   `x86_64-pc-windows-msvc` is the first supported target.
-4. **JIT-first; native `.exe` is the long-term deliverable.**
+   `arm64-apple-darwin` is the first supported target.
+4. **JIT-first; native Mach-O executable is the long-term deliverable.**
    `newm2 run` is the default execution model. `newm2 build` produces
-   a standalone PE COFF executable that runs without NewM2 installed.
-5. **Classical manual memory.** `Storage.ALLOCATE` = `HeapAlloc`;
-   `Storage.DEALLOCATE` = `HeapFree`. Every `NEW` is paired with
+   a standalone Mach-O executable that runs without NewM2 installed.
+5. **Classical manual memory.** `Storage.ALLOCATE` = `nm2_alloc`;
+   `Storage.DEALLOCATE` = `nm2_free`. Every `NEW` is paired with
    `DISPOSE`. No collector, no safepoints, no stack maps.
 6. **Phase visibility is a design requirement, not a debug option.**
    Every compiler phase has a stable textual dump and a `dump-*`

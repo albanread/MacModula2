@@ -3,8 +3,8 @@
 **Modula-2** is Niklaus Wirth's systems language: small, strongly typed, and built around
 *modules* with separately compiled interfaces and bodies. **NewM2** is a from-scratch
 Modula-2 compiler implementing **PIM 4 + ISO 10514-1** on a modern Rust + LLVM,
-JIT-first architecture (with an AOT `.exe` build mode). It compiles a `.def`/`.mod` pair to
-a memory-resident image you can run directly, or to a native PE/COFF executable.
+JIT-first architecture (with an AOT executable build mode). It compiles a `.def`/`.mod` pair to
+a memory-resident image you can run directly, or to a native Mach-O executable.
 
 This is the diagram-rich, browsable companion to NewM2's design notes. It documents
 Modula-2 as NewM2 implements it; each page notes where a construct is live versus still
@@ -35,7 +35,7 @@ flowchart LR
     SEMA --> IR[Typed IR]
     IR --> LLVM[LLVM via Inkwell]
     LLVM --> JIT[JIT image]
-    LLVM --> EXE[AOT PE COFF .exe]
+    LLVM --> EXE[AOT Mach-O executable]
     JIT --> RUN[Run]
 ```
 

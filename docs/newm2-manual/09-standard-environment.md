@@ -16,8 +16,8 @@ loop is confirmed present.
 
 | Procedure | Signature | What it does |
 |-----------|-----------|--------------|
-| `NEW` | `NEW(p)` or `NEW(p, n)` | Allocates a record (or `n` elements) on the heap via `HeapAlloc` and assigns the pointer `p`. The payload is zero-initialised. Must be paired with `DISPOSE`. |
-| `DISPOSE` | `DISPOSE(p)` | Frees the heap object pointed to by `p` via `HeapFree` and sets `p` to `NIL`. Required to avoid leaks. |
+| `NEW` | `NEW(p)` or `NEW(p, n)` | Allocates a record (or `n` elements) on the heap via `nm2_alloc` and assigns the pointer `p`. The payload is zero-initialised. Must be paired with `DISPOSE`. |
+| `DISPOSE` | `DISPOSE(p)` | Frees the heap object pointed to by `p` via `nm2_free` and sets `p` to `NIL`. Required to avoid leaks. |
 | `HALT` | `HALT` | Terminates the program immediately. |
 | `ASSERT` | `ASSERT(b)` or `ASSERT(b, n)` | Halts with an optional error code if `b` is `FALSE`. |
 
@@ -224,7 +224,7 @@ END Hello.
 | `Storage.ALLOCATE(p, n)` | Allocate `n` bytes; assign the `ADDRESS` to `p`. |
 | `Storage.DEALLOCATE(p, n)` | Free `n` bytes starting at `p`. |
 
-`ALLOCATE` calls `HeapAlloc`; `DEALLOCATE` calls `HeapFree`. You rarely call `Storage`
+`ALLOCATE` calls `nm2_alloc`; `DEALLOCATE` calls `nm2_free`. You rarely call `Storage`
 directly — use `NEW`/`DISPOSE` instead.
 
 ### Float

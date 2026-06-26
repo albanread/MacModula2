@@ -4,7 +4,7 @@ How to build NewM2, run a Modula-2 program, and watch it move through the compil
 
 ## Prerequisites
 
-- **Windows x86-64 / MSVC** — NewM2 targets `x86_64-pc-windows-msvc`.
+- **macOS arm64 (Apple Silicon) / Clang** — NewM2 targets `arm64-apple-darwin`.
 - **Rust** (stable) — from [rustup.rs](https://rustup.rs).
 - **LLVM 22.x** — configured in the workspace `.cargo/config.toml`.
 
@@ -17,7 +17,7 @@ cargo run -p newm2-driver -- run Hello.mod
 
 `run` JIT-compiles the module into a memory-resident image and executes it. Once the
 driver is on `PATH` this shortens to `newm2 run Hello.mod`. For a standalone executable,
-`newm2 build Hello.mod -o Hello.exe` emits a native PE/COFF `.exe`.
+`newm2 build Hello.mod -o Hello` emits a native Mach-O executable.
 
 ## The `.def` / `.mod` model
 
@@ -49,13 +49,13 @@ The driver stops after any phase, so you can inspect exactly what the compiler p
 | `newm2 dump-llvm f.mod` | the generated LLVM IR |
 | `newm2 dump-asm f.mod` | the emitted machine code |
 | `newm2 run f.mod` | JIT-compile and execute |
-| `newm2 build f.mod -o f.exe` | AOT-compile to a native `.exe` |
+| `newm2 build f.mod -o f` | AOT-compile to a native Mach-O executable |
 | `newm2 check f.mod` | parse + sema only |
 
 ## Memory: manual allocation
 
-NewM2 uses **classical manual memory management**: `NEW` allocates via `HeapAlloc` and
-`DISPOSE` frees via `HeapFree`. Every allocation must be paired with a `DISPOSE` before
+NewM2 uses **classical manual memory management**: `NEW` allocates via `nm2_alloc` and
+`DISPOSE` frees via `nm2_free`. Every allocation must be paired with a `DISPOSE` before
 the pointer goes out of scope. See [Memory & exceptions](memory-and-exceptions.md).
 
 > NewM2's front-end (lexer, parser) accepts a broad swath of PIM 4 + ISO 10514-1; the

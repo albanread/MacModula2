@@ -251,7 +251,7 @@ Demos: `demos/macos_class.mod` (methods + args), `demos/macos_counter_obj.mod`
 ## 5. Building & running
 
 ```
-newm2-driver build --library library demos/foo.mod   # AOT -> demos/foo.exe (Mach-O)
+newm2-driver build --library library demos/foo.mod   # AOT -> demos/foo (Mach-O)
 newm2-driver run   --library library demos/foo.mod   # ORC JIT
 ```
 

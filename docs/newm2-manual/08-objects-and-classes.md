@@ -1,13 +1,13 @@
 # Objects & Classes
 
 Modula-2's record-and-pointer core is enough for most data structures, but NewM2 also
-implements an **object-oriented layer built for COM** — the object model of the modern
-Windows API. It keeps the familiar Modula-2 OO *shape* (single-inheritance **classes** with
+implements an **object-oriented layer built on the COM-ABI vtable layout**. It keeps the
+familiar Modula-2 OO *shape* (single-inheritance **classes** with
 virtual methods, **abstract** classes) but **deliberately departs from ISO 10514-3** where
 that standard's closed, GC-oriented model would get in the way: NewM2's design goal is to
-*fully support COM*, which is far more useful on Windows. The payoff is that an object's
-layout simply **is** the COM vtable ABI — `INTERFACE` types carry IIDs, and one M2 class can
-model your own hierarchy *and* consume a real OS COM object through the very same machinery.
+make an object's layout simply **be** the COM vtable ABI, which the macOS backend consumes
+through the Obj-C runtime — `INTERFACE` types carry IIDs, and one M2 class can
+model your own hierarchy *and* consume a real OS object through the very same machinery.
 On top sits **runtime type discrimination** — `ISMEMBER` and the `GUARD` statement (new),
 constructs borrowed from the OO-Modula-2 tradition but lowered to serve this COM-unified
 model. The whole layer is *reference-based*.
@@ -146,8 +146,7 @@ END IMalloc;
 Because NewM2's object layout *is* the COM ABI, an object's field-0 vtable pointer and an OS
 COM object's vtable are interchangeable: native method dispatch and COM method dispatch are
 the same instruction. The compiler's `@N` slot annotations turn "the generator transcribed
-the vtable" into "the build fails if a slot is off by one" — see
-[`docs/design/com-interfaces.md`](../design/com-interfaces.md). An interface may also be
+the vtable" into "the build fails if a slot is off by one". An interface may also be
 mirrored as an `ABSTRACT CLASS` (the historical idiom); both consume foreign COM objects.
 
 ## Runtime type discrimination — `ISMEMBER` and `GUARD`

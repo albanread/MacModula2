@@ -475,7 +475,7 @@ forwarded-companion (`{name}$high{d}` load) path; worth a follow-up case.
   companions to a further call. Treat full-rank indexing as the supported case;
   flag passing a partially-indexed open sub-array as out of scope for the first
   cut.
-- **Element width.** CHAR is i16 on this Windows build (`codegen.rs:240`); the
+- **Element width.** CHAR is i16 (UTF-16) on all targets (`codegen.rs:240`); the
   flat index is an element count and `IndexPtr` GEPs `elem_ty*`
   (`codegen.rs:1005`), so stride math stays in elements, not bytes — consistent
   with the existing fixed-array flatten. No byte scaling needed.

@@ -10,7 +10,7 @@ source**, **excluding the IDE (`igui`) and the GC** (NewModula2 is manual-memory
 This is a **two-way divergence**: NewModula2 is newer in places (float
 arithmetic/comparison lowering, `NEW`/`DISPOSE`/`INC`/… builtins, integer-literal
 → CARDINAL adaptation, integer-family assignment leniency, IMPL inherits
-DEF consts/types, HeapAlloc manual heap, GC behind a feature). M2NEW is larger in
+DEF consts/types, nm2_alloc manual heap, GC behind a feature). M2NEW is larger in
 the compiler feature set (SET, exceptions, classes/vtables) and ships a much
 bigger runtime/library.
 
@@ -98,8 +98,8 @@ that exercises it.
 - Inline **ASM procedure** lowering (`new-asm`) — M2NEW lacks it.
 - Today's pivot fixes: float arith/compare lowering, `NEW`/`DISPOSE` builtins,
   integer-literal/CARDINAL adaptation, integer-family assignment leniency, IMPL
-  inherits DEF consts/types, HeapAlloc manual heap, void-body exit-code fix,
-  self-healing windows pack.
+  inherits DEF consts/types, nm2_alloc manual heap, void-body exit-code fix,
+  self-healing module pack.
 
 ## Recommended order
 SET constructors (1) → portable runtime modules (4) → ISO exceptions (2) →

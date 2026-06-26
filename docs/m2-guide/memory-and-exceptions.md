@@ -55,9 +55,9 @@ words. The lexer returns them as ordinary `Ident` tokens; sema resolves them.
 
 - **`NEW(p)`** allocates a heap record whose type is the base type of `p` and assigns the
   pointer. The payload is zero-initialised. The runtime entry point calls
-  `Storage.ALLOCATE`, which maps to `HeapAlloc`.
+  `Storage.ALLOCATE`, which maps to `nm2_alloc`.
 - **`DISPOSE(p)`** frees the object and sets `p` to `NIL`. It calls `Storage.DEALLOCATE`,
-  which maps to `HeapFree`. Every `NEW` must be paired with a `DISPOSE` before the
+  which maps to `nm2_free`. Every `NEW` must be paired with a `DISPOSE` before the
   pointer goes out of scope to avoid leaks.
 
 A minimal working example (from `Mod/tests/t-40-010-new-record.mod`):
@@ -86,17 +86,17 @@ END T40010NewRecord.
 
 ## Manual memory management
 
-NewM2 uses classical manual memory: `Storage.ALLOCATE` maps to `HeapAlloc` and
-`Storage.DEALLOCATE` maps to `HeapFree`. Every `NEW` allocation must be paired with a
+NewM2 uses classical manual memory: `Storage.ALLOCATE` maps to `nm2_alloc` and
+`Storage.DEALLOCATE` maps to `nm2_free`. Every `NEW` allocation must be paired with a
 `DISPOSE` before the pointer goes out of scope.
 
 ```mermaid
 flowchart LR
     SRC[Modula-2 source] --> NEW_CALL[NEW allocates heap record]
-    NEW_CALL --> HEAPALLOC[HeapAlloc via Storage.ALLOCATE]
-    HEAPALLOC --> USE[Use the object]
+    NEW_CALL --> ALLOC[nm2_alloc via Storage.ALLOCATE]
+    ALLOC --> USE[Use the object]
     USE --> DISPOSE_REQ[DISPOSE frees and sets NIL]
-    DISPOSE_REQ --> HEAPFREE[HeapFree via Storage.DEALLOCATE]
+    DISPOSE_REQ --> FREE[nm2_free via Storage.DEALLOCATE]
 ```
 
 ```modula2

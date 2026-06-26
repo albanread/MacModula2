@@ -1,6 +1,6 @@
 # The Modula-2 object model on the Objective-C runtime (macOS backend)
 
-Status: **design, awaiting sign-off** · Sibling of `com-interfaces.md`, but *not* the same idea · Acceptance test: the macOS IDE's editor written as a plain M2 `CLASS` that `INHERIT`s `NSView`
+Status: **design, awaiting sign-off** · Acceptance test: the macOS IDE's editor written as a plain M2 `CLASS` that `INHERIT`s `NSView`
 
 ## Thesis
 

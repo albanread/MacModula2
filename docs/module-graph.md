@@ -40,7 +40,7 @@ Three reasons stack:
 
 ## Why static — language reason, not just AOT
 
-The obvious answer is "because we emit a `.exe`". That's only half
+The obvious answer is "because we emit an executable". That's only half
 the story.
 
 The deeper reason: **Modula‑2 the language was designed as a

@@ -15,7 +15,7 @@ grounded in the compiler source, and each page notes where something is *live* v
 being wired.
 
 NewM2 compiles a `.def`/`.mod` pair to a **memory-resident image you can run directly**
-(`newm2 run Hello.mod`) or to a **native PE/COFF `.exe`** (`newm2 build Hello.mod -o Hello.exe`).
+(`newm2 run Hello.mod`) or to a **native macOS Mach-O executable** (`newm2 build Hello.mod -o Hello`).
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ flowchart LR
     SEMA --> IR[Typed IR]
     IR --> LLVM[LLVM via Inkwell]
     LLVM --> JIT[JIT image]
-    LLVM --> EXE[AOT PE/COFF .exe]
+    LLVM --> EXE[AOT Mach-O executable]
     JIT --> RUN[Run]
 ```
 

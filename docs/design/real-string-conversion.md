@@ -47,7 +47,7 @@ Sources: the external conformance corpus (`isolib/run/pass`).
 | `stringreal2.mod` | `ConvStringReal` (`RealToFixedString`), `DynamicStrings`, `SFIO` | Prints π to 3..10 fixed places. No exit assertion; must run. |
 
 The driver invocation per test (from the test’s directory) is
-`<repo>/target/debug/newm2-driver.exe run <name>.mod`.
+`<repo>/target/debug/newm2-driver run <name>.mod`.
 
 > Harness note (confirmed): the corpus tests signal pass/fail via `libc.exit` and print
 > via `libc.printf`, which NewM2 does **not** format — on-screen output is the
@@ -328,8 +328,8 @@ foundation (4 tests depend on it), but it is only *useful* alongside A2–A4.
 ## Test plan
 
 - **Per-test, after each fix:** from the test directory,
-  `<repo>/target/debug/newm2-driver.exe run <name>.mod`, then check `$LASTEXITCODE`
-  (PowerShell) / `echo $?`. Pass = exit 0 for the graded tests
+  `<repo>/target/debug/newm2-driver run <name>.mod`, then check `echo $?`.
+  Pass = exit 0 for the graded tests
   (`realconv`, `realstr`, `sigfig`); `real1`/`stringreal2` pass = "runs to
   completion without Halt/abort and prints the table".
 - **Regression guard for C1:** re-run `realconv` after C1 — it must remain

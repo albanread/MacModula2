@@ -61,7 +61,7 @@ runs `MIN(CHAR) … MAX(CHAR)` inclusive with no out-of-bounds access.
 Observed:
 
 ```
-> target/debug/newm2-driver.exe run For9.mod
+> target/debug/newm2-driver run For9.mod
 newm2: JIT error: unhandled exception in For9:
        M2EXCEPTION.indexException: array index out of range
 EXIT CODE: 1
@@ -72,7 +72,7 @@ remains, so it instead segfaults — direct confirmation that the array storage
 itself is wrong, not just the check:
 
 ```
-> target/debug/newm2-driver.exe run --no-runtime-checks For9.mod
+> target/debug/newm2-driver run --no-runtime-checks For9.mod
 === NewM2 fatal exception: EXCEPTION_ACCESS_VIOLATION (0xc0000005)
     writing 0x... at M2 For9.body+0x4d ===
 ```
@@ -81,12 +81,12 @@ itself is wrong, not just the check:
 
 ## NewM2's CHAR representation (8 vs 16 bit)
 
-NewM2 deliberately models `CHAR` as a **16-bit Windows-wide (UTF-16) code
-unit**, not 8-bit. The narrow 8-bit unit is `ACHAR`.
+NewM2 deliberately models `CHAR` as a **16-bit (UTF-16) code unit, modeled
+independently of target OS**, not 8-bit. The narrow 8-bit unit is `ACHAR`.
 
 - Codegen: `src/newm2-llvm/src/codegen.rs:238-241`
   ```rust
-  // CHAR is a Windows-wide (UTF-16) code unit on this Windows-aimed build;
+  // CHAR is a 16-bit (UTF-16) code unit, modeled independently of target OS;
   // ACHAR stays the 8-bit narrow unit.
   Char | Uchar => self.ctx.i16_type().into(),
   Byte | SysByte | Achar => self.ctx.i8_type().into(),

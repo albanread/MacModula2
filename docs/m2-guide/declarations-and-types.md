@@ -253,7 +253,7 @@ VAR
 BEGIN
   NEW(p);          (* allocate a Node on the heap *)
   p^.value := 42;
-  DISPOSE(p);      (* free it — HeapFree; p is set to NIL *)
+  DISPOSE(p);      (* free it — nm2_free; p is set to NIL *)
 END;
 ```
 

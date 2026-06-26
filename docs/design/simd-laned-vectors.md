@@ -38,7 +38,7 @@ lanes (`INT32X4`, …) later without re-litigating the model.
 
 ## Motivation
 
-NewM2 is Windows-first with a Win32/COM/Rust FFI surface; its workloads
+NewM2 targets macOS (native Cocoa/AppKit) and Windows (Win32/COM), over a Rust FFI surface; its workloads
 increasingly want matrix/vector math (graphics transforms, signal processing,
 ML inference). Today the only SIMD access is through the `new-asm` inline-ASM
 facility — you write raw `<4 x f32>` assembly. That is expert-only and not

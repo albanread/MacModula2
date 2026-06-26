@@ -1,7 +1,11 @@
-# FastPanesM2 Script Language — design & vocabulary
+# ptcl — the embedded Tcl dialect — design & vocabulary
 
-**Working name:** `ptcl` (PaneShell Tcl) — a small Tcl dialect embedded in FastPanesM2.
-**Status:** design draft (no implementation yet). Decisions marked **[OPEN]**.
+**Name:** `ptcl` — a tiny Tcl dialect embedded in the NewM2 tooling. It is used by
+the macOS MacM2 IDE (`projects/macide/macos_panes_ide.mod`, interpreter in
+`library/sharedmod/Ptcl.mod`) to script editor/help/build actions: verbs include
+`help`, `topics`, `describe`, `search`, `open`, `snap`, `resize`, polled from
+`/tmp/macm2.ptcl`.
+**Status:** design draft. Decisions marked **[OPEN]**.
 **Author/date:** 2026-06-20.
 
 ---
@@ -19,7 +23,7 @@ directions during design:
 Tcl dissolves the tension instead of picking a side:
 
 - **It is an embeddable command language by design.** Tk was just its first host;
-  FastPanesM2 is the same shape — an app with a verb vocabulary that wants glue.
+  the IDE is the same shape — an app with a verb vocabulary that wants glue.
   We are *adopting* the language built for this, not inventing one.
 - **There is almost no syntax to commit to.** One rule: `command arg arg …`. Even
   `if`/`while`/`proc` are ordinary commands. (This is the answer to "I don't know
@@ -37,8 +41,9 @@ Tcl dissolves the tension instead of picking a side:
 ### The convergence payoff
 
 **The primary surface is automation, not the human REPL.** ptcl is mainly a way to
-send commands to a *running* application over a channel (stdio / pipe / COM — §5);
-the interactive command line is just one client of that same protocol.
+send commands to a *running* application over a channel (stdio / pipe / a polled
+file like `/tmp/macm2.ptcl` — §5); the interactive command line is just one client
+of that same protocol.
 
 The verb vocabulary below is **one surface with three consumers**:
 
@@ -129,7 +134,7 @@ path. **[OPEN]** float support, string ops in expr.
 ## 3. The verb vocabulary (the "Tk" layer)
 
 These are the IDE commands `ptcl` registers. Each is a thin wrapper over an
-existing FastPanesM2 reactive op, so implementation is mostly "register name →
+existing IDE reactive op, so implementation is mostly "register name →
 call proc". Tcl convention: lowercase, return a **string** result (empty if
 none); predicates return `0`/`1`. No `?`-suffixed names (not Tcl).
 
@@ -192,7 +197,7 @@ none); predicates return `0`/`1`. No `?`-suffixed names (not Tcl).
 | `line n`      | the text of line `n`             |                                        |
 | `linecount`   | number of lines                  | `nLines`                               |
 | `state`       | `cursor=… sel=… file=… mode=…`   | dict-ish; for scripts/agents to assert |
-| `panetree`    | `id:kind(rect)[children]`        | `PaneShell.DumpTree` — structure probe |
+| `panetree`    | `id:kind(rect)[children]`        | dump the pane tree — structure probe   |
 
 ### 3.7 UI / meta / wiring
 
@@ -287,10 +292,10 @@ or `state` and get strings back.
 | Transport                       | Use                                                         | Status |
 |---------------------------------|-------------------------------------------------------------|--------|
 | **stdio**                       | spawn-and-drive a child app (the agent harness today)       | trivial |
+| **polled file** (`/tmp/macm2.ptcl`) | drop a command for a running IDE to pick up on its poll  | used by the macOS IDE today |
 | **named pipe / TCP loopback**   | attach to a running app from another process; the IDE↔compiler channel | `Socket`/`SocketServer`/`RecvAll` already exist |
-| **COM (out-of-proc + ROT)**     | Windows-native "attach to the running GUI"; COM-tool interop | ~90% of the M2 machinery present (see §5.3) |
 
-All three carry the **same** `Exec` string protocol. Framing: a 4-byte length
+All carry the **same** `Exec` string protocol. Framing: a 4-byte length
 prefix for multi-line results (dumps); JSON only if/when we multiplex.
 
 ### 5.2 Clients (one vocabulary, three consumers)
@@ -301,46 +306,24 @@ prefix for multi-line results (dumps); JSON only if/when we multiplex.
 - the **agent harness** — drives the SAME verbs it already screenshots, now over a
   channel instead of synthetic events.
 
-### 5.3 GUI as a COM automation server  *(the exciting one)*
+### 5.3 Attach-to-running GUI automation
 
-Goal: an external tool (agent, script, COM-aware app) attaches to the
-ALREADY-RUNNING IDE and drives it. COM earns its complexity here — and *only* here:
-
-- **Attach-to-running is native.** The GUI calls `RegisterActiveObject` at startup;
-  clients `GetActiveObject(CLSID)` to grab the live instance via the Running Object
-  Table. No hand-rolled discovery.
-- **STA auto-marshals onto the UI thread.** The GUI is a single-threaded apartment
-  with a message pump, so an inbound COM call is delivered *on the UI thread* — the
-  handler touches panes/the buffer directly, no cross-thread queue.
-
-Design: **ONE narrow dual interface with a single `Exec` method** into the ptcl
-interpreter — NOT a per-verb COM surface (needs a recompile per verb) and NOT
-IDispatch property synthesis (chatty, and would force marshalling `Pane`/`Event` as
-VARIANTs). Single-`Exec` gets ROT discovery + marshalling for free.
-
-Exists vs net-new (investigation, 2026-06-20):
-- **Exists:** M2 classes are already COM-ABI vtable-compatible — proven by
-  `t-90-110-com-server` (an external driver calls M2 class methods through the COM
-  calling convention; QI/AddRef/Release/custom all work). COM *client* is complete
-  (`Com.mod`/`Guid.mod`/`Dispatch.mod`).
-- **Net-new (well-scoped: M2 + a small runtime seam):** a hand-written
-  `IClassFactory`; a `CoRegisterClassObject` binding (no runtime seam yet); a
-  hand-written `IUnknown` impl (QI/AddRef/Release) on one coclass exposing `Exec`;
-  a `RegisterActiveObject`/ROT binding. We can **skip** the unbuilt `CLASS IMPLEMENTS`
-  / IDispatch-synthesis compiler features entirely — one coclass, one method,
-  hand-written, is enough.
-- **Guards:** a per-call `RPC_E_CALL_REJECTED` busy reply for STA re-entrancy (the
-  substrate has already hit re-entrancy UAFs); NEVER run a long build on the UI
-  thread (hand it to the compiler service); producer side is AOT-only for now.
+Goal: an external tool (agent, script) attaches to the ALREADY-RUNNING IDE and
+drives it. On macOS today this is the polled-file channel: a client writes a ptcl
+command into `/tmp/macm2.ptcl` and the running IDE picks it up on its poll, runs it
+on the UI thread, and acts on the buffer/panes directly. The same `Exec` string
+protocol could later ride a named pipe for a lower-latency attach. The verb surface
+is unchanged — `cursor`, `state`, `build`, etc. all stay strings, so nothing
+complex ever needs to cross the channel.
 
 ### 5.4 Compiler as a resident service  *(the fast channel)*
 
 Goal: the IDE talks to a warm, resident compiler instead of spawning
-`newm2-driver.exe` (+ LLVM init + temp-file redirect) per build/dump.
+`newm2-driver` (+ LLVM init + temp-file redirect) per build/dump.
 
-Verdict from the investigation: make it a **resident text service, NOT COM.** No UI
-thread, no message pump, no attach-to-running need → COM there is pure ceremony.
-The win is the *warm process* (no respawn, no LLVM re-init, warm sema cache);
+Verdict from the investigation: make it a **resident text service over a pipe.** No
+UI thread, no message pump, no attach-to-running need — a plain text pipe is all it
+takes. The win is the *warm process* (no respawn, no LLVM re-init, warm sema cache);
 transport latency is noise next to compile time.
 
 Crucially, the compiler is **already re-entrant**: each invocation is
@@ -355,32 +338,31 @@ Design:
 - `newm2-driver --daemon` over a named pipe (or TCP loopback first, since
   `Socket`/`SocketServer`/`RecvAll` already exist): read a request, `compile()`,
   write the response (4-byte length frame).
-- FastPanesM2 gains `CompileViaService` (open channel, send, read, parse
+- the IDE gains `CompileViaService` (open channel, send, read, parse
   diagnostics) — falls back to spawn if the daemon is absent/slow.
 - **Guards:** `catch_unwind` around `compile()` so one bad compile can't kill the
-  daemon; IDE timeout + auto-restart + spawn fallback; a handshake token (or
-  per-user-DACL named pipe) since loopback TCP is open to any local process; watch
+  daemon; IDE timeout + auto-restart + spawn fallback; a handshake token (or a
+  user-owned socket file) since loopback TCP is open to any local process; watch
   for any future LLVM `Context` caching or non-deterministic codegen.
 
 ### 5.5 The symmetry
 
-We already CONSUME COM (client). These two moves make M2 a full COM *peer* (GUI
-server) and make the toolchain itself a service (compiler daemon) — "COM-friendly
-Windows-native language", earned in both directions, but applied with a scalpel:
-COM where attach-to-running + STA marshalling pay for it (the GUI), a plain text
-pipe where they don't (the compiler). Both ends speak the same string vocabulary.
+The IDE-as-service and the compiler-as-service are the same move applied twice: each
+end speaks the same `Exec` string vocabulary over a pipe (or, for the IDE today, the
+polled `/tmp/macm2.ptcl` file). One language drives the editor, the same language
+drives the toolchain.
 
 ### 5.6 Build order for the channels
 1. **Compiler resident service** — DECIDED FIRST (user, 2026-06-20): it's the one
    thing that makes the fast IDE actually *feel* fast. Independent Rust track,
    lowest risk (the compiler is already re-entrant).
 2. ptcl interpreter core + REPL pane (prerequisite for any GUI `Exec`).
-3. GUI `Exec` over a pipe (cheap; immediately upgrades the agent harness).
-4. GUI `Exec` over COM + ROT (the Windows-native attach-to-running layer).
+3. GUI `Exec` over the polled file / a pipe (cheap; immediately upgrades the agent
+   harness — this is what the macOS IDE uses today).
 
-**Transport: named pipe** (user preference, 2026-06-20) — `\\.\pipe\newm2`, per-user
-DACL, no port, no loopback-exposure. TCP loopback stays a fallback; the 4-byte-length
-framing is identical either way.
+**Transport: pipe or polled file** — the macOS IDE polls `/tmp/macm2.ptcl` today; a
+named pipe is the lower-latency upgrade. TCP loopback stays a fallback; the
+4-byte-length framing is identical either way.
 
 ### 5.7 Symmetry: ptcl is the whole toolchain's language
 
@@ -406,7 +388,7 @@ How symmetry stays honest without coupling two runtimes:
 
 So ptcl becomes the M2 toolchain's automation bus: any future tool (debugger,
 profiler, package manager) joins by embedding the core, registering its verbs, and
-exposing `Exec` over a pipe/COM.
+exposing `Exec` over a pipe.
 
 ### 5.8 Compiler daemon vocabulary
 
@@ -462,9 +444,10 @@ verified the same way everything else has been: drive it, snapshot it, read it.
   keymap? (Lean: override, with the built-ins registered as default binds so the
   whole keymap is introspectable/rebindable.)
 - **[OPEN] dirty flag** — needed for `dirty` and a save-prompt on close.
-- **[DECIDED] transport = named pipe** (user, 2026-06-20) — `\\.\pipe\newm2`,
-  per-user DACL, no port/loopback exposure. TCP loopback (existing `Socket`/
-  `SocketServer`/`RecvAll`) is the fallback; framing identical.
+- **[DECIDED] transport = pipe / polled file** — the macOS IDE polls
+  `/tmp/macm2.ptcl` today; a user-owned named pipe / unix socket is the lower-latency
+  upgrade. TCP loopback (existing `Socket`/`SocketServer`/`RecvAll`) is the fallback;
+  framing identical.
 - **[DECIDED] compiler daemon first** (user) — it's what makes the IDE feel fast.
 - **[DECIDED] ptcl is the shared toolchain language** (user) — GUI and compiler both
   speak it (§5.7). Open sub-question below.
@@ -472,12 +455,8 @@ verified the same way everything else has been: drive it, snapshot it, read it.
   (`proc/if/while/expr`, so you can send it scripts) or start as a command-reader
   subset and grow? Lean: reader subset first (request/response is single commands),
   full evaluator when scripting-the-compiler earns it.
-- **[OPEN] COM registration scope** — ROT-only (`RegisterActiveObject`, attach-only,
-  zero registry) vs `LocalServer32` under HKCU (lets a client *launch* the app). Lean:
-  ROT-only first.
 - **[OPEN] channel security** — loopback TCP is open to any local process; need a
-  handshake token now, or a per-user-DACL named pipe later. COM inherits the user's
-  session security.
+  handshake token now, or a user-owned socket file later.
 - **[OPEN] compiler service shape** — daemon (separate process, pipe) vs a future
-  `cdylib` (`newm2-compiler.dll`) called in-process via M2 FFI. Lean: daemon first
-  (crash-isolated, incremental), DLL later if we want zero IPC.
+  `cdylib` called in-process via M2 FFI. Lean: daemon first (crash-isolated,
+  incremental), in-process library later if we want zero IPC.
