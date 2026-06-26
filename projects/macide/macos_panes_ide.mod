@@ -44,7 +44,7 @@ CLASS FlippedDoc;
 END FlippedDoc;
 
 VAR
-  win, content, outerSplit, rightStack, innerSplit, sidebar, tabs, output, status, helpPane, searchField: Cocoa.Object;
+  win, content, outerSplit, rightStack, innerSplit, sidebar, tabs, output, status, editStat, helpPane, searchField: Cocoa.Object;
   projScroll, libScroll, projDoc, libDoc, editorArea, tabBar, tabDoc: Cocoa.Object;
   gTabNames: ARRAY [0..63] OF ARRAY [0..255] OF CHAR;
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
@@ -288,6 +288,29 @@ END ShowAssist;
 
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
+PROCEDURE CardStr (n: CARDINAL; VAR s: ARRAY OF CHAR);
+VAR d: ARRAY [0..31] OF CHAR; i, j: CARDINAL;
+BEGIN
+  IF n = 0 THEN s[0] := '0'; s[1] := CHR(0); RETURN END;
+  i := 0; WHILE n > 0 DO d[i] := CHR(ORD('0') + (n MOD 10)); n := n DIV 10; INC(i) END;
+  j := 0; WHILE i > 0 DO DEC(i); s[j] := d[i]; INC(j) END; s[j] := CHR(0)
+END CardStr;
+
+(* refresh the right side of the status bar with the current tab's editor status:
+   cursor line/column, plus a read-only / unsaved tag *)
+PROCEDURE ShowTabStatus;
+VAR sel, line, col: INTEGER; s, num: ARRAY [0..255] OF CHAR;
+BEGIN
+  sel := Cocoa.SelectedTab(tabs);
+  IF sel < 0 THEN Cocoa.SetText(editStat, ""); RETURN END;
+  Cocoa.EditorCursor(gEditors[sel], line, col);
+  Assign("Ln ", s); CardStr(VAL(CARDINAL, line), num); Append(num, s);
+  Append(", Col ", s); CardStr(VAL(CARDINAL, col), num); Append(num, s);
+  IF gReadOnly[sel] THEN Append("   ·  read-only", s)
+  ELSIF gPaths[sel][0] = CHR(0) THEN Append("   ·  unsaved", s) END;
+  Cocoa.SetText(editStat, s)
+END ShowTabStatus;
+
 PROCEDURE Basename (path: ARRAY OF CHAR; VAR name: ARRAY OF CHAR);   (* file part of a path *)
 VAR i, j, start: CARDINAL;
 BEGIN
@@ -329,13 +352,12 @@ BEGIN
   tv := s0(CAST(ObjC.Id, ed), ObjC.Selector("documentView"));
   ig := sb(tv, ObjC.Selector("setAllowsUndo:"), TRUE);       (* ⌘Z / ⌘⇧Z *)
   ig := sb(tv, ObjC.Selector("setUsesFindBar:"), TRUE);      (* ⌘F find bar *)
-  (* PROJECT files are editable + autosaved (controller is the text-view delegate);
+  (* delegate set for both kinds: autosave on edit + cursor status on selection.
      LIBRARY files open read-only — the library is reference from this IDE. *)
+  ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl);
   IF isLib THEN
     ig := sb(tv, ObjC.Selector("setEditable:"), FALSE);
-    Cocoa.SetText(status, "Opened (read-only reference): ")
-  ELSE
-    ig := sp(tv, ObjC.Selector("setDelegate:"), ctrl)
+    Cocoa.SetText(status, "Opened (read-only reference).")
   END;
   it := Cocoa.AddTab(tabs, full, ed);
   IF gTabCount <= 63 THEN
@@ -343,7 +365,7 @@ BEGIN
     IF isLib THEN Assign(gLibFiles[idx], gTabNames[gTabCount])
     ELSE Assign(gProjFiles[idx], gTabNames[gTabCount]) END;
     INC(gTabCount);
-    RebuildTabBar
+    RebuildTabBar; ShowTabStatus
   END
 END OpenDoc;
 
@@ -461,8 +483,10 @@ CLASS IDE;
   PROCEDURE OnSelectTab (sender: ObjC.Id);        (* "onSelectTab:" — click a tab name *)
   BEGIN
     ig := sendIInt(CAST(ObjC.Id, tabs), ObjC.Selector("selectTabViewItemAtIndex:"), TagOf(sender));
-    RebuildTabBar
+    RebuildTabBar; ShowTabStatus
   END OnSelectTab;
+  PROCEDURE TextViewDidChangeSelection (note: ObjC.Id) <* selector "textViewDidChangeSelection:" *>;
+  BEGIN ShowTabStatus END TextViewDidChangeSelection;
   PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave *)
   VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
   BEGIN
@@ -499,9 +523,13 @@ BEGIN
   Cocoa.AddSubview(content, CtrlButton(136.0, 604.0, 56.0,  "Save", "onSave:", 8));
   Cocoa.AddSubview(content, CtrlButton(196.0, 604.0, 104.0, "Build & Run", "onBuildRun:", 8));
   Cocoa.AddSubview(content, CtrlButton(304.0, 604.0, 92.0,  "✕ Close Tab", "onClose:", 8));
-  status := Cocoa.MakeLabel(404.0, 610.0, 290.0, 22.0, "Ready.");
-  ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 8);  (* stick top *)
+  (* bottom status bar: messages on the left, current-tab editor status on the right *)
+  status := Cocoa.MakeLabel(10.0, 4.0, 700.0, 18.0, "Ready.");
+  ig := sendIInt(CAST(ObjC.Id, status), ObjC.Selector("setAutoresizingMask:"), 34);  (* width + stick bottom *)
   Cocoa.AddSubview(content, status);
+  editStat := Cocoa.MakeLabel(720.0, 4.0, 370.0, 18.0, "");
+  ig := sendIInt(CAST(ObjC.Id, editStat), ObjC.Selector("setAutoresizingMask:"), 33);  (* stick bottom-right *)
+  Cocoa.AddSubview(content, editStat);
   (* Cocoa class search box — type a name + Enter to search the live Obj-C runtime *)
   searchField := s0(s0(ObjC.GetClass("NSSearchField"), ObjC.Selector("alloc")), ObjC.Selector("init"));
   ig := sf(CAST(ObjC.Id, searchField), ObjC.Selector("setFrame:"), 700.0, 605.0, 280.0, 26.0);
@@ -514,7 +542,7 @@ BEGIN
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
   Cocoa.AddSubview(content, CtrlButton(1006.0, 604.0, 86.0, "Home", "onHome:", 9));
 
-  outerSplit := MakeSplit(0.0, 0.0, 1100.0, 596.0, TRUE);
+  outerSplit := MakeSplit(0.0, 26.0, 1100.0, 570.0, TRUE);   (* leave 0..26 for the status bar *)
   ig := sendIInt(CAST(ObjC.Id, outerSplit), ObjC.Selector("setAutoresizingMask:"), 18);
   Cocoa.AddSubview(content, outerSplit);
 
