@@ -9,6 +9,11 @@ There are three layers between your program and Cocoa, and you mix them freely:
 - **`CocoaNS`** — a generated set of typed `EXTERNAL` class bindings for
   Foundation/AppKit, so common classes read as ordinary M2 classes.
 
+> The snippets below use the one-line local helpers from
+> [Message sends](message-send.md): `Cls(name)` wraps `ObjC.GetClass` (so a class
+> can be a message receiver) and `Range(loc, len)` builds an `ObjC.NSRange`.
+> They are conventions you define per module, not library exports.
+
 ## The bound library
 
 ### `Cocoa` — the ergonomic AppKit layer
@@ -128,7 +133,7 @@ Second, the typed surface is **generated and extensible.**
 ### The selector database
 
 [`library/macrtdef/cocoa-selectors.json`](../../library/macrtdef/cocoa-selectors.json)
-holds ~5500 selectors across 39 curated Foundation/AppKit classes. It is a JSON
+holds over 5,500 selectors across 40 curated Foundation/AppKit classes. It is a JSON
 object with `note` (metadata + the kind legend), `classes` (the curated list),
 and `selectors` (a flat `name -> {ret, args}` map). The single-letter *kinds*
 are: `@` id · `:` SEL · `i` int · `u` uint · `d` real · `B` bool · `v` void ·

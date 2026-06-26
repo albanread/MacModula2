@@ -66,7 +66,7 @@ r  := [me selectedRange];
 
 Sends are **not** uniformly `id`. The compiler loads
 [`library/macrtdef/cocoa-selectors.json`](../../library/macrtdef/cocoa-selectors.json)
-— a database of ~5500 selectors across 39 Foundation/AppKit classes — and infers
+— a database of over 5,500 selectors across 40 Foundation/AppKit classes — and infers
 each send's result type from the selector's recorded return *kind*:
 
 | Kind | M2 type | Example |
@@ -78,7 +78,7 @@ each send's result type from the selector's recorded return *kind*:
 | `d` | `REAL` | `[num doubleValue]` |
 | `B` | `BOOLEAN` | `[view isFlipped]` |
 | `N` `P` `S` `R` | `NSRange` `NSPoint` `NSSize` `NSRect` | `[view frame]` |
-| `{…}` | a synthesized record | `[layer affineTransform]` |
+| `{…}` | a synthesized record | `[xform transformStruct]` (an `NSAffineTransform`) |
 
 ```modula2
 n := [arr count];        (* CARDINAL — no CAST *)
@@ -125,9 +125,10 @@ view := [[Cls("NSView") alloc] initWithFrame: Rect(0.0, 0.0, 100.0, 200.0)];
 [store replaceCharactersInRange: Range(loc, len) withString: ns];
 ```
 
-Larger structs are handled too: a selector returning, say, a 48-byte
-`CGAffineTransform` is returned via the AAPCS *indirect-result* path (`x8`), so
-`[layer affineTransform]` works without a bus error.
+Larger structs are handled too: a struct too big for the four-register HFA rule —
+a 48-byte transform of six doubles, say — comes back via the AAPCS
+*indirect-result* path (`x8`) rather than in registers, so such a send works
+without a bus error.
 
 ## Passing Obj-C blocks
 
@@ -153,11 +154,9 @@ Before the bracket syntax there was — and still is — a direct idiom: cast
 `ObjC.MsgSendPtr()` to a procedure type matching the call's ABI and call it.
 
 ```modula2
-VAR send0: ObjC.Send0;
-    app:   ObjC.Id;
-BEGIN
-  send0 := CAST(ObjC.Send0, ObjC.MsgSendPtr());
-  app   := send0(Cls("NSApplication"), ObjC.Selector("sharedApplication"));
+(* send0, app: ObjC.Send0, ObjC.Id — Send0 is a one-call typedef for this ABI *)
+send0 := CAST(ObjC.Send0, ObjC.MsgSendPtr());
+app   := send0(Cls("NSApplication"), ObjC.Selector("sharedApplication"));
 ```
 
 `ObjC.def` provides `Send0` (no args), `SendI`/`SendP`/`SendB`/`SendF`/`SendC`

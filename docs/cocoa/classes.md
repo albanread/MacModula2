@@ -118,8 +118,9 @@ END FlippedView;
 Each class adds exactly one `__m2` ivar holding its own fields. For an
 `NSObject`-rooted class that ivar sits right after `isa` and field access is an
 ordinary GEP. For a class that subclasses, say, `NSView`, the `__m2` ivar sits
-after the superclass's ivars, so the compiler offsets the base by the runtime
-ivar offset before the GEP — transparent to your code:
+after the superclass's ivars, so at runtime the object pointer is adjusted by
+`nm2_objc_field_base` (which reads the live `__m2` ivar offset) before the field
+GEP — transparent to your code:
 
 ```modula2
 CLASS EditorView;

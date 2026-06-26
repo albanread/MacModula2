@@ -19,7 +19,7 @@ itself to speak Objective-C:
 - **Objective-C's `[ receiver message ]` syntax is now part of the language.**
   The bracket message send is a real syntactic extension borrowed from
   Objective-C — `[receiver selector: arg …]`, lowered to `objc_msgSend`, with
-  return types inferred from a ~5500-selector database so `[arr count]` is a
+  return types inferred from a 5,500-plus-selector database so `[arr count]` is a
   `CARDINAL` and `[view frame]` is an `NSRect`, no casts.
 - **The whole of Cocoa is reachable.** A bound, typed surface covers the common
   classes; anything else is one `objc_getClass`/`Selector` away, and an unbound
