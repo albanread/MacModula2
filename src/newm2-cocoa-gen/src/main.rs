@@ -55,29 +55,98 @@ fn load_frameworks() {
 /// maps to an M2 type: @=id/ptr  :=SEL  i=signed-int  u=unsigned-int  d=real
 /// B=bool  v=void  {=struct(unsupported)  ?=other. Keeps the selector DB
 /// language-neutral; the compiler owns the kind->TypeId mapping (data-driven).
-fn kind_of(tok: &str) -> &'static str {
+/// A single scalar encoding -> kind, or None for anything non-scalar.
+fn scalar_kind(tok: &str) -> Option<&'static str> {
+    Some(match tok {
+        "@" | "#" | "*" => "@",
+        "q" | "l" | "i" | "s" => "i",
+        "Q" | "L" | "I" | "S" => "u",
+        "d" | "f" => "d",
+        "B" | "c" | "C" => "B",
+        _ => return None,
+    })
+}
+
+/// Flatten a struct encoding `{Name=field…}` to the in-order sequence of its
+/// scalar field kinds (recursing through nested structs), e.g. `{_NSRange=QQ}` ->
+/// "uu", `{CGRect={CGPoint=dd}{CGSize=dd}}` -> "dddd". Returns None if any field
+/// is unsupported (array/union/etc.) so the compiler falls back to `id`. A field
+/// pointer counts as `@`. The struct's ABI follows from this field sequence, so
+/// the compiler can synthesize a matching record.
+fn flatten_struct(tok: &str) -> Option<String> {
+    let eq = tok.find('=')?;
+    if tok.len() < 2 {
+        return None;
+    }
+    let inner = &tok[eq + 1..tok.len() - 1]; // strip the trailing '}'
+    let mut out = String::new();
+    for ft in tokenize(inner) {
+        if ft.starts_with('{') {
+            out.push_str(&flatten_struct(&ft)?);
+        } else if ft.starts_with('^') {
+            out.push('@'); // pointer field
+        } else if ft.starts_with('[') || ft.starts_with('(') {
+            return None; // array / union field — unsupported
+        } else {
+            out.push_str(scalar_kind(&ft)?);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The struct tag name in `{Name=…}` (or `{Name…}`), or None if anonymous (`?`)
+/// or not a plain identifier.
+fn struct_name(tok: &str) -> Option<String> {
+    let n: String = tok[1..].chars().take_while(|&c| c != '=' && c != '}').collect();
+    if n.is_empty() || !n.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(n)
+}
+
+/// True when a struct of these field kinds is returned in registers (so our
+/// synthesized record's ABI is reliable): a homogeneous float aggregate of up to
+/// 4 floats (d0..d3), or any aggregate of at most 16 bytes (x0/x1). Larger uses an
+/// indirect (sret) return, which we don't synthesize.
+fn register_returnable(fields: &str) -> bool {
+    if fields.chars().all(|c| c == 'd') && fields.len() <= 4 {
+        return true;
+    }
+    let size: usize = fields.chars().map(|c| if c == 'B' { 1 } else { 8 }).sum();
+    size <= 16
+}
+
+/// Normalize an encoding token to a return/argument *kind*. Named geometry structs
+/// keep their short tags (R/N/P/S — the compiler maps them to ObjC.NSRect/…);
+/// any other struct becomes a synthesizable descriptor `{<field kinds>}` (or `{`
+/// when it can't be flattened).
+fn kind_of(tok: &str) -> String {
     if tok.starts_with('^') {
-        return "@"; // pointer
+        return "@".to_string(); // pointer
     }
     if tok.starts_with('{') {
-        // Name the common Cocoa geometry structs so the compiler can return them
-        // as ObjC.NSRange/NSPoint/NSSize/NSRect (register-passed); others stay "{".
         if tok.starts_with("{CGRect") || tok.starts_with("{NSRect") {
-            return "R";
+            return "R".to_string();
         }
         if tok.starts_with("{CGPoint") || tok.starts_with("{NSPoint") {
-            return "P";
+            return "P".to_string();
         }
         if tok.starts_with("{CGSize") || tok.starts_with("{NSSize") {
-            return "S";
+            return "S".to_string();
         }
         if tok.starts_with("{_NSRange") || tok.starts_with("{NSRange") {
-            return "N";
+            return "N".to_string();
         }
-        return "{";
+        // Other named structs: synthesize iff register-returnable (so the ABI is
+        // reliable — HFA of ≤4 floats, or ≤16 bytes; sret structs are excluded)
+        // and the struct is named. Encoded "{Name:fieldkinds}".
+        return match (struct_name(tok), flatten_struct(tok)) {
+            (Some(n), Some(f)) if register_returnable(&f) => format!("{{{n}:{f}}}"),
+            _ => "{".to_string(), // anonymous / sret / unsupported -> id
+        };
     }
     if tok.starts_with('[') || tok.starts_with('(') {
-        return "{"; // array / union
+        return "{".to_string(); // array / union
     }
     match tok {
         "@" | "#" | "*" => "@",
@@ -89,6 +158,7 @@ fn kind_of(tok: &str) -> &'static str {
         "v" => "v",
         _ => "?",
     }
+    .to_string()
 }
 
 /// Collect `selector -> (ret-kind, arg-kinds)` for one class, flagging any
@@ -434,7 +504,7 @@ fn main() {
          "NSResponder", "NSControl", "NSTextField", "NSText", "NSTextView",
          "NSTextStorage", "NSScrollView", "NSSplitView", "NSTabView", "NSTabViewItem",
          "NSMenu", "NSMenuItem", "NSRulerView", "NSSearchField", "NSEvent",
-         "NSSound", "AVMIDIPlayer"]
+         "NSSound", "NSAffineTransform", "AVMIDIPlayer"]
             .iter()
             .map(|s| s.to_string())
             .collect()

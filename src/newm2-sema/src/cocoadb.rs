@@ -10,10 +10,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SelSig {
-    /// Return kind: one of @ : i u d B v { ?
-    pub ret: char,
+    /// Return kind: a scalar (@ : i u d B v ?), a named geometry struct
+    /// (N/P/S/R), or a synthesizable struct descriptor `{<field kinds>}`.
+    pub ret: String,
     pub argc: usize,
 }
 
@@ -51,7 +52,7 @@ impl CocoaDb {
     }
 
     pub fn lookup(&self, selector: &str) -> Option<SelSig> {
-        self.selectors.get(selector).copied()
+        self.selectors.get(selector).cloned()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -66,7 +67,8 @@ fn parse_selector_line(t: &str) -> Option<(String, SelSig)> {
     let q = rest.find(MID)?;
     let sel = rest[..q].to_string();
     let after = &rest[q + MID.len()..];
-    let ret = after.chars().next()?;
+    let rq = after.find('"')?; // closing quote of the ret value
+    let ret = after[..rq].to_string();
     let argc = match after.find("\"args\": [") {
         Some(ai) => {
             let arr = &after[ai + "\"args\": [".len()..];

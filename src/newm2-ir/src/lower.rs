@@ -3287,30 +3287,48 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
     /// value is itself the pointed-to object's address). Returns None otherwise.
     fn eval_postfix_addr(&mut self, base: &ast::Expr, selectors: &[ast::Selector]) -> Option<ValueId> {
         let (first, rest) = selectors.split_first()?;
-        if !matches!(first, ast::Selector::Deref(_)) {
-            return None;
-        }
         let base_ty = self.ctx.sema.expr_type(self.ctx.mid, expr_span(base));
-        let v = self.eval_expr(base); // pointer value = address of the pointed-to object
-        let mut cur_ty = base_ty.and_then(|t| self.selector_result_type(t, first));
-        // Attach the pointee type to the raw pointer so any field/index GEP that
-        // follows is well-typed (the designator path types its base the same way).
-        let mut ptr = match cur_ty {
-            Some(rec) => {
-                let typed = self.fresh();
-                self.push(Inst::TypedPtr { dst: typed, src: v, ty: rec });
-                typed
+        if matches!(first, ast::Selector::Deref(_)) {
+            // Pointer base: the pointer value is itself the pointed-to address.
+            let v = self.eval_expr(base);
+            let mut cur_ty = base_ty.and_then(|t| self.selector_result_type(t, first));
+            // Attach the pointee type so a following field/index GEP is well-typed.
+            let mut ptr = match cur_ty {
+                Some(rec) => {
+                    let typed = self.fresh();
+                    self.push(Inst::TypedPtr { dst: typed, src: v, ty: rec });
+                    typed
+                }
+                None if rest.is_empty() => v, // bare `^` just loads the pointed-to value
+                None => return None,
+            };
+            for sel in rest {
+                ptr = self.apply_selector(ptr, cur_ty, sel, None);
+                cur_ty = cur_ty.and_then(|t| self.selector_result_type(t, sel));
             }
-            // Without the pointee type a field/index GEP can't be formed safely;
-            // a bare `^` (no further selectors) just loads the pointed-to value.
-            None if rest.is_empty() => v,
-            None => return None,
-        };
-        for sel in rest {
-            ptr = self.apply_selector(ptr, cur_ty, sel, None);
-            cur_ty = cur_ty.and_then(|t| self.selector_result_type(t, sel));
+            Some(ptr)
+        } else {
+            // Value base (a record/array — e.g. a struct-returning send): spill it
+            // to a temporary, then take field/element addresses off that.
+            let bt = base_ty?;
+            if !matches!(
+                self.ctx.sema.types.get(bt),
+                TypeKind::Record(_) | TypeKind::Array { .. }
+            ) {
+                return None;
+            }
+            let v = self.eval_expr(base);
+            let tmp = self.fresh();
+            self.push(Inst::Alloca { dst: tmp, ty: bt });
+            self.push(Inst::Store { ptr: tmp, val: v });
+            let mut ptr = tmp;
+            let mut cur_ty = Some(bt);
+            for sel in selectors {
+                ptr = self.apply_selector(ptr, cur_ty, sel, None);
+                cur_ty = cur_ty.and_then(|t| self.selector_result_type(t, sel));
+            }
+            Some(ptr)
         }
-        Some(ptr)
     }
 
     /// Emit a named constant of type `ty`. A RECORD/ARRAY aggregate is carried

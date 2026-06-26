@@ -203,6 +203,7 @@ struct Ctx {
     objc_send_sigs: HashMap<SpanKey, TypeId>,
     cocoa_db: crate::cocoadb::CocoaDb,
     cocoa_objc_mid: Option<ModuleId>, // the ObjC module (for resolving NSRange/NSRect/…)
+    cocoa_struct_cache: HashMap<String, TypeId>, // synthesized struct-return records by descriptor
     resolved_names: HashMap<SpanKey, ResolvedName>,
     diagnostics: Vec<Diagnostic>,
     pervasive: ScopeId,
@@ -273,6 +274,7 @@ impl Ctx {
             objc_send_sigs: HashMap::new(),
             cocoa_db: crate::cocoadb::CocoaDb::default(),
             cocoa_objc_mid: None,
+            cocoa_struct_cache: HashMap::new(),
             resolved_names: HashMap::new(),
             diagnostics: Vec::new(),
             pervasive,
@@ -457,6 +459,24 @@ fn check_module_graph_impl(
             }
         }
         ensure_interface(&mut ctx, graph, mid);
+        // Right after the ObjC interface is built, synthesize the Cocoa
+        // struct-return types from the database and register them in its scope, so
+        // a later importer can declare them (e.g. `VAR r: ObjC.NSEdgeInsets`).
+        if ctx.cocoa_objc_mid == Some(mid) {
+            let descs: Vec<String> = ctx
+                .cocoa_db
+                .selectors
+                .values()
+                .map(|s| s.ret.clone())
+                .filter(|r| r.starts_with('{') && r.contains(':'))
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            for d in descs {
+                if seen.insert(d.clone()) {
+                    synthesize_cocoa_struct(&mut ctx, &d);
+                }
+            }
+        }
     }
     ctx.defer_const_errors = false;
 
@@ -4113,21 +4133,81 @@ fn expr_span(expr: &ast::Expr) -> Span {
 }
 
 /// Map a Cocoa selector-database return *kind* to an M2 type for a message send.
-/// Geometry structs resolve to ObjC.NSRange/NSPoint/NSSize/NSRect (register-passed
-/// per the C ABI); other structs (`{`) and void (`v`) fall back to `id`.
-fn cocoa_kind_type(ctx: &mut Ctx, kind: char) -> TypeId {
+/// The named geometry structs resolve to ObjC.NSRange/NSPoint/NSSize/NSRect (nice
+/// field names); any other struct given as a flattened descriptor `{<kinds>}` is
+/// synthesized into a record so its return ABI works too; void/opaque fall to id.
+fn cocoa_kind_type(ctx: &mut Ctx, kind: &str) -> TypeId {
     let addr = ctx.types.builtin(Builtin::Address);
     match kind {
-        'i' => ctx.types.builtin(Builtin::Integer),
-        'u' => ctx.types.builtin(Builtin::Cardinal),
-        'd' => ctx.types.builtin(Builtin::Real),
-        'B' => ctx.types.builtin(Builtin::Boolean),
-        'N' => cocoa_record_type(ctx, "NSRange").unwrap_or(addr),
-        'P' => cocoa_record_type(ctx, "NSPoint").unwrap_or(addr),
-        'S' => cocoa_record_type(ctx, "NSSize").unwrap_or(addr),
-        'R' => cocoa_record_type(ctx, "NSRect").unwrap_or(addr),
-        _ => addr, // '@' ':' '*' 'v' '{' '?'
+        "i" => ctx.types.builtin(Builtin::Integer),
+        "u" => ctx.types.builtin(Builtin::Cardinal),
+        "d" => ctx.types.builtin(Builtin::Real),
+        "B" => ctx.types.builtin(Builtin::Boolean),
+        "N" => cocoa_record_type(ctx, "NSRange").unwrap_or(addr),
+        "P" => cocoa_record_type(ctx, "NSPoint").unwrap_or(addr),
+        "S" => cocoa_record_type(ctx, "NSSize").unwrap_or(addr),
+        "R" => cocoa_record_type(ctx, "NSRect").unwrap_or(addr),
+        _ if kind.starts_with('{') && kind.contains(':') => synthesize_cocoa_struct(ctx, kind),
+        _ => addr, // "@" ":" "*" "v" "{" "?"
     }
+}
+
+/// Synthesize a record type for a named struct descriptor `{Name:<kinds>}` (e.g.
+/// "{NSEdgeInsets:dddd}" -> RECORD f0..f3: REAL, named NSEdgeInsets). Fields are
+/// positional (f0…); codegen derives the layout/ABI from the field types. The
+/// type is cached and registered (register_cocoa_struct) so it is also declarable
+/// as ObjC.<Name>. Returns id for a malformed descriptor.
+fn synthesize_cocoa_struct(ctx: &mut Ctx, kind: &str) -> TypeId {
+    let inner = &kind[1..kind.len() - 1]; // "Name:kinds"
+    let Some((name, kinds)) = inner.split_once(':') else {
+        return ctx.types.builtin(Builtin::Address);
+    };
+    if let Some(&ty) = ctx.cocoa_struct_cache.get(name) {
+        return ty;
+    }
+    let mut fields = Vec::new();
+    for (i, c) in kinds.chars().enumerate() {
+        let fty = match c {
+            'i' => ctx.types.builtin(Builtin::Integer),
+            'u' => ctx.types.builtin(Builtin::Cardinal),
+            'd' => ctx.types.builtin(Builtin::Real),
+            'B' => ctx.types.builtin(Builtin::Boolean),
+            _ => ctx.types.builtin(Builtin::Address), // '@' (pointer field)
+        };
+        fields.push(crate::types::RecordFieldSlot { name: format!("f{i}"), ty: fty });
+    }
+    let layout =
+        crate::types::RecordLayout { name: Some(name.to_string()), fields, variant: None };
+    let ty = ctx.types.alloc(TypeKind::Record(layout));
+    ctx.cocoa_struct_cache.insert(name.to_string(), ty);
+    register_cocoa_struct(ctx, name, ty);
+    ty
+}
+
+/// Register a synthesized struct as a named type symbol in the ObjC module's
+/// scope, so it is declarable from source (`VAR r: ObjC.NSEdgeInsets`) — sema
+/// creating what source could. No-op if ObjC's scope isn't available.
+fn register_cocoa_struct(ctx: &mut Ctx, name: &str, ty: TypeId) {
+    let Some(mid) = ctx.cocoa_objc_mid else {
+        return;
+    };
+    let Some(&scope_id) = ctx.module_scopes.get(&mid) else {
+        return;
+    };
+    if ctx.scopes.get_mut(scope_id).get(name).is_some() {
+        return; // a real ObjC declaration of this name wins
+    }
+    let declaration_id = ctx.fresh_declaration_id();
+    let binding_id = ctx.fresh_binding_id();
+    ctx.scopes.get_mut(scope_id).insert(crate::scope::Symbol {
+        name: name.to_string(),
+        kind: SymbolKind::Type(ty),
+        span: dummy_span(),
+        declaration_id,
+        binding_id,
+        provenance: SymbolProvenance::Pervasive,
+        exported: true,
+    });
 }
 
 /// Resolve a geometry record type by name from the ObjC module's scope.
@@ -5381,7 +5461,7 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             // An unknown selector (likely a typo) is flagged only under --strict, so
             // normal builds aren't noisy about selectors the partial DB doesn't cover.
             let result = match ctx.cocoa_db.lookup(selector) {
-                Some(s) => cocoa_kind_type(ctx, s.ret),
+                Some(s) => cocoa_kind_type(ctx, &s.ret),
                 None => {
                     if ctx.strict && !ctx.cocoa_db.is_empty() {
                         ctx.warning(
