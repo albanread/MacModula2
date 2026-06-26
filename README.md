@@ -14,6 +14,13 @@ Foundation, Core Graphics — all reachable directly from clean Modula-2 source.
 It is the Modula-2 member of a portfolio of from-scratch Rust+LLVM language
 implementations.
 
+**Status.** Builds and runs on Apple Silicon (`arm64-apple-darwin`), both AOT
+(Mach-O) and via the ORC JIT. The Cocoa object model is complete — every `CLASS`
+is an Obj-C class, Cocoa superclasses are named with plain `INHERIT NSView`
+(resolved from the binding metadata), and Cocoa is reached with `[recv sel: args]`
+message sends. The flagship program is the multi-pane, rope-backed Modula-2 IDE in
+`projects/macide/`.
+
 ## The headline: M2 classes and objects ARE Cocoa objects
 
 Where the Windows lineage of this compiler dispatched through COM vtables, the Mac
@@ -73,6 +80,20 @@ The Cocoa runtime library lives in `library/macrtdef` + `library/macrtmod`:
 `Cocoa` (windows, views, controls, editors), `ObjC` (the message-send bridge),
 `Proc` (files / dirs / subprocess), `CG` (Core Graphics), and `CocoaNS` — typed
 `EXTERNAL` bindings introspected from the live Obj-C runtime by `newm2-cocoa-gen`.
+
+## Documentation
+
+- **[The Cocoa guide](docs/cocoa/index.md)** — Modula-2 meets Cocoa: the
+  `[recv sel: args]` message send, classes *as* Cocoa classes (`INHERIT NSView`),
+  the bound `Cocoa` / `ObjC` / `CocoaNS` surface, and how to reach any Cocoa API.
+- **[The Modula-2 guide](docs/m2-guide/index.md)** — a tour of the language as
+  implemented here; **[the reference manual](docs/newm2-manual/01-getting-started.md)**
+  is the chapter-by-chapter spec.
+- **[The MacM2 runtime](docs/macm2-runtime.md)** — the Obj-C object lowering,
+  memory, strings, and the AOT / JIT model.
+- Design notes under **[`docs/design/`](docs/design/)** — `cocoa-classes.md`,
+  `cocoa-send.md`, `guard-ismember.md`, `mac-text-store.md`, … — plus
+  `docs/aot.md`, `docs/strings.md`, and `docs/module-graph.md`.
 
 ## The MacM2 IDE — built on this object model
 
