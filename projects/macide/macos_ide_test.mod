@@ -16,13 +16,15 @@ IMPORT Proc;
 IMPORT ObjC;
 
 TYPE SendRange = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;
+     NSRangeR  = RECORD location, length: CARDINAL END;
+     SendRR    = PROCEDURE (ObjC.Id, ObjC.SEL): NSRangeR;
 
 VAR
   gEditor: ObjC.Id;
   script, out, big: ARRAY [0..262143] OF CHAR;
   nl: ARRAY [0..1] OF CHAR;
   k: CARDINAL; ixx: INTEGER;
-  s0: ObjC.Send0; sp: ObjC.SendP; srange: SendRange;
+  s0: ObjC.Send0; sp: ObjC.SendP; srange: SendRange; srr2: SendRR;
 
 PROCEDURE Tv (): ObjC.Id;                      (* the editor's text view *)
 BEGIN RETURN s0(gEditor, ObjC.Selector("documentView")) END Tv;
@@ -74,6 +76,13 @@ BEGIN ig := srange(Tv(), ObjC.Selector("setSelectedRange:"),
 PROCEDURE CmdSend (): BOOLEAN; VAR sel: ARRAY [0..127] OF CHAR; ig: ObjC.Id;   (* send <selector> *)
 BEGIN Ptcl.Arg(1, sel); ig := sp(Tv(), ObjC.Selector(sel), NIL); RETURN TRUE END CmdSend;
 
+PROCEDURE CmdSelLen (): BOOLEAN; VAR r: NSRangeR; s: ARRAY [0..31] OF CHAR;   (* sellen : selection length *)
+BEGIN r := srr2(Tv(), ObjC.Selector("selectedRange")); CardToStr(r.length, s); Ptcl.Result(s); RETURN TRUE END CmdSelLen;
+
+PROCEDURE CmdCharAt (): BOOLEAN;   (* charat <n> : the editor character at index n *)
+VAR t: ARRAY [0..262143] OF CHAR; n: CARDINAL; r: ARRAY [0..1] OF CHAR;
+BEGIN Cocoa.EditorText(gEditor, t); n := VAL(CARDINAL, Ptcl.ArgInt(1)); r[0] := t[n]; r[1] := CHR(0); Ptcl.Result(r); RETURN TRUE END CmdCharAt;
+
 PROCEDURE CmdBuildRun (): BOOLEAN;
 VAR src, outp: ARRAY [0..262143] OF CHAR; s: ARRAY [0..31] OF CHAR; rc, ix: INTEGER;
 BEGIN
@@ -104,6 +113,7 @@ BEGIN
   s0 := CAST(ObjC.Send0, ObjC.MsgSendPtr());
   sp := CAST(ObjC.SendP, ObjC.MsgSendPtr());
   srange := CAST(SendRange, ObjC.MsgSendPtr());
+  srr2 := CAST(SendRR, ObjC.MsgSendPtr());
   gEditor := RopeEditor.Make(0.0, 0.0, 500.0, 300.0);
   nl[0] := CHR(10); nl[1] := CHR(0); script[0] := CHR(0);
 
@@ -113,6 +123,7 @@ BEGIN
   Ptcl.Register("enter", CmdEnter);       Ptcl.Register("buildrun", CmdBuildRun);
   Ptcl.Register("expect", CmdExpect);     Ptcl.Register("filelen", CmdFileLen);
   Ptcl.Register("selectrange", CmdSelectRange);  Ptcl.Register("send", CmdSend);
+  Ptcl.Register("sellen", CmdSelLen);            Ptcl.Register("charat", CmdCharAt);
 
   SC("settext {MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.}");
   SC("save /tmp/ide_sample.mod");
@@ -159,4 +170,28 @@ BEGIN
   SC("settext {(* XY *)}"); SC("selectrange 0 8"); SC("send toggleComment:");
   SC("expect [gettext] {XY}");
   Run("comment toggle off");
+
+  (* line manipulation: duplicate / delete / select / move *)
+  SC("settext {AB}"); SC("setcursor 0"); SC("send duplicateLine:");
+  SC("expect [len] 5");                                   (* AB\nAB *)
+  Run("duplicate line");
+
+  SC("settext {ABCD}"); SC("setcursor 2"); SC("send deleteLine:");
+  SC("expect [len] 0");                                   (* whole line gone, not just cursor *)
+  Run("delete line");
+
+  SC("settext {ABCD}"); SC("setcursor 2"); SC("send selectLine:");
+  SC("expect [sellen] 4");
+  Run("select line");
+
+  big[0] := CHR(0);
+  Append("AX", big); Append(nl, big); Append("BY", big); Append(nl, big); Append("CZ", big);
+  ixx := Proc.WriteFile("/tmp/ide_lines.mod", big);       (* AX / BY / CZ *)
+  SC("load /tmp/ide_lines.mod"); SC("setcursor 0"); SC("send moveLineDown:");
+  SC("expect [charat 0] B");                              (* now BY / AX / CZ *)
+  Run("move line down");
+
+  SC("load /tmp/ide_lines.mod"); SC("setcursor 3"); SC("send moveLineUp:");
+  SC("expect [charat 0] B");                              (* line 2 (BY) moved above AX *)
+  Run("move line up");
 END macos_ide_test.

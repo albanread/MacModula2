@@ -237,9 +237,12 @@ BEGIN
 END Replace;
 
 PROCEDURE LineSpan (VAR buf: ARRAY OF CHAR; total, loc, len: CARDINAL; VAR ls, le: CARDINAL);
+VAR endPos: CARDINAL;                            (* last selected char (or the cursor) *)
 BEGIN
   ls := loc; WHILE (ls > 0) AND (buf[ls-1] # CHR(10)) DO DEC(ls) END;
-  le := loc + len; WHILE (le < total) AND (buf[le-1] # CHR(10)) DO INC(le) END
+  endPos := loc + len; IF len > 0 THEN endPos := loc + len - 1 END;
+  le := endPos; WHILE (le < total) AND (buf[le] # CHR(10)) DO INC(le) END;
+  IF le < total THEN INC(le) END                 (* include the line's trailing newline *)
 END LineSpan;
 
 (* an NSTextView that auto-indents (Enter copies the line's leading whitespace) and
@@ -325,6 +328,80 @@ CLASS RopeTextView;
     gEdOut[k] := CHR(0);
     Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
   END ToggleComment;
+
+  (* Cmd-L: select the current line(s) *)
+  PROCEDURE SelectLine (sender: ObjC.Id) <* selector "selectLine:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, le-ls)
+  END SelectLine;
+
+  (* Cmd-Shift-D: duplicate the current line(s) below *)
+  PROCEDURE DuplicateLine (sender: ObjC.Id) <* selector "duplicateLine:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, i, k: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    k := 0;
+    IF NOT ((le > ls) AND (gEdBuf[le-1] = CHR(10))) THEN gEdOut[k] := CHR(10); INC(k) END;  (* last line: add nl *)
+    i := ls; WHILE i < le DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;
+    gEdOut[k] := CHR(0);
+    Replace(me, le, 0, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), le, 0)
+  END DuplicateLine;
+
+  (* Cmd-Shift-K: delete the current line(s) *)
+  PROCEDURE DeleteLine (sender: ObjC.Id) <* selector "deleteLine:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    Replace(me, ls, le-ls, ""); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, 0)
+  END DeleteLine;
+
+  (* Opt-Cmd-Up: swap the current line with the one above *)
+  PROCEDURE MoveLineUp (sender: ObjC.Id) <* selector "moveLineUp:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, pls, ce, i, k: CARDINAL; endNl: BOOLEAN;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    IF ls = 0 THEN RETURN END;
+    pls := ls-1; WHILE (pls > 0) AND (gEdBuf[pls-1] # CHR(10)) DO DEC(pls) END;
+    endNl := (le > ls) AND (gEdBuf[le-1] = CHR(10)); ce := le; IF endNl THEN DEC(ce) END;
+    k := 0;
+    i := ls;  WHILE i < ce    DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;  (* current content *)
+    gEdOut[k] := CHR(10); INC(k);
+    i := pls; WHILE i < ls-1  DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;  (* previous content *)
+    IF endNl THEN gEdOut[k] := CHR(10); INC(k) END;
+    gEdOut[k] := CHR(0);
+    Replace(me, pls, le-pls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), pls, ce-ls)
+  END MoveLineUp;
+
+  (* Opt-Cmd-Down: swap the current line with the one below *)
+  PROCEDURE MoveLineDown (sender: ObjC.Id) <* selector "moveLineDown:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, ne, nce, i, k: CARDINAL; endNl: BOOLEAN;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    IF le >= total THEN RETURN END;                                  (* current is the last line *)
+    ne := le; WHILE (ne < total) AND (gEdBuf[ne] # CHR(10)) DO INC(ne) END;
+    IF ne < total THEN INC(ne) END;                                  (* include next line's newline *)
+    endNl := (ne > le) AND (gEdBuf[ne-1] = CHR(10)); nce := ne; IF endNl THEN DEC(nce) END;
+    k := 0;
+    i := le; WHILE i < nce   DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;  (* next content *)
+    gEdOut[k] := CHR(10); INC(k);
+    i := ls; WHILE i < le-1  DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;  (* current content *)
+    IF endNl THEN gEdOut[k] := CHR(10); INC(k) END;
+    gEdOut[k] := CHR(0);
+    Replace(me, ls, ne-ls, gEdOut);
+    ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls + (nce-le) + 1, (le-1)-ls)
+  END MoveLineDown;
 END RopeTextView;
 
 PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;

@@ -422,7 +422,8 @@ CLASS IDE;
   END TextDidChange;
 END IDE;
 
-VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id; f1key: ARRAY [0..2] OF CHAR;
+VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id;
+    f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
 BEGIN
   s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
   sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
@@ -542,6 +543,13 @@ BEGIN
   AddItem(mEdit, NIL, "Toggle Comment", "toggleComment:", "/", 0);       (* ⌘/ -> first responder *)
   AddItem(mEdit, NIL, "Shift Right", "insertTab:", "]", 0);              (* ⌘] indent *)
   AddItem(mEdit, NIL, "Shift Left", "insertBacktab:", "[", 0);           (* ⌘[ outdent *)
+  AddItem(mEdit, NIL, "Select Line", "selectLine:", "l", 0);             (* ⌘L *)
+  AddItem(mEdit, NIL, "Duplicate Line", "duplicateLine:", "d", 120000H); (* ⌘⇧D *)
+  AddItem(mEdit, NIL, "Delete Line", "deleteLine:", "k", 120000H);       (* ⌘⇧K *)
+  upKey[0] := CHR(0F700H); upKey[1] := CHR(0);                           (* NSUpArrowFunctionKey *)
+  downKey[0] := CHR(0F701H); downKey[1] := CHR(0);                       (* NSDownArrowFunctionKey *)
+  AddItem(mEdit, NIL, "Move Line Up", "moveLineUp:", upKey, 980000H);    (* ⌥⌘↑ (+function) *)
+  AddItem(mEdit, NIL, "Move Line Down", "moveLineDown:", downKey, 980000H); (* ⌥⌘↓ *)
   findItem := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));   (* Find… ⌘F *)
   findItem := smi(findItem, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
                   ObjC.NSString("Find…"), ObjC.Selector("performFindPanelAction:"), ObjC.NSString("f"));
