@@ -37,8 +37,10 @@ END IDEController;
   ivars; methods dispatch through `objc_msgSend` with compiler-synthesized casts.
 - Method names derive Cocoa selectors (`DrawRect` → `drawRect:`), or pin them
   explicitly with `<* selector "replaceCharactersInRange:withString:" *>`.
-- Subclass any Cocoa class: `<* cocoa "NSView" *>`, `<* cocoa "NSTextStorage" *>`,
-  `<* cocoa_class "NSMutableArray" *>` (bind to an existing class). `GUARD` /
+- Subclass any Cocoa class with plain `INHERIT NSView` — resolved from the Cocoa
+  metadata, no pragma and no import, and typo-checked. `<* cocoa "NSView" *>` names
+  a class by string for the long tail the metadata does not cover, and
+  `<* cocoa_class "NSMutableArray" *>` binds to an existing class. `GUARD` /
   `ISMEMBER` use `isKindOfClass:` (the Cocoa analogue of COM's `QueryInterface`).
 - **Message sends** without hand-casts: `[recv sel: a withThing: b]`, as an
   expression or a statement. Return and argument types come from a data-driven
@@ -52,6 +54,8 @@ END IDEController;
   block, so Cocoa can call *into* Modula-2 — comparators, `enumerate…UsingBlock:`,
   completion handlers, `NSTimer` blocks (the IDE's status-bar clock is one).
 
+A full walkthrough is in the **[Cocoa guide](docs/cocoa/index.md)** — message
+sends, classes as Cocoa classes, the bound library, and reaching any Cocoa API.
 See `docs/design/cocoa-classes.md` and `docs/design/cocoa-send.md` for the design.
 
 ## Mac-native, feature by feature
