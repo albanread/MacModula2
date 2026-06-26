@@ -4,7 +4,7 @@ IMPLEMENTATION MODULE RopeEditor;
    See docs/design/mac-text-store.md and macos_textstore.mod (the staged proof). *)
 FROM SYSTEM IMPORT CAST, ADDRESS, TSIZE;
 FROM Storage IMPORT ALLOCATE, DEALLOCATE;
-FROM Strings IMPORT Equal;
+FROM Strings IMPORT Equal, Length;
 IMPORT ObjC;
 IMPORT TextRope;
 
@@ -23,13 +23,20 @@ TYPE
   SendFrameC = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id;
   SendPP     = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.Id): ObjC.Id;
   Send4F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL): ObjC.Id;
+  NSRangeR   = RECORD location, length: CARDINAL END;       (* returned in x0/x1 *)
+  SendRRet   = PROCEDURE (ObjC.Id, ObjC.SEL): NSRangeR;     (* selectedRange *)
+  SendSetR   = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;  (* setSelectedRange: *)
+  SendChg    = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, ObjC.Id): BOOLEAN; (* shouldChange… *)
+  SendRepl   = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, ObjC.Id): ObjC.Id; (* replaceChars… *)
 
 VAR
   s0: ObjC.Send0; sp: ObjC.SendP; s0i: ObjC.Send0I; sf1: ObjC.SendF; sb: ObjC.SendB;
   sf: ObjC.SendFrame; si: ObjC.SendI;
   sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP; s4f: Send4F;
+  srr: SendRRet; ssr: SendSetR; schg: SendChg; srepl: SendRepl;
   ig, font: ObjC.Id;
   gKind: ARRAY [0..kKinds-1] OF ObjC.Id;
+  gEdBuf, gEdOut: ARRAY [0..262143] OF CHAR;       (* scratch for indent/comment ops *)
   gNewRuns, gScratch: PRuns;
   gInited: BOOLEAN;
 
@@ -211,8 +218,32 @@ CLASS RopeStore;
   BEGIN END FixAttributes;
 END RopeStore;
 
-(* an NSTextView that auto-indents: Enter copies the current line's leading
-   whitespace onto the new line *)
+(* selection range, an undo-aware range replace (fires didChangeText so the IDE's
+   autosave delegate runs), and the full-line span covering a selection — shared by
+   the editing commands below. *)
+PROCEDURE Sel (me: ObjC.Id; VAR loc, len: CARDINAL);
+VAR r: NSRangeR;
+BEGIN r := srr(me, ObjC.Selector("selectedRange")); loc := r.location; len := r.length END Sel;
+
+PROCEDURE Replace (me: ObjC.Id; loc, len: CARDINAL; s: ARRAY OF CHAR);
+VAR ns, store: ObjC.Id;
+BEGIN
+  ns := ObjC.NSString(s);
+  IF schg(me, ObjC.Selector("shouldChangeTextInRange:replacementString:"), loc, len, ns) THEN
+    store := s0(me, ObjC.Selector("textStorage"));
+    ig := srepl(store, ObjC.Selector("replaceCharactersInRange:withString:"), loc, len, ns);
+    ig := s0(me, ObjC.Selector("didChangeText"))
+  END
+END Replace;
+
+PROCEDURE LineSpan (VAR buf: ARRAY OF CHAR; total, loc, len: CARDINAL; VAR ls, le: CARDINAL);
+BEGIN
+  ls := loc; WHILE (ls > 0) AND (buf[ls-1] # CHR(10)) DO DEC(ls) END;
+  le := loc + len; WHILE (le < total) AND (buf[le-1] # CHR(10)) DO INC(le) END
+END LineSpan;
+
+(* an NSTextView that auto-indents (Enter copies the line's leading whitespace) and
+   adds standard code-editor commands: Tab/Shift-Tab indent, Cmd-/ comment toggle *)
 CLASS RopeTextView;
   <* cocoa "NSTextView" *>
   PROCEDURE InsertNewline (sender: ObjC.Id) <* selector "insertNewline:" *>;
@@ -230,6 +261,70 @@ CLASS RopeTextView;
     ins[k] := CHR(0);
     ig := sp(me, ObjC.Selector("insertText:"), ObjC.NSString(ins))
   END InsertNewline;
+
+  (* Tab: indent the selected lines by 2 spaces; with no selection, a soft tab *)
+  PROCEDURE InsertTab (sender: ObjC.Id) <* selector "insertTab:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, i, k: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    IF len = 0 THEN
+      Replace(me, loc, 0, "  "); ig := ssr(me, ObjC.Selector("setSelectedRange:"), loc+2, 0); RETURN
+    END;
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    k := 0; gEdOut[k] := ' '; INC(k); gEdOut[k] := ' '; INC(k);
+    i := ls;
+    WHILE i < le DO
+      gEdOut[k] := gEdBuf[i]; INC(k);
+      IF (gEdBuf[i] = CHR(10)) AND (i+1 < le) THEN gEdOut[k] := ' '; INC(k); gEdOut[k] := ' '; INC(k) END;
+      INC(i)
+    END;
+    gEdOut[k] := CHR(0);
+    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+  END InsertTab;
+
+  (* Shift-Tab: outdent the selected lines (drop up to 2 leading spaces / 1 tab) *)
+  PROCEDURE InsertBacktab (sender: ObjC.Id) <* selector "insertBacktab:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, i, k, nsp: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    k := 0; i := ls;
+    WHILE i < le DO
+      nsp := 0;
+      WHILE (i < le) AND (nsp < 2) AND (gEdBuf[i] = ' ') DO INC(i); INC(nsp) END;
+      IF (nsp = 0) AND (i < le) AND (gEdBuf[i] = CHR(9)) THEN INC(i) END;
+      WHILE (i < le) AND (gEdBuf[i] # CHR(10)) DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;
+      IF (i < le) AND (gEdBuf[i] = CHR(10)) THEN gEdOut[k] := CHR(10); INC(k); INC(i) END
+    END;
+    gEdOut[k] := CHR(0);
+    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+  END InsertBacktab;
+
+  (* Cmd-/: toggle an (* … *) comment around the selected lines *)
+  PROCEDURE ToggleComment (sender: ObjC.Id) <* selector "toggleComment:" *>;
+  VAR me: ObjC.Id; loc, len, ls, le, total, a, b, i, k: CARDINAL;
+  BEGIN
+    me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
+    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    LineSpan(gEdBuf, total, loc, len, ls, le);
+    IF (le > ls) AND (gEdBuf[le-1] = CHR(10)) THEN DEC(le) END;     (* exclude trailing newline *)
+    k := 0;
+    IF (le-ls >= 4) AND (gEdBuf[ls]='(') AND (gEdBuf[ls+1]='*')
+       AND (gEdBuf[le-2]='*') AND (gEdBuf[le-1]=')') THEN
+      a := ls+2; b := le-2;                                          (* already commented -> unwrap *)
+      IF (a < b) AND (gEdBuf[a] = ' ') THEN INC(a) END;
+      IF (a < b) AND (gEdBuf[b-1] = ' ') THEN DEC(b) END;
+      i := a; WHILE i < b DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END
+    ELSE
+      gEdOut[k]:='('; INC(k); gEdOut[k]:='*'; INC(k); gEdOut[k]:=' '; INC(k);   (* wrap *)
+      i := ls; WHILE i < le DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;
+      gEdOut[k]:=' '; INC(k); gEdOut[k]:='*'; INC(k); gEdOut[k]:=')'; INC(k)
+    END;
+    gEdOut[k] := CHR(0);
+    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+  END ToggleComment;
 END RopeTextView;
 
 PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;
@@ -290,5 +385,9 @@ BEGIN
   sfc := CAST(SendFrameC,     ObjC.MsgSendPtr());
   spp := CAST(SendPP,         ObjC.MsgSendPtr());
   s4f := CAST(Send4F,         ObjC.MsgSendPtr());
+  srr := CAST(SendRRet,       ObjC.MsgSendPtr());
+  ssr := CAST(SendSetR,       ObjC.MsgSendPtr());
+  schg := CAST(SendChg,       ObjC.MsgSendPtr());
+  srepl := CAST(SendRepl,     ObjC.MsgSendPtr());
   gInited := FALSE
 END RopeEditor.

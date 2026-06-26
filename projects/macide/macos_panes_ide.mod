@@ -538,7 +538,10 @@ BEGIN
   AddItem(mEdit, NIL, "Copy", "copy:", "c", 0);
   AddItem(mEdit, NIL, "Paste", "paste:", "v", 0);
   AddItem(mEdit, NIL, "Select All", "selectAll:", "a", 0);
-  AddItem(mEdit, ctrl, "Complete at Cursor", "onComplete:", "/", 0);     (* ⌘/ autocomplete *)
+  AddItem(mEdit, ctrl, "Complete at Cursor", "onComplete:", "i", 0);     (* ⌘I autocomplete *)
+  AddItem(mEdit, NIL, "Toggle Comment", "toggleComment:", "/", 0);       (* ⌘/ -> first responder *)
+  AddItem(mEdit, NIL, "Shift Right", "insertTab:", "]", 0);              (* ⌘] indent *)
+  AddItem(mEdit, NIL, "Shift Left", "insertBacktab:", "[", 0);           (* ⌘[ outdent *)
   findItem := s0(ObjC.GetClass("NSMenuItem"), ObjC.Selector("alloc"));   (* Find… ⌘F *)
   findItem := smi(findItem, ObjC.Selector("initWithTitle:action:keyEquivalent:"),
                   ObjC.NSString("Find…"), ObjC.Selector("performFindPanelAction:"), ObjC.NSString("f"));

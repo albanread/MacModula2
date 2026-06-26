@@ -67,6 +67,13 @@ BEGIN ig := srange(Tv(), ObjC.Selector("setSelectedRange:"), VAL(CARDINAL, Ptcl.
 PROCEDURE CmdEnter (): BOOLEAN; VAR ig: ObjC.Id;
 BEGIN ig := sp(Tv(), ObjC.Selector("insertNewline:"), NIL); RETURN TRUE END CmdEnter;
 
+PROCEDURE CmdSelectRange (): BOOLEAN; VAR ig: ObjC.Id;   (* selectrange <loc> <len> *)
+BEGIN ig := srange(Tv(), ObjC.Selector("setSelectedRange:"),
+                   VAL(CARDINAL, Ptcl.ArgInt(1)), VAL(CARDINAL, Ptcl.ArgInt(2))); RETURN TRUE END CmdSelectRange;
+
+PROCEDURE CmdSend (): BOOLEAN; VAR sel: ARRAY [0..127] OF CHAR; ig: ObjC.Id;   (* send <selector> *)
+BEGIN Ptcl.Arg(1, sel); ig := sp(Tv(), ObjC.Selector(sel), NIL); RETURN TRUE END CmdSend;
+
 PROCEDURE CmdBuildRun (): BOOLEAN;
 VAR src, outp: ARRAY [0..262143] OF CHAR; s: ARRAY [0..31] OF CHAR; rc, ix: INTEGER;
 BEGIN
@@ -105,6 +112,7 @@ BEGIN
   Ptcl.Register("len", CmdLen);           Ptcl.Register("setcursor", CmdSetCursor);
   Ptcl.Register("enter", CmdEnter);       Ptcl.Register("buildrun", CmdBuildRun);
   Ptcl.Register("expect", CmdExpect);     Ptcl.Register("filelen", CmdFileLen);
+  Ptcl.Register("selectrange", CmdSelectRange);  Ptcl.Register("send", CmdSend);
 
   SC("settext {MODULE Sample; (* c *) VAR x: INTEGER; BEGIN x := 42 END Sample.}");
   SC("save /tmp/ide_sample.mod");
@@ -134,4 +142,21 @@ BEGIN
   SC("load /tmp/ide_big.mod");
   SC("expect [len] [filelen /tmp/ide_big.mod]");
   Run("large-file load: no truncation");
+
+  (* standard editor behaviours: indent / outdent / comment toggle *)
+  SC("settext {ABCD}"); SC("selectrange 1 2"); SC("send insertTab:");
+  SC("expect [gettext] {  ABCD}");
+  Run("indent selection (Tab)");
+
+  SC("settext {    ABCD}"); SC("selectrange 4 4"); SC("send insertBacktab:");
+  SC("expect [gettext] {  ABCD}");
+  Run("outdent selection (Shift-Tab)");
+
+  SC("settext {XY}"); SC("selectrange 0 2"); SC("send toggleComment:");
+  SC("expect [gettext] {(* XY *)}");
+  Run("comment toggle on");
+
+  SC("settext {(* XY *)}"); SC("selectrange 0 8"); SC("send toggleComment:");
+  SC("expect [gettext] {XY}");
+  Run("comment toggle off");
 END macos_ide_test.
