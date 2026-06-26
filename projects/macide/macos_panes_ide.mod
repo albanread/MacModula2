@@ -284,6 +284,22 @@ BEGIN
   HelpShow(TRUE)
 END ShowAssist;
 
+(* Serialize an editor straight from its rope to disk.  The text lives in the
+   editor's NSTextStorage (the rope); `[[ed documentView] string]` is the whole
+   document as an NSString, which writes ITSELF to the file.  No fixed M2 buffer
+   ever holds the document, so nothing truncates however large it grows — this is
+   the one and only way the IDE puts editor text on disk (save / autosave /
+   build / the completion scratch all go through here).  4 = NSUTF8StringEncoding.
+   Returns TRUE on success. *)
+PROCEDURE SaveEditorTo (ed: Cocoa.Object; path: ARRAY OF CHAR): BOOLEAN;
+VAR tv, str: ObjC.Id; ok: BOOLEAN;
+BEGIN
+  tv  := [CAST(ObjC.Id, ed) documentView];
+  str := [tv string];
+  ok  := [str writeToFile: ObjC.NSString(path) atomically: TRUE encoding: 4 error: NIL];
+  RETURN ok
+END SaveEditorTo;
+
 (* the sidebar click action: open file (or descend into folder). Tags >= LibBase
    are library entries; below are project entries. *)
 PROCEDURE CardStr (n: CARDINAL; VAR s: ARRAY OF CHAR);
@@ -394,38 +410,33 @@ CLASS IDE;
     Cocoa.SetText(status, "New file — Save (Cmd-S) to name it.")
   END OnNew;
   PROCEDURE OnSaveAs (sender: ObjC.Id);            (* "onSaveAs:" — choose a path, then save *)
-  VAR sel, ix: INTEGER; src: ARRAY [0..262143] OF CHAR; path: ARRAY [0..1023] OF CHAR;
+  VAR sel: INTEGER; path: ARRAY [0..1023] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
     IF NOT ObjC.SavePanel(path) THEN RETURN END;   (* user cancelled *)
-    Cocoa.EditorText(gEditors[sel], src);
-    ix := Proc.WriteFile(path, src);
-    IF ix = 0 THEN
+    IF SaveEditorTo(gEditors[sel], path) THEN
       Assign(path, gPaths[sel]); gReadOnly[sel] := FALSE;
       Basename(path, gTabNames[sel]); RebuildTabBar;
       Cocoa.SetText(status, "Saved.")
     ELSE Cocoa.SetText(status, "Save As failed.") END
   END OnSaveAs;
   PROCEDURE OnSave (sender: ObjC.Id);              (* "onSave:" *)
-  VAR sel, ix: INTEGER; src: ARRAY [0..262143] OF CHAR;
+  VAR sel: INTEGER;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
     IF gReadOnly[sel] THEN Cocoa.SetText(status, "Library file is read-only (reference)."); RETURN END;
     IF gPaths[sel][0] = CHR(0) THEN SELF.OnSaveAs(sender); RETURN END;   (* untitled -> Save As *)
-    Cocoa.EditorText(gEditors[sel], src);
-    ix := Proc.WriteFile(gPaths[sel], src);
-    IF ix = 0 THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
+    IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
   PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
-  VAR sel, ix, rc, marked, errLine: INTEGER; src: ARRAY [0..262143] OF CHAR; out: ARRAY [0..65535] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
+  VAR sel, rc, marked, errLine: INTEGER; out: ARRAY [0..65535] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
     Cocoa.SetText(status, "Building…");
-    Cocoa.EditorText(gEditors[sel], src);
-    ix := Proc.WriteFile(gPaths[sel], src);
+    IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
     Assign("./target/debug/newm2-driver run --library library ", cmd);
     Append(gPaths[sel], cmd); Append(" 2>&1", cmd);
     rc := Proc.RunCapture(cmd, out);
@@ -451,11 +462,14 @@ CLASS IDE;
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
   PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘/ : completions at the cursor *)
-  VAR sel, line, col, n, ix: INTEGER; src, cand: ARRAY [0..16383] OF CHAR;
+  (* Completion is READ-ONLY and creates NO transient buffer: the editor's rope
+     is already on disk at gPaths[sel] (autosave persisted it rope->disk on the
+     last edit), so just complete against the file itself. *)
+  VAR sel, line, col, n: INTEGER; cand: ARRAY [0..65535] OF CHAR;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
-    IF NOT gReadOnly[sel] THEN Cocoa.EditorText(gEditors[sel], src); ix := Proc.WriteFile(gPaths[sel], src) END;
+    IF gPaths[sel][0] = CHR(0) THEN Cocoa.SetText(status, "Save the file first to enable completions."); RETURN END;
     Cocoa.EditorCursor(gEditors[sel], line, col);
     n := Proc.Complete(gPaths[sel], line, col, cand);
     ShowAssist("Completions at cursor (name / kind / detail):", cand);
@@ -486,14 +500,14 @@ CLASS IDE;
   PROCEDURE TextViewDidChangeSelection (note: ObjC.Id) <* selector "textViewDidChangeSelection:" *>;
   BEGIN ShowTabStatus END TextViewDidChangeSelection;
   PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave *)
-  VAR sel, ix: INTEGER; src: ARRAY [0..32767] OF CHAR;
+  (* Autosave is just another rope-to-disk write — no buffer, no truncation,
+     whatever the document size. *)
+  VAR sel: INTEGER;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
     IF gPaths[sel][0] = CHR(0) THEN RETURN END;     (* untitled: no autosave until named *)
-    Cocoa.EditorText(gEditors[sel], src);
-    ix := Proc.WriteFile(gPaths[sel], src);
-    IF ix = 0 THEN Cocoa.SetText(status, "Autosaved.") END
+    IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Autosaved.") END
   END TextDidChange;
 END IDE;
 
