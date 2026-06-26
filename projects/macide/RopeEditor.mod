@@ -18,27 +18,28 @@ TYPE
   Run      = RECORD len: CARDINAL; kind: INTEGER END;
   PRunArr  = POINTER TO ARRAY [0..16777215] OF Run;   (* overlay on a heap block *)
   PRuns    = POINTER TO RECORD count, cap: CARDINAL; a: PRunArr END;  (* growable run vector *)
-  SendEdited = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, CARDINAL, INTEGER): ObjC.Id;
-  Send2F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL): ObjC.Id;
-  SendFrameC = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL, ObjC.Id): ObjC.Id;
-  SendPP     = PROCEDURE (ObjC.Id, ObjC.SEL, ObjC.Id, ObjC.Id): ObjC.Id;
-  Send4F     = PROCEDURE (ObjC.Id, ObjC.SEL, REAL, REAL, REAL, REAL): ObjC.Id;
-  NSRangeR   = RECORD location, length: CARDINAL END;       (* returned in x0/x1 *)
-  SendRRet   = PROCEDURE (ObjC.Id, ObjC.SEL): NSRangeR;     (* selectedRange *)
-  SendSetR   = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL): ObjC.Id;  (* setSelectedRange: *)
-  SendChg    = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, ObjC.Id): BOOLEAN; (* shouldChange… *)
-  SendRepl   = PROCEDURE (ObjC.Id, ObjC.SEL, CARDINAL, CARDINAL, ObjC.Id): ObjC.Id; (* replaceChars… *)
 
+(* All Cocoa calls use the [recv sel: args] message-send syntax, with Range()/Rect()
+   building the struct arguments (NSRange / NSRect) — no hand-cast send machinery. *)
 VAR
-  s0: ObjC.Send0; sp: ObjC.SendP; s0i: ObjC.Send0I; sf1: ObjC.SendF; sb: ObjC.SendB;
-  sf: ObjC.SendFrame; si: ObjC.SendI;
-  sed: SendEdited; s2f: Send2F; sfc: SendFrameC; spp: SendPP; s4f: Send4F;
-  srr: SendRRet; ssr: SendSetR; schg: SendChg; srepl: SendRepl;
-  ig, font: ObjC.Id;
+  font: ObjC.Id;
   gKind: ARRAY [0..kKinds-1] OF ObjC.Id;
   gEdBuf, gEdOut: ARRAY [0..262143] OF CHAR;       (* scratch for indent/comment ops *)
   gNewRuns, gScratch: PRuns;
   gInited: BOOLEAN;
+
+(* NSRange / NSRect values for struct-typed send args (selectedRange, edited:range:,
+   setFrame:); the send returns NSRange as a real struct too — see Sel below. *)
+PROCEDURE Range (loc, len: CARDINAL): ObjC.NSRange;
+VAR r: ObjC.NSRange;
+BEGIN r.location := loc; r.length := len; RETURN r END Range;
+
+PROCEDURE Rect (x, y, w, h: REAL): ObjC.NSRect;
+VAR r: ObjC.NSRect;
+BEGIN r.origin.x := x; r.origin.y := y; r.size.width := w; r.size.height := h; RETURN r END Rect;
+
+PROCEDURE Cls (name: ARRAY OF CHAR): ObjC.Id;   (* class object as a send receiver *)
+BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(name)) END Cls;
 
 (* a fresh growable run vector, and grow-to-fit (heap-backed, no cap) *)
 PROCEDURE NewRuns (): PRuns;
@@ -192,13 +193,14 @@ CLASS RopeStore;
   PROCEDURE ReplaceChars (loc, len: CARDINAL; s: ObjC.Id) <* selector "replaceCharactersInRange:withString:" *>;
   VAR text: ARRAY [0..262143] OF CHAR; inserted: CARDINAL;
   BEGIN
-    inserted := s0i(s, ObjC.Selector("length"));
+    inserted := [s length];
     box^.r := TextRope.DeleteRange(box^.r, loc, len);
     ObjC.GetString(s, text);
     IF text[0] # CHR(0) THEN box^.r := TextRope.Insert(box^.r, loc, text) END;
     SELF.RelexEdit(loc, len, inserted);
-    ig := sed(CAST(ObjC.Id, SELF), ObjC.Selector("edited:range:changeInLength:"),
-              3, loc, len, VAL(INTEGER, inserted) - VAL(INTEGER, len))
+    [CAST(ObjC.Id, SELF) edited: 3
+                         range: Range(loc, len)
+                         changeInLength: VAL(INTEGER, inserted) - VAL(INTEGER, len)]
   END ReplaceChars;
   PROCEDURE AttributesAt (loc: CARDINAL; rangePtr: ADDRESS): ObjC.Id <* selector "attributesAtIndex:effectiveRange:" *>;
   VAR rng: PNSRange; i, start: CARDINAL;
@@ -222,17 +224,17 @@ END RopeStore;
    autosave delegate runs), and the full-line span covering a selection — shared by
    the editing commands below. *)
 PROCEDURE Sel (me: ObjC.Id; VAR loc, len: CARDINAL);
-VAR r: NSRangeR;
-BEGIN r := srr(me, ObjC.Selector("selectedRange")); loc := r.location; len := r.length END Sel;
+VAR r: ObjC.NSRange;                       (* a struct return — NSRange in x0/x1 *)
+BEGIN r := [me selectedRange]; loc := r.location; len := r.length END Sel;
 
 PROCEDURE Replace (me: ObjC.Id; loc, len: CARDINAL; s: ARRAY OF CHAR);
 VAR ns, store: ObjC.Id;
 BEGIN
   ns := ObjC.NSString(s);
-  IF schg(me, ObjC.Selector("shouldChangeTextInRange:replacementString:"), loc, len, ns) THEN
-    store := s0(me, ObjC.Selector("textStorage"));
-    ig := srepl(store, ObjC.Selector("replaceCharactersInRange:withString:"), loc, len, ns);
-    ig := s0(me, ObjC.Selector("didChangeText"))
+  IF [me shouldChangeTextInRange: Range(loc, len) replacementString: ns] THEN
+    store := [me textStorage];
+    [store replaceCharactersInRange: Range(loc, len) withString: ns];
+    [me didChangeText]
   END
 END Replace;
 
@@ -253,8 +255,8 @@ CLASS RopeTextView;
   VAR loc, ls, i, k: CARDINAL; buf: ARRAY [0..262143] OF CHAR; ins: ARRAY [0..255] OF CHAR; me: ObjC.Id;
   BEGIN
     me := CAST(ObjC.Id, SELF);
-    loc := s0i(me, ObjC.Selector("selectedRange"));     (* NSRange.location is returned in x0 *)
-    ObjC.GetString(s0(me, ObjC.Selector("string")), buf);
+    loc := [me selectedRange].location;     (* NSRange.location is returned in x0 *)
+    ObjC.GetString([me string], buf);
     ls := loc;
     WHILE (ls > 0) AND (buf[ls-1] # CHR(10)) DO DEC(ls) END;
     ins[0] := CHR(10); k := 1; i := ls;
@@ -262,7 +264,7 @@ CLASS RopeTextView;
       ins[k] := buf[i]; INC(k); INC(i)
     END;
     ins[k] := CHR(0);
-    ig := sp(me, ObjC.Selector("insertText:"), ObjC.NSString(ins))
+    [me insertText: ObjC.NSString(ins)]
   END InsertNewline;
 
   (* Tab: indent the selected lines by 2 spaces; with no selection, a soft tab *)
@@ -271,9 +273,9 @@ CLASS RopeTextView;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
     IF len = 0 THEN
-      Replace(me, loc, 0, "  "); ig := ssr(me, ObjC.Selector("setSelectedRange:"), loc+2, 0); RETURN
+      Replace(me, loc, 0, "  "); [me setSelectedRange: Range(loc+2, 0)]; RETURN
     END;
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     k := 0; gEdOut[k] := ' '; INC(k); gEdOut[k] := ' '; INC(k);
     i := ls;
@@ -283,7 +285,7 @@ CLASS RopeTextView;
       INC(i)
     END;
     gEdOut[k] := CHR(0);
-    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+    Replace(me, ls, le-ls, gEdOut); [me setSelectedRange: Range(ls, k)]
   END InsertTab;
 
   (* Shift-Tab: outdent the selected lines (drop up to 2 leading spaces / 1 tab) *)
@@ -291,7 +293,7 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total, i, k, nsp: CARDINAL;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     k := 0; i := ls;
     WHILE i < le DO
@@ -302,7 +304,7 @@ CLASS RopeTextView;
       IF (i < le) AND (gEdBuf[i] = CHR(10)) THEN gEdOut[k] := CHR(10); INC(k); INC(i) END
     END;
     gEdOut[k] := CHR(0);
-    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+    Replace(me, ls, le-ls, gEdOut); [me setSelectedRange: Range(ls, k)]
   END InsertBacktab;
 
   (* Cmd-/: toggle an (* … *) comment around the selected lines *)
@@ -310,7 +312,7 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total, a, b, i, k: CARDINAL;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     IF (le > ls) AND (gEdBuf[le-1] = CHR(10)) THEN DEC(le) END;     (* exclude trailing newline *)
     k := 0;
@@ -326,7 +328,7 @@ CLASS RopeTextView;
       gEdOut[k]:=' '; INC(k); gEdOut[k]:='*'; INC(k); gEdOut[k]:=')'; INC(k)
     END;
     gEdOut[k] := CHR(0);
-    Replace(me, ls, le-ls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, k)
+    Replace(me, ls, le-ls, gEdOut); [me setSelectedRange: Range(ls, k)]
   END ToggleComment;
 
   (* Cmd-L: select the current line(s) *)
@@ -334,9 +336,9 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total: CARDINAL;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
-    ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, le-ls)
+    [me setSelectedRange: Range(ls, le-ls)]
   END SelectLine;
 
   (* Cmd-Shift-D: duplicate the current line(s) below *)
@@ -344,13 +346,13 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total, i, k: CARDINAL;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     k := 0;
     IF NOT ((le > ls) AND (gEdBuf[le-1] = CHR(10))) THEN gEdOut[k] := CHR(10); INC(k) END;  (* last line: add nl *)
     i := ls; WHILE i < le DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;
     gEdOut[k] := CHR(0);
-    Replace(me, le, 0, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), le, 0)
+    Replace(me, le, 0, gEdOut); [me setSelectedRange: Range(le, 0)]
   END DuplicateLine;
 
   (* Cmd-Shift-K: delete the current line(s) *)
@@ -358,9 +360,9 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total: CARDINAL;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
-    Replace(me, ls, le-ls, ""); ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls, 0)
+    Replace(me, ls, le-ls, ""); [me setSelectedRange: Range(ls, 0)]
   END DeleteLine;
 
   (* Opt-Cmd-Up: swap the current line with the one above *)
@@ -368,7 +370,7 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total, pls, ce, i, k: CARDINAL; endNl: BOOLEAN;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     IF ls = 0 THEN RETURN END;
     pls := ls-1; WHILE (pls > 0) AND (gEdBuf[pls-1] # CHR(10)) DO DEC(pls) END;
@@ -379,7 +381,7 @@ CLASS RopeTextView;
     i := pls; WHILE i < ls-1  DO gEdOut[k] := gEdBuf[i]; INC(k); INC(i) END;  (* previous content *)
     IF endNl THEN gEdOut[k] := CHR(10); INC(k) END;
     gEdOut[k] := CHR(0);
-    Replace(me, pls, le-pls, gEdOut); ig := ssr(me, ObjC.Selector("setSelectedRange:"), pls, ce-ls)
+    Replace(me, pls, le-pls, gEdOut); [me setSelectedRange: Range(pls, ce-ls)]
   END MoveLineUp;
 
   (* Opt-Cmd-Down: swap the current line with the one below *)
@@ -387,7 +389,7 @@ CLASS RopeTextView;
   VAR me: ObjC.Id; loc, len, ls, le, total, ne, nce, i, k: CARDINAL; endNl: BOOLEAN;
   BEGIN
     me := CAST(ObjC.Id, SELF); Sel(me, loc, len);
-    ObjC.GetString(s0(me, ObjC.Selector("string")), gEdBuf); total := Length(gEdBuf);
+    ObjC.GetString([me string], gEdBuf); total := Length(gEdBuf);
     LineSpan(gEdBuf, total, loc, len, ls, le);
     IF le >= total THEN RETURN END;                                  (* current is the last line *)
     ne := le; WHILE (ne < total) AND (gEdBuf[ne] # CHR(10)) DO INC(ne) END;
@@ -400,24 +402,24 @@ CLASS RopeTextView;
     IF endNl THEN gEdOut[k] := CHR(10); INC(k) END;
     gEdOut[k] := CHR(0);
     Replace(me, ls, ne-ls, gEdOut);
-    ig := ssr(me, ObjC.Selector("setSelectedRange:"), ls + (nce-le) + 1, (le-1)-ls)
+    [me setSelectedRange: Range(ls + (nce-le) + 1, (le-1)-ls)]
   END MoveLineDown;
 END RopeTextView;
 
 PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;
 VAR d, color: ObjC.Id;
 BEGIN
-  d := s0(s0(ObjC.GetClass("NSMutableDictionary"), ObjC.Selector("alloc")), ObjC.Selector("init"));
-  ig := spp(d, ObjC.Selector("setObject:forKey:"), font, ObjC.NSString("NSFont"));
-  color := s4f(ObjC.GetClass("NSColor"), ObjC.Selector("colorWithCalibratedRed:green:blue:alpha:"), r, g, b, 1.0);
-  ig := spp(d, ObjC.Selector("setObject:forKey:"), color, ObjC.NSString("NSColor"));
+  d := [[Cls("NSMutableDictionary") alloc] init];
+  [d setObject: font forKey: ObjC.NSString("NSFont")];
+  color := [Cls("NSColor") colorWithCalibratedRed: r green: g blue: b alpha: 1.0];
+  [d setObject: color forKey: ObjC.NSString("NSColor")];
   RETURN d
 END MakeAttrs;
 
 PROCEDURE EnsureInit;   (* lazy: must run after Cocoa.InitApp, so do it on first Make *)
 BEGIN
   IF gInited THEN RETURN END;
-  font := sf1(ObjC.GetClass("NSFont"), ObjC.Selector("userFixedPitchFontOfSize:"), 13.0);
+  font := [Cls("NSFont") userFixedPitchFontOfSize: 13.0];
   gKind[kDefault] := MakeAttrs(0.0, 0.0, 0.0);
   gKind[kKeyword] := MakeAttrs(0.15, 0.15, 0.8);
   gKind[kComment] := MakeAttrs(0.0, 0.5, 0.0);
@@ -433,38 +435,21 @@ BEGIN
   EnsureInit;
   NEW(store); store.Setup; sid := CAST(ObjC.Id, store);
   NEW(tv); tvId := CAST(ObjC.Id, tv);                  (* an auto-indenting text view *)
-  lm := s0(tvId, ObjC.Selector("layoutManager"));
-  ig := sb(lm, ObjC.Selector("setAllowsNonContiguousLayout:"), TRUE);
-  ig := sp(lm, ObjC.Selector("replaceTextStorage:"), sid);   (* render the rope store *)
-  ig := sf(tvId, ObjC.Selector("setFrame:"), 0.0, 0.0, w, h);
-  ig := sb(tvId, ObjC.Selector("setVerticallyResizable:"), TRUE);
-  ig := sb(tvId, ObjC.Selector("setHorizontallyResizable:"), FALSE);
-  ig := si(tvId, ObjC.Selector("setAutoresizingMask:"), 2);   (* width sizable *)
-  ig := sb(s0(tvId, ObjC.Selector("textContainer")), ObjC.Selector("setWidthTracksTextView:"), TRUE);
-  scroll := s0(ObjC.GetClass("NSScrollView"), ObjC.Selector("alloc"));
-  scroll := sf(scroll, ObjC.Selector("initWithFrame:"), x, y, w, h);
-  ig := sb(scroll, ObjC.Selector("setHasVerticalScroller:"), TRUE);
-  ig := sp(scroll, ObjC.Selector("setDocumentView:"), tvId);
+  lm := [tvId layoutManager];
+  [lm setAllowsNonContiguousLayout: TRUE];
+  [lm replaceTextStorage: sid];   (* render the rope store *)
+  [tvId setFrame: Rect(0.0, 0.0, w, h)];
+  [tvId setVerticallyResizable: TRUE];
+  [tvId setHorizontallyResizable: FALSE];
+  [tvId setAutoresizingMask: 2];   (* width sizable *)
+  [[tvId textContainer] setWidthTracksTextView: TRUE];
+  scroll := [[Cls("NSScrollView") alloc] initWithFrame: Rect(x, y, w, h)];
+  [scroll setHasVerticalScroller: TRUE];
+  [scroll setDocumentView: tvId];
   ObjC.LineNumbers(scroll);                          (* line-number ruler *)
   RETURN scroll
 END Make;
 
 BEGIN
-  s0  := CAST(ObjC.Send0,     ObjC.MsgSendPtr());
-  sp  := CAST(ObjC.SendP,     ObjC.MsgSendPtr());
-  s0i := CAST(ObjC.Send0I,    ObjC.MsgSendPtr());
-  sf1 := CAST(ObjC.SendF,     ObjC.MsgSendPtr());
-  sb  := CAST(ObjC.SendB,     ObjC.MsgSendPtr());
-  sf  := CAST(ObjC.SendFrame, ObjC.MsgSendPtr());
-  si  := CAST(ObjC.SendI,     ObjC.MsgSendPtr());
-  sed := CAST(SendEdited,     ObjC.MsgSendPtr());
-  s2f := CAST(Send2F,         ObjC.MsgSendPtr());
-  sfc := CAST(SendFrameC,     ObjC.MsgSendPtr());
-  spp := CAST(SendPP,         ObjC.MsgSendPtr());
-  s4f := CAST(Send4F,         ObjC.MsgSendPtr());
-  srr := CAST(SendRRet,       ObjC.MsgSendPtr());
-  ssr := CAST(SendSetR,       ObjC.MsgSendPtr());
-  schg := CAST(SendChg,       ObjC.MsgSendPtr());
-  srepl := CAST(SendRepl,     ObjC.MsgSendPtr());
   gInited := FALSE
 END RopeEditor.
