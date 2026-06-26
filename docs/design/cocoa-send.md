@@ -160,12 +160,25 @@ M2-closure → Obj-C block bridge. Larger; design separately.
 
 ## Implementation order
 
-1. **4a** — postfix-on-primary parser refactor (+ test). Independent, quick.
-2. **3a** — cocoa-gen emits the selector DB (JSON).
-3. **1** — the `[recv sel: args]` send expression, default-id result, lowering to
-   the existing `objc_msgSend` IndCall (+ tests).
-4. **3b/3c** — sema loads the DB → typed sends + literal validation diagnostics.
-5. **4b/4c** — bounds-check mode, big-frame warning. **4d** — blocks, later.
+1. **1** — the `[recv sel: args]` send expression, lowering to the existing
+   `objc_msgSend` IndCall. ✅ done.
+2. **3a** — cocoa-gen emits the selector DB. ✅ done
+   (`library/macrtdef/cocoa-selectors.json`, 5554 selectors / 39 classes).
+3. **3b** — sema loads the DB → typed send results (REAL/CARDINAL/… not just id).
+   ✅ done.
+4. **3c** — `--strict` unknown-selector validation (typo detection). ✅ done.
+5. **4a** — postfix-on-primary parser refactor (`CAST(P,x)^.field`). pending.
+6. **4b/4c** — bounds-check mode, big-frame warning. **4d** — blocks. pending.
 
-Each stage is independently shippable; 1 is usable before 3 lands, and gets safer
-and better-typed once it does.
+### Notes from implementation
+- **Arity validation is unnecessary**: a keyword selector's `:` count *always*
+  equals the parsed argument count, so a send can't be built with the wrong arity.
+  The useful check is *unknown-selector* (typo) detection — done, `--strict`-gated
+  so the partial (39-class) DB doesn't add noise to normal builds.
+- **Struct/void returns** (`{`, `v`) still fall back to `id`. Typed struct returns
+  (NSRange/NSRect) need those record types resolvable in sema — a follow-up.
+- The DB is loaded with **no JSON dependency** (hand-parsed fixed-shape lines) and
+  **no sema-entry signature change** (found via the ObjC module's `def_path`).
+
+Each stage is independently shippable; 1 was usable before 3 landed, and got
+better-typed once it did.
