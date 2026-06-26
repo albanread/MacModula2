@@ -11,4 +11,11 @@ IMPORT ObjC;
 
 PROCEDURE Make (x, y, w, h: REAL): ObjC.Id;   (* a rope-backed editor (an NSScrollView) *)
 
+(* Hover support: a callback invoked (on mouseMoved:) with the UTF-16 character
+   index under the pointer. The IDE registers one, debounces it (dwell), maps the
+   index to line/col, and asks the compiler to describe the symbol there. The
+   window must have setAcceptsMouseMovedEvents: TRUE for the editor to get moves. *)
+TYPE HoverProc = PROCEDURE (CARDINAL);
+PROCEDURE SetHoverProc (p: HoverProc);
+
 END RopeEditor.

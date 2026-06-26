@@ -46,10 +46,15 @@ struct ReceiverScan {
     prefix: String,
     /// `true` if there was a `.` immediately before the prefix (member access).
     member: bool,
+    /// Number of trailing `[...]` index operations peeled off the receiver
+    /// (e.g. `arr[i].` -> 1), applied as element-type strips after resolution.
+    index_ops: usize,
 }
 
 /// Scan left from `cursor` (a byte offset) to recover the receiver chain and the
-/// partial word being completed.
+/// partial word being completed. Handles postfix operators on the receiver:
+/// `^` (pointer deref — transparent, since member resolution auto-strips
+/// pointers) and `[...]` (array index — each strips one element type).
 fn scan_receiver(source: &str, cursor: usize) -> ReceiverScan {
     let b = source.as_bytes();
     let cursor = cursor.min(b.len());
@@ -63,20 +68,51 @@ fn scan_receiver(source: &str, cursor: usize) -> ReceiverScan {
 
     // Is there a `.` immediately before the partial word?
     if ps == 0 || b[ps - 1] != b'.' {
-        return ReceiverScan { parts: Vec::new(), prefix, member: false };
+        return ReceiverScan { parts: Vec::new(), prefix, member: false, index_ops: 0 };
     }
 
-    // Collect the maximal run of ident/`.` chars ending at the dot (exclusive of
-    // the dot itself): the receiver designator text, e.g. "Terminal" or "a.b.c".
+    // Peel postfix operators immediately left of the dot.
     let dot = ps - 1;
-    let mut start = dot;
+    let mut i = dot;
+    let mut index_ops = 0usize;
+    loop {
+        if i == 0 {
+            break;
+        }
+        match b[i - 1] {
+            b'^' => i -= 1, // deref: transparent
+            b']' => {
+                // skip the balanced `[...]`
+                let mut depth = 1usize;
+                let mut j = i - 1;
+                while j > 0 && depth > 0 {
+                    j -= 1;
+                    match b[j] {
+                        b']' => depth += 1,
+                        b'[' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                if depth != 0 {
+                    break; // unbalanced — stop here
+                }
+                i = j;
+                index_ops += 1;
+            }
+            _ => break,
+        }
+    }
+
+    // Collect the maximal run of ident/`.` chars ending at `i`: the base
+    // designator text, e.g. "Terminal" or "a.b.c".
+    let mut start = i;
     while start > 0 && (is_ident_byte(b[start - 1]) || b[start - 1] == b'.') {
         start -= 1;
     }
-    let recv = &source[start..dot];
+    let recv = &source[start..i];
     let parts: Vec<String> =
         recv.split('.').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-    ReceiverScan { parts, prefix, member: true }
+    ReceiverScan { parts, prefix, member: true, index_ops }
 }
 
 /// Convert a (1-based line, 0-based column) cursor to a byte offset in `source`.
@@ -134,8 +170,17 @@ pub fn complete_at(
             sc = s.parent;
         }
     } else if let Some(target) = resolve_receiver(sema, scope, &scan.parts) {
+        // Apply any trailing `[...]` index operations (`arr[i].` -> element type).
+        let target = if scan.index_ops > 0 {
+            match target {
+                Target::Type(ty) => strip_indices(sema, ty, scan.index_ops).map(Target::Type),
+                Target::Module(_) => None, // a module can't be indexed
+            }
+        } else {
+            Some(target)
+        };
         match target {
-            Target::Module(sid) => {
+            Some(Target::Module(sid)) => {
                 for sym in sema.scopes.get(sid).iter() {
                     if !sym.exported {
                         continue; // a qualified `Mod.x` sees only Mod's exports
@@ -145,7 +190,8 @@ pub fn complete_at(
                     }
                 }
             }
-            Target::Type(ty) => enumerate_type_members(sema, ty, &prefix_lc, &mut out),
+            Some(Target::Type(ty)) => enumerate_type_members(sema, ty, &prefix_lc, &mut out),
+            None => {}
         }
     }
 
@@ -193,6 +239,33 @@ fn target_of_symbol(kind: &SymbolKind) -> Option<Target> {
         // M2; only value-typed receivers yield members.
         _ => None,
     }
+}
+
+/// Strip `n` array-index operations from `ty` (each yields the element type;
+/// pointers are auto-dereferenced first, e.g. a `POINTER TO ARRAY`). Returns
+/// `None` if `ty` isn't indexable that deep (e.g. a partial index of a
+/// multi-dimensional array, which has no single element type to complete on).
+fn strip_indices(sema: &SemaResult, mut ty: TypeId, mut n: usize) -> Option<TypeId> {
+    while n > 0 {
+        ty = strip_pointers(sema, ty);
+        match sema.types.get(ty) {
+            TypeKind::Array { indices, base } => {
+                let dims = indices.len().max(1);
+                if n >= dims {
+                    n -= dims;
+                    ty = *base;
+                } else {
+                    return None;
+                }
+            }
+            TypeKind::OpenArray { base } => {
+                n -= 1;
+                ty = *base;
+            }
+            _ => return None,
+        }
+    }
+    Some(ty)
 }
 
 /// Follow `POINTER TO` levels to the underlying aggregate.

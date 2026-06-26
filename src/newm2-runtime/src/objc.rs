@@ -154,16 +154,30 @@ pub extern "C-unwind" fn nm2_ide_cursor_pos(
         let utf8 = send_str(s, reg(c"UTF8String".as_ptr()));
         if !utf8.is_null() {
             let src = unsafe { CStr::from_ptr(utf8) }.to_string_lossy().into_owned();
-            // ASCII: byte index == UTF-16 index == the selectedRange location.
-            let upto = (range.location as usize).min(src.len());
+            // `range.location` is a UTF-16 code-unit index (NSString indices are
+            // UTF-16); convert it to a UTF-8 byte position so non-ASCII text before
+            // the cursor doesn't skew the line/column. The driver counts bytes per
+            // line, so the column is reported as a byte offset within the line.
+            let target = range.location as usize;
+            let mut byte_pos = src.len();
+            let mut u16c = 0usize;
+            let mut bp = 0usize;
+            for ch in src.chars() {
+                if u16c >= target {
+                    byte_pos = bp;
+                    break;
+                }
+                u16c += ch.len_utf16();
+                bp += ch.len_utf8();
+            }
             let mut last_nl = 0usize;
-            for (i, b) in src.bytes().take(upto).enumerate() {
+            for (i, b) in src.bytes().take(byte_pos).enumerate() {
                 if b == b'\n' {
                     ln += 1;
                     last_nl = i + 1;
                 }
             }
-            col_v = (upto - last_nl) as i64;
+            col_v = (byte_pos - last_nl) as i64;
         }
     }
     if !line.is_null() {

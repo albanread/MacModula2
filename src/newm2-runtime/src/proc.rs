@@ -132,10 +132,51 @@ pub extern "C-unwind" fn nm2_proc_is_dir(path_ptr: *const u16, path_high: u64) -
     }
 }
 
+/// Locate the `newm2-driver` (compiler) binary to run `complete` against.
+///
+/// `current_exe()` is correct ONLY when the IDE was launched via `newm2-driver
+/// run …` (then the running binary IS the driver). But the IDE also ships as a
+/// standalone AOT executable (`macos_panes_ide.exe`); run that way, `current_exe`
+/// is the GUI itself, which ignores argv and would launch a SECOND IDE instead of
+/// completing — the historical completion hang. So: use `current_exe` only if it
+/// is actually the driver, otherwise fall back to the build-tree driver (the same
+/// `./target/{debug,release}/newm2-driver` the IDE's Build & Run already assumes,
+/// resolved against the current working directory = repo root).
+fn resolve_driver_exe() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    if let Ok(e) = std::env::current_exe() {
+        if e.file_name().and_then(|n| n.to_str()) == Some("newm2-driver") {
+            return e;
+        }
+    }
+    for cand in ["target/debug/newm2-driver", "target/release/newm2-driver"] {
+        let p = PathBuf::from(cand);
+        if p.exists() {
+            return p;
+        }
+    }
+    // Last resort: whatever current_exe was (keeps prior behaviour if the build
+    // tree isn't where we expect).
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("newm2-driver"))
+}
+
 /// `Proc.Complete(path, line, col, VAR out): INTEGER` — run the compiler's
 /// `complete` command on `path` at (1-based `line`, 0-based `col`) and capture
 /// its `name<TAB>kind<TAB>detail` candidate lines into `out`. Returns the number
-/// of candidates (-1 on failure). Uses the running driver binary itself.
+/// of candidates, or a negative sentinel on failure:
+///   -1  could not spawn the child / read its output
+///   -2  the child overran the watchdog and was killed (see below)
+///
+/// Uses the running driver binary itself (`current_exe`).
+///
+/// WATCHDOG: the child is spawned (not `.output()`-blocked) and waited on with a
+/// hard deadline. A healthy completion is ~15ms; if the child ever wedges — a
+/// pathological mid-edit parse, a future remote/daemon path that stalls, or the
+/// degenerate case where `current_exe` is itself a GUI whose event loop never
+/// exits — it is KILLED after `COMPLETE_TIMEOUT` and we return -2 instead of
+/// hanging. The IDE calls this synchronously on the main thread, so an unbounded
+/// wait here would freeze the whole UI and force a hard shutdown; the deadline
+/// makes that impossible. See projects/macide/macos_panes_ide.mod.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_ide_complete(
     path_ptr: *const u16,
@@ -145,28 +186,135 @@ pub extern "C-unwind" fn nm2_ide_complete(
     out_ptr: *mut u16,
     out_high: u64,
 ) -> i64 {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    const COMPLETE_TIMEOUT: Duration = Duration::from_secs(4);
+
     let path = wide_to_string(path_ptr, path_high);
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return -1,
-    };
-    let out = Command::new(&exe)
+    let exe = resolve_driver_exe();
+    let mut child = match Command::new(&exe)
         .arg("complete")
         .arg(&path)
         .arg(line.to_string())
         .arg(col.to_string())
         .arg("--library")
         .arg("library")
-        .output();
-    match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout).into_owned();
-            let count = s.lines().filter(|l| !l.trim().is_empty()).count() as i64;
-            write_wide(out_ptr, out_high, &s);
-            count
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+
+    // Poll for exit up to the deadline; kill the child if it overruns so the
+    // caller (the IDE's main thread) is never blocked indefinitely.
+    let deadline = Instant::now() + COMPLETE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    write_wide(out_ptr, out_high, "");
+                    return -2;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return -1;
+            }
         }
-        Err(_) => -1,
     }
+
+    // Completion output is small (a candidate list), well under the pipe buffer,
+    // so reading it after exit cannot deadlock.
+    let mut s = String::new();
+    if let Some(mut so) = child.stdout.take() {
+        let _ = so.read_to_string(&mut s);
+    }
+    let count = s.lines().filter(|l| !l.trim().is_empty()).count() as i64;
+    write_wide(out_ptr, out_high, &s);
+    count
+}
+
+/// `Proc.Describe(path, line, col, VAR out): INTEGER` — run the compiler's
+/// `describe` command on `path` at (1-based `line`, 0-based `col`) and capture the
+/// context-help **markdown** for the symbol there into `out`. Returns the number
+/// of UTF-16 code units written, `0` when nothing resolves at the cursor, or a
+/// negative sentinel on failure (-1 spawn/read, -2 watchdog kill). Same driver +
+/// watchdog discipline as [`nm2_ide_complete`]; used by the IDE's context help.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_ide_describe(
+    path_ptr: *const u16,
+    path_high: u64,
+    line: i64,
+    col: i64,
+    out_ptr: *mut u16,
+    out_high: u64,
+) -> i64 {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+    let path = wide_to_string(path_ptr, path_high);
+    let exe = resolve_driver_exe();
+    let mut child = match Command::new(&exe)
+        .arg("describe")
+        .arg(&path)
+        .arg(line.to_string())
+        .arg(col.to_string())
+        .arg("--library")
+        .arg("library")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+
+    let deadline = Instant::now() + DESCRIBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    write_wide(out_ptr, out_high, "");
+                    return -2;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return -1;
+            }
+        }
+    }
+
+    let mut s = String::new();
+    if let Some(mut so) = child.stdout.take() {
+        let _ = so.read_to_string(&mut s);
+    }
+    if s.trim().is_empty() {
+        write_wide(out_ptr, out_high, "");
+        return 0;
+    }
+    let len = s.encode_utf16().count() as i64;
+    write_wide(out_ptr, out_high, &s);
+    len
 }
 
 /// `Proc.ReadFile(path, VAR content): INTEGER` — read `path` (UTF-8) into a

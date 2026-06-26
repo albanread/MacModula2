@@ -23,11 +23,17 @@ IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT Proc;
 IMPORT RopeEditor;
+IMPORT MarkView;
+IMPORT Ptcl;
 
 CONST
   MaxFiles = 256;
   LibBase  = 1000;          (* sidebar tags >= LibBase address the library list *)
   RowH     = 27.0;
+  Dot      = 2EH;           (* '.' as a unichar (ORD('.')) — the completion trigger *)
+
+TYPE
+  IntPtr = POINTER TO INTEGER;   (* to write indexOfSelectedItem, an NSInteger out-pointer *)
 
 (* The send machinery is gone: every Cocoa call below uses the `[recv sel: args]`
    message-send syntax, with Rect()/Point() building struct arguments. *)
@@ -41,7 +47,12 @@ VAR
   gTabBtns, gTabCloseBtns: ARRAY [0..63] OF Cocoa.Object;
   gTabBarCount: INTEGER;
   gHelpVisible: BOOLEAN;
-  gHelpText: ARRAY [0..2047] OF CHAR;
+  gHelpText: ARRAY [0..4095] OF CHAR;     (* welcome/help markdown (rendered by MarkView) *)
+  gTopicMd: ARRAY [0..262143] OF CHAR;    (* current topic markdown (docs/m2-guide/*.md) *)
+  gHovIdx: CARDINAL;                      (* char index under the pointer (hover) *)
+  gHovLine, gHovCol: INTEGER;             (* last described hover position *)
+  gHovMoved, gHovPending: BOOLEAN;        (* dwell state for the hover timer *)
+  gCmdBuf: ARRAY [0..8191] OF CHAR;       (* ptcl script read from the command file *)
   helpNL: ARRAY [0..1] OF CHAR;
   gProjDir, gLibDir: ARRAY [0..1023] OF CHAR;
   gProjFiles, gLibFiles: ARRAY [0..MaxFiles-1] OF ARRAY [0..255] OF CHAR;
@@ -52,6 +63,8 @@ VAR
   gReadOnly: ARRAY [0..63] OF BOOLEAN;     (* TRUE for LIBRARY (reference) tabs *)
   gTabCount: INTEGER;
   ctrl: ObjC.Id;
+  gCandBuf: ARRAY [0..65535] OF CHAR;   (* completion candidates, module-level so the *)
+                                        (* delegate never puts a 128 KB array on the stack *)
 
 (* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
    NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
@@ -71,6 +84,10 @@ PROCEDURE Point (px, py: REAL): ObjC.NSPoint;
 VAR p: ObjC.NSPoint;
 BEGIN p.x := px; p.y := py; RETURN p END Point;
 
+PROCEDURE Size (w, h: REAL): ObjC.NSSize;
+VAR s: ObjC.NSSize;
+BEGIN s.width := w; s.height := h; RETURN s END Size;
+
 PROCEDURE Cls (name: ARRAY OF CHAR): ObjC.Id;   (* class object as a send receiver *)
 BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(name)) END Cls;
 
@@ -81,6 +98,28 @@ PROCEDURE MakeView (x, y, w, h: REAL): Cocoa.Object;   (* a plain NSView contain
 BEGIN
   RETURN CAST(Cocoa.Object, [[Cls("NSView") alloc] initWithFrame: Rect(x, y, w, h)])
 END MakeView;
+
+(* A scrollable NSTextView whose text container tracks the pane width, so text
+   wraps to and fills the whole pane (no right-hand gap). Cocoa.MakeEditor omits
+   this; configuring it AFTER setDocumentView collapses the container, so — like
+   RopeEditor.Make — we configure the text view BEFORE attaching it. *)
+PROCEDURE MakeFillEditor (x, y, w, h: REAL): Cocoa.Object;
+VAR tv, scroll, font: ObjC.Id;
+BEGIN
+  tv   := [[Cls("NSTextView") alloc] initWithFrame: Rect(0.0, 0.0, w, h)];
+  font := [Cls("NSFont") userFixedPitchFontOfSize: 13.0];
+  [tv setFont: font];
+  [tv setMinSize: Size(0.0, 0.0)];
+  [tv setMaxSize: Size(1000000.0, 1000000.0)];         (* default max = creation frame, which caps width *)
+  [tv setVerticallyResizable: TRUE];
+  [tv setHorizontallyResizable: FALSE];
+  [tv setAutoresizingMask: 2];                         (* NSViewWidthSizable *)
+  [[tv textContainer] setWidthTracksTextView: TRUE];
+  scroll := [[Cls("NSScrollView") alloc] initWithFrame: Rect(x, y, w, h)];
+  [scroll setHasVerticalScroller: TRUE];
+  [scroll setDocumentView: tv];
+  RETURN CAST(Cocoa.Object, scroll)
+END MakeFillEditor;
 
 (* a horizontally-scrolling container (overlay scroller, so the tab bar slides
    when full without the scroller taking layout space); returns its document. *)
@@ -107,6 +146,21 @@ END MakeSplit;
 PROCEDURE SetDivider (split: Cocoa.Object; index: INTEGER; pos: REAL);
 BEGIN [CAST(ObjC.Id, split) setPosition: pos ofDividerAtIndex: index] END SetDivider;
 
+(* The 3-column sizing policy, re-applied on EVERY layout change (window resize +
+   help toggle): a fixed-width sidebar on the left, a fixed-width help pane
+   anchored on the right (only while visible), and the editor taking the rest.
+   Re-pinning each time stops NSSplitView from redistributing the fixed columns
+   proportionally as the window resizes. *)
+PROCEDURE Relayout;
+VAR rw: REAL;
+BEGIN
+  SetDivider(outerSplit, 0, 160.0);                          (* sidebar: fixed 160 on the left *)
+  IF gHelpVisible THEN
+    rw := [CAST(ObjC.Id, rightStack) frame].size.width;
+    IF rw > 480.0 THEN SetDivider(rightStack, 0, rw - 360.0) END   (* help: fixed 360 on the right *)
+  END
+END Relayout;
+
 (* Show/hide the help pane. When hidden it is REMOVED from rightStack so the
    editor pane fills 100% (no leftover band); when shown it is re-added as the
    rightmost pane (its right edge = the window's right edge) with a draggable
@@ -118,15 +172,15 @@ BEGIN
       Cocoa.AddSubview(rightStack, helpPane);
       [CAST(ObjC.Id, rightStack) adjustSubviews]   (* incorporate the new pane *)
     END;
-    SetDivider(rightStack, 0, 560.0);
     gHelpVisible := TRUE
   ELSE
     IF gHelpVisible THEN
-      Cocoa.RemoveView(helpPane);
+      Cocoa.RemoveView(helpPane);                  (* removed -> editor reclaims its space *)
       [CAST(ObjC.Id, rightStack) adjustSubviews]
     END;
     gHelpVisible := FALSE
-  END
+  END;
+  Relayout
 END HelpShow;
 
 (* an NSScrollView with a vertical scroller and a flipped document NSView. *)
@@ -195,7 +249,7 @@ BEGIN
   END;
   IF count < 0 THEN count := 0 END;
   limit := count; IF limit > MaxFiles - 1 THEN limit := MaxFiles - 1 END;
-  docW := 200.0;
+  docW := 150.0;
   FOR i := 0 TO limit - 1 DO
     IF isLib THEN n := Proc.DirEntry(i, gLibFiles[i]);
                   b := Cocoa.MakeFileButton(2.0, FLOAT(i) * RowH, docW, RowH - 2.0, gLibFiles[i], LibBase + i);
@@ -284,6 +338,255 @@ BEGIN
   HelpShow(TRUE)
 END ShowAssist;
 
+(* Render a help topic from docs/m2-guide/<stem>.md (paths are repo-root relative,
+   matching how the IDE already resolves ./target/debug/newm2-driver and library). *)
+PROCEDURE LoadTopic (stem: ARRAY OF CHAR);
+VAR path: ARRAY [0..511] OF CHAR; n: INTEGER;
+BEGIN
+  Assign("docs/m2-guide/", path); Append(stem, path); Append(".md", path);
+  n := Proc.ReadFile(path, gTopicMd);
+  IF n < 0 THEN
+    Assign("# Topic not found", gTopicMd); Append(helpNL, gTopicMd); Append(helpNL, gTopicMd);
+    Append("Could not read ", gTopicMd); Append(path, gTopicMd)
+  END;
+  MarkView.Render(helpPane, gTopicMd);
+  HelpShow(TRUE)
+END LoadTopic;
+
+(* Follow a help/markdown link: sym:<path>#<line> (definition) | <stem>.md (topic)
+   | http… (external) | <stem> (topic). Topic links wire the whole guide together. *)
+PROCEDURE HelpNavigate (VAR tgt: ARRAY OF CHAR);
+VAR i, n: CARDINAL; stem: ARRAY [0..255] OF CHAR;
+BEGIN
+  n := 0; WHILE tgt[n] # CHR(0) DO INC(n) END;
+  IF (n > 4) & (tgt[0] = 's') & (tgt[1] = 'y') & (tgt[2] = 'm') & (tgt[3] = ':') THEN
+    Cocoa.SetText(status, "Definition link — open the file from the PROJECT/LIBRARY list.")
+  ELSIF (n > 4) & (tgt[0] = 'h') & (tgt[1] = 't') & (tgt[2] = 't') & (tgt[3] = 'p') THEN
+    Cocoa.SetText(status, "External link — open it in a browser.")
+  ELSIF (n > 3) & (tgt[n-3] = '.') & (tgt[n-2] = 'm') & (tgt[n-1] = 'd') THEN
+    i := 0; WHILE i < n - 3 DO stem[i] := tgt[i]; INC(i) END; stem[n-3] := CHR(0);
+    LoadTopic(stem)
+  ELSE
+    LoadTopic(tgt)
+  END
+END HelpNavigate;
+
+(* ---- help search (guide full-text) ---------------------------------------- *)
+
+PROCEDURE LowCh (c: CHAR): CHAR;
+BEGIN IF (c >= 'A') & (c <= 'Z') THEN RETURN CHR(ORD(c) + 32) ELSE RETURN c END END LowCh;
+
+PROCEDURE MatchAt (VAR line: ARRAY OF CHAR; at: CARDINAL; VAR q: ARRAY OF CHAR): BOOLEAN;  (* q at line[at..], case-insensitive *)
+VAR j: CARDINAL;
+BEGIN
+  j := 0;
+  WHILE q[j] # CHR(0) DO
+    IF (line[at+j] = CHR(0)) OR (LowCh(line[at+j]) # LowCh(q[j])) THEN RETURN FALSE END;
+    INC(j)
+  END;
+  RETURN TRUE
+END MatchAt;
+
+PROCEDURE LineMatch (VAR line: ARRAY OF CHAR; VAR q: ARRAY OF CHAR): BOOLEAN;  (* q occurs anywhere in line *)
+VAR i: CARDINAL;
+BEGIN
+  IF q[0] = CHR(0) THEN RETURN FALSE END;
+  i := 0;
+  WHILE line[i] # CHR(0) DO IF MatchAt(line, i, q) THEN RETURN TRUE END; INC(i) END;
+  RETURN FALSE
+END LineMatch;
+
+PROCEDURE NumStr (n: CARDINAL; VAR s: ARRAY OF CHAR);
+VAR d: ARRAY [0..15] OF CHAR; i, j: CARDINAL;
+BEGIN
+  IF n = 0 THEN s[0] := '0'; s[1] := CHR(0); RETURN END;
+  i := 0; WHILE n > 0 DO d[i] := CHR(ORD('0') + (n MOD 10)); n := n DIV 10; INC(i) END;
+  j := 0; WHILE i > 0 DO DEC(i); s[j] := d[i]; INC(j) END; s[j] := CHR(0)
+END NumStr;
+
+(* the i-th guide topic: a friendly label + its docs/m2-guide/<stem>.md stem *)
+PROCEDURE TopicStem (i: CARDINAL; VAR label, stem: ARRAY OF CHAR): BOOLEAN;
+BEGIN
+  CASE i OF
+    0: Assign("Getting Started", label); Assign("getting-started", stem) |
+    1: Assign("Lexical Structure", label); Assign("lexical-structure", stem) |
+    2: Assign("Declarations & Types", label); Assign("declarations-and-types", stem) |
+    3: Assign("Expressions", label); Assign("expressions-and-operators", stem) |
+    4: Assign("Statements", label); Assign("statements-and-control-flow", stem) |
+    5: Assign("Procedures", label); Assign("procedures", stem) |
+    6: Assign("Objects & Classes", label); Assign("objects-and-classes", stem) |
+    7: Assign("Modules", label); Assign("modules-and-compilation", stem) |
+    8: Assign("Standard Environment", label); Assign("standard-environment", stem) |
+    9: Assign("Reference", label); Assign("reference", stem)
+  ELSE RETURN FALSE END;
+  RETURN TRUE
+END TopicStem;
+
+(* Append per-topic guide hits for `q` to `md` as clickable links; returns the
+   total hit count. Uses gTopicMd as a per-file scratch (not held across calls). *)
+PROCEDURE SearchGuide (VAR q: ARRAY OF CHAR; VAR md: ARRAY OF CHAR): INTEGER;
+VAR ti, hits, i, c: CARDINAL; total, n: INTEGER;
+    label, stem, path: ARRAY [0..255] OF CHAR; ln: ARRAY [0..1023] OF CHAR; num: ARRAY [0..15] OF CHAR;
+BEGIN
+  total := 0; ti := 0;
+  WHILE TopicStem(ti, label, stem) DO
+    Assign("docs/m2-guide/", path); Append(stem, path); Append(".md", path);
+    n := Proc.ReadFile(path, gTopicMd);
+    IF n >= 0 THEN
+      hits := 0; i := 0;
+      WHILE gTopicMd[i] # CHR(0) DO
+        c := 0;
+        WHILE (gTopicMd[i] # CHR(0)) & (gTopicMd[i] # CHR(10)) DO IF c < 1023 THEN ln[c] := gTopicMd[i]; INC(c) END; INC(i) END;
+        ln[c] := CHR(0);
+        IF gTopicMd[i] = CHR(10) THEN INC(i) END;
+        IF LineMatch(ln, q) THEN INC(hits) END
+      END;
+      IF hits > 0 THEN
+        Append("- [", md); Append(label, md); Append("](", md); Append(stem, md); Append(".md) — ", md);
+        NumStr(hits, num); Append(num, md); Append(" hit(s)", md); Append(helpNL, md);
+        total := total + VAL(INTEGER, hits)
+      END
+    END;
+    INC(ti)
+  END;
+  RETURN total
+END SearchGuide;
+
+(* ---- hover help (dwell over a symbol -> describe) ------------------------- *)
+
+(* RopeEditor hover callback: just record the char index under the pointer + arm
+   the dwell. Cheap, runs on every mouse move; the timer does the real work. *)
+PROCEDURE HoverMove (idx: CARDINAL);
+BEGIN gHovIdx := idx; gHovMoved := TRUE; gHovPending := TRUE END HoverMove;
+
+(* Map the hovered char index to (line, col) and describe the symbol there,
+   refreshing the help pane — but only when help is already open (so the pane is
+   not yanked in/out as the pointer moves) and the position actually changed. *)
+PROCEDURE HoverDescribe;
+VAR sel, line, col, n: INTEGER; i, idx: CARDINAL; md: ARRAY [0..16383] OF CHAR;
+BEGIN
+  IF NOT gHelpVisible THEN RETURN END;
+  sel := Cocoa.SelectedTab(tabs);
+  IF (sel < 0) OR (gPaths[sel][0] = CHR(0)) THEN RETURN END;
+  idx := gHovIdx;
+  Cocoa.EditorText(gEditors[sel], gTopicMd);             (* whole doc into scratch *)
+  line := 1; col := 0; i := 0;
+  WHILE (i < idx) & (gTopicMd[i] # CHR(0)) DO
+    IF gTopicMd[i] = CHR(10) THEN INC(line); col := 0 ELSE INC(col) END;
+    INC(i)
+  END;
+  IF (line = gHovLine) & (col = gHovCol) THEN RETURN END; (* same spot as last time *)
+  gHovLine := line; gHovCol := col;
+  n := Proc.Describe(gPaths[sel], line, col, md);
+  IF n > 0 THEN MarkView.Render(helpPane, md) END
+END HoverDescribe;
+
+(* NSTimer block (~0.35s): describe once the pointer settles (one tick with no
+   move) on a fresh position — a debounced dwell, no per-move compiler calls. *)
+PROCEDURE HoverTick (block, timer: ObjC.Id);
+BEGIN
+  IF gHovMoved THEN gHovMoved := FALSE
+  ELSIF gHovPending THEN gHovPending := FALSE; HoverDescribe END
+END HoverTick;
+
+(* ---- shared actions (used by both menu handlers and ptcl verbs) ----------- *)
+
+PROCEDURE DescribeCursor;   (* describe the symbol at the active editor's cursor *)
+VAR sel, line, col, n: INTEGER; md: ARRAY [0..16383] OF CHAR;
+BEGIN
+  sel := Cocoa.SelectedTab(tabs);
+  IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
+  IF gPaths[sel][0] = CHR(0) THEN Cocoa.SetText(status, "Save the file first to enable help."); RETURN END;
+  Cocoa.EditorCursor(gEditors[sel], line, col);
+  n := Proc.Describe(gPaths[sel], line, col, md);
+  IF n <= 0 THEN Cocoa.SetText(status, "No help for the symbol at the cursor."); RETURN END;
+  MarkView.Render(helpPane, md); HelpShow(TRUE);
+  Cocoa.SetText(status, "Context help — describe at cursor (F1 to hide).")
+END DescribeCursor;
+
+PROCEDURE RunSearch (VAR q: ARRAY OF CHAR);   (* unified guide + Cocoa search into the help pane *)
+VAR res: ARRAY [0..16383] OF CHAR; md: ARRAY [0..65535] OF CHAR; n, gc: INTEGER;
+BEGIN
+  IF q[0] = CHR(0) THEN Cocoa.SetText(status, "Type a search term, then Enter."); RETURN END;
+  Assign("# Search: ", md); Append(q, md); Append(helpNL, md); Append(helpNL, md);
+  Append("## Guide", md); Append(helpNL, md);
+  gc := SearchGuide(q, md);
+  IF gc <= 0 THEN Append("_no guide matches_", md); Append(helpNL, md) END;
+  Append(helpNL, md); Append("## Cocoa classes", md); Append(helpNL, md);
+  n := ObjC.FindClasses(q, res);
+  IF n > 0 THEN Append("```", md); Append(helpNL, md); Append(res, md); Append(helpNL, md); Append("```", md)
+  ELSE Append("_no class matches_", md) END;
+  MarkView.Render(helpPane, md); HelpShow(TRUE);
+  Cocoa.SetText(status, "Search results in the help pane — click a topic to open it.")
+END RunSearch;
+
+(* ---- ptcl automation: register IDE actions as verbs; a timer runs scripts
+   left in /tmp/macm2.ptcl (e.g. `echo 'topics; snap /tmp/x.png' > /tmp/macm2.ptcl`).
+   Uses the built-in Ptcl interpreter (library/sharedmod/Ptcl.mod). -------------- *)
+
+PROCEDURE VHelp (): BOOLEAN;
+BEGIN MarkView.Render(helpPane, gHelpText); HelpShow(TRUE); RETURN TRUE END VHelp;
+
+PROCEDURE VTopics (): BOOLEAN;
+BEGIN LoadTopic("index"); RETURN TRUE END VTopics;
+
+PROCEDURE VDescribe (): BOOLEAN;
+BEGIN DescribeCursor; RETURN TRUE END VDescribe;
+
+PROCEDURE VSearch (): BOOLEAN;
+VAR q: ARRAY [0..1023] OF CHAR;
+BEGIN Ptcl.Arg(1, q); RunSearch(q); RETURN TRUE END VSearch;
+
+PROCEDURE VTopic (): BOOLEAN;
+VAR stem: ARRAY [0..255] OF CHAR;
+BEGIN Ptcl.Arg(1, stem); LoadTopic(stem); RETURN TRUE END VTopic;
+
+PROCEDURE VSnap (): BOOLEAN;
+VAR path: ARRAY [0..511] OF CHAR;
+BEGIN Ptcl.Arg(1, path); RETURN Cocoa.Snapshot(content, path) END VSnap;
+
+PROCEDURE VResize (): BOOLEAN;   (* resize the window content (drives the resize policy) *)
+BEGIN [CAST(ObjC.Id, win) setContentSize: Size(FLOAT(Ptcl.ArgInt(1)), FLOAT(Ptcl.ArgInt(2)))]; RETURN TRUE END VResize;
+
+PROCEDURE VOpen (): BOOLEAN;     (* open a file path in a new editor tab *)
+VAR path: ARRAY [0..1023] OF CHAR;
+BEGIN Ptcl.Arg(1, path); OpenPath(path, FALSE); RETURN TRUE END VOpen;
+
+PROCEDURE VDescribeAt (): BOOLEAN;   (* describe the symbol at (line,col) of the active tab -> help pane.
+                                        This is exactly the hover payload (idx -> describe -> render). *)
+VAR sel, n: INTEGER; md: ARRAY [0..16383] OF CHAR;
+BEGIN
+  sel := Cocoa.SelectedTab(tabs);
+  IF (sel < 0) OR (gPaths[sel][0] = CHR(0)) THEN RETURN FALSE END;
+  n := Proc.Describe(gPaths[sel], Ptcl.ArgInt(1), Ptcl.ArgInt(2), md);
+  IF n > 0 THEN MarkView.Render(helpPane, md); HelpShow(TRUE) END;
+  RETURN n > 0
+END VDescribeAt;
+
+PROCEDURE RegisterCmds;
+BEGIN
+  Ptcl.Register("help", VHelp);
+  Ptcl.Register("topics", VTopics);
+  Ptcl.Register("topic", VTopic);
+  Ptcl.Register("describe", VDescribe);
+  Ptcl.Register("search", VSearch);
+  Ptcl.Register("snap", VSnap);
+  Ptcl.Register("resize", VResize);
+  Ptcl.Register("open", VOpen);
+  Ptcl.Register("describeat", VDescribeAt)
+END RegisterCmds;
+
+(* poll /tmp/macm2.ptcl on the run loop; run + consume any script left there *)
+PROCEDURE CmdTick (block, timer: ObjC.Id);
+VAR n, ig: INTEGER; out: ARRAY [0..1023] OF CHAR; ok: BOOLEAN;
+BEGIN
+  IF Proc.FileSize("/tmp/macm2.ptcl") > 0 THEN
+    n  := Proc.ReadFile("/tmp/macm2.ptcl", gCmdBuf);
+    ig := Proc.WriteFile("/tmp/macm2.ptcl", "");   (* consume so it runs once *)
+    IF n > 0 THEN ok := Ptcl.Eval(gCmdBuf, out) END
+  END
+END CmdTick;
+
 (* Serialize an editor straight from its rope to disk.  The text lives in the
    editor's NSTextStorage (the rope); `[[ed documentView] string]` is the whole
    document as an NSString, which writes ITSELF to the file.  No fixed M2 buffer
@@ -335,8 +638,46 @@ BEGIN
   name[j] := CHR(0)
 END Basename;
 
+(* Load `full` into a new editor tab (read-only if isLib). Switches to an
+   existing tab if the file is already open. The shared core of OpenDoc and the
+   ptcl `open` verb. *)
+PROCEDURE OpenPath (full: ARRAY OF CHAR; isLib: BOOLEAN);
+VAR text: ARRAY [0..262143] OF CHAR; ed, it: Cocoa.Object; n, i: INTEGER; tv: ObjC.Id;
+BEGIN
+  (* already open? switch to its tab instead of loading a second copy *)
+  i := 0;
+  WHILE i < gTabCount DO
+    IF Equal(gPaths[i], full) THEN
+      [CAST(ObjC.Id, tabs) selectTabViewItemAtIndex: i];
+      RebuildTabBar; Cocoa.SetText(status, "Already open — switched to its tab."); RETURN
+    END;
+    INC(i)
+  END;
+  n := Proc.ReadFile(full, text);
+  IF n < 0 THEN RETURN END;
+  (* Check capacity BEFORE adding the tab: the bookkeeping arrays are [0..63], so
+     a 65th tab would otherwise be added to the NSTabView with no backing entry,
+     desyncing the UI from gEditors/gPaths/gReadOnly. *)
+  IF gTabCount > 63 THEN Cocoa.SetText(status, "Too many tabs open (max 64) — close one first."); RETURN END;
+  ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));  (* rope-backed editor *)
+  Cocoa.SetEditorText(ed, text);                 (* colours itself; no HighlightEditor needed *)
+  tv := [CAST(ObjC.Id, ed) documentView];
+  [tv setAllowsUndo: TRUE];       (* ⌘Z / ⌘⇧Z *)
+  [tv setUsesFindBar: TRUE];      (* ⌘F find bar *)
+  [tv setDelegate: ctrl];         (* autosave on edit + cursor status on selection *)
+  IF isLib THEN
+    [tv setEditable: FALSE];
+    Cocoa.SetText(status, "Opened (read-only reference).")
+  END;
+  it := Cocoa.AddTab(tabs, full, ed);
+  gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); gReadOnly[gTabCount] := isLib;
+  Basename(full, gTabNames[gTabCount]);
+  INC(gTabCount);
+  RebuildTabBar; ShowTabStatus
+END OpenPath;
+
 PROCEDURE OpenDoc (tag: INTEGER);
-VAR full, text: ARRAY [0..262143] OF CHAR; ed, it: Cocoa.Object; n, idx, i: INTEGER; isLib: BOOLEAN; tv: ObjC.Id;
+VAR full: ARRAY [0..262143] OF CHAR; idx: INTEGER; isLib: BOOLEAN;
 BEGIN
   isLib := tag >= LibBase;
   IF isLib THEN idx := tag - LibBase;
@@ -350,38 +691,54 @@ BEGIN
     IF isLib THEN Assign(full, gLibDir) ELSE Assign(full, gProjDir) END;
     RebuildList(isLib); RETURN
   END;
-  (* already open? switch to its tab instead of loading a second copy *)
-  i := 0;
-  WHILE i < gTabCount DO
-    IF Equal(gPaths[i], full) THEN
-      [CAST(ObjC.Id, tabs) selectTabViewItemAtIndex: i];
-      RebuildTabBar; Cocoa.SetText(status, "Already open — switched to its tab."); RETURN
-    END;
-    INC(i)
-  END;
-  n := Proc.ReadFile(full, text);
-  IF n < 0 THEN RETURN END;
-  ed := CAST(Cocoa.Object, RopeEditor.Make(0.0, 0.0, 760.0, 420.0));  (* rope-backed editor *)
-  Cocoa.SetEditorText(ed, text);                 (* colours itself; no HighlightEditor needed *)
-  tv := [CAST(ObjC.Id, ed) documentView];
-  [tv setAllowsUndo: TRUE];       (* ⌘Z / ⌘⇧Z *)
-  [tv setUsesFindBar: TRUE];      (* ⌘F find bar *)
-  (* delegate set for both kinds: autosave on edit + cursor status on selection.
-     LIBRARY files open read-only — the library is reference from this IDE. *)
-  [tv setDelegate: ctrl];
-  IF isLib THEN
-    [tv setEditable: FALSE];
-    Cocoa.SetText(status, "Opened (read-only reference).")
-  END;
-  it := Cocoa.AddTab(tabs, full, ed);
-  IF gTabCount <= 63 THEN
-    gEditors[gTabCount] := ed; Assign(full, gPaths[gTabCount]); gReadOnly[gTabCount] := isLib;
-    IF isLib THEN Assign(gLibFiles[idx], gTabNames[gTabCount])
-    ELSE Assign(gProjFiles[idx], gTabNames[gTabCount]) END;
-    INC(gTabCount);
-    RebuildTabBar; ShowTabStatus
-  END
+  OpenPath(full, isLib)
 END OpenDoc;
+
+(* The NSTextView completion data source, installed on the controller's class at
+   startup (ObjC.AddMethod) for the selector
+
+     textView:completions:forPartialWordRange:indexOfSelectedItem:
+
+   which returns an NSArray of candidate strings and takes the text view, the
+   default word list, an NSRange (the partial word) and an NSInteger out-pointer
+   for the preselected row.  AppKit calls this from [tv complete: nil]; we return
+   the candidate names and it draws/narrows the popup and inserts the chosen word
+   itself.  It is a plain module-level procedure (NOT a class method) so its
+   parameters map straight onto the Obj-C call registers: self, _cmd, then the
+   four real arguments — and the 16-byte NSRange is taken as its two CARDINAL
+   halves (rangeLoc/rangeLen) rather than a by-value record, so the ABI matches
+   exactly and nothing is misread.
+
+   It runs synchronously on the main thread; Proc.Complete is ~15 ms and, thanks
+   to its runtime watchdog, can never block the UI even if the compiler wedges. *)
+PROCEDURE Completions (self, cmd, tv, words: ObjC.Id;
+                       rangeLoc, rangeLen: CARDINAL; idx: ObjC.Id): ObjC.Id;
+VAR arr: ObjC.Id; sel, line, col, n, i, j: INTEGER; name: ARRAY [0..255] OF CHAR; ip: IntPtr;
+BEGIN
+  arr := [Cls("NSMutableArray") array];     (* the list AppKit will display *)
+  IF idx # NIL THEN ip := CAST(IntPtr, idx); ip^ := 0 END;   (* preselect the first row *)
+  sel := Cocoa.SelectedTab(tabs);
+  IF (sel < 0) OR (gPaths[sel][0] = CHR(0)) THEN
+    Cocoa.SetText(status, "no completion"); RETURN arr
+  END;
+  Cocoa.EditorCursor(gEditors[sel], line, col);              (* 1-based line / 0-based col *)
+  n := Proc.Complete(gPaths[sel], line, col, gCandBuf);
+  IF n <= 0 THEN Cocoa.SetText(status, "no completion"); RETURN arr END;
+  (* Each line is name<TAB>kind<TAB>detail; we feed AppKit just the names. *)
+  i := 0;
+  WHILE gCandBuf[i] # CHR(0) DO
+    j := 0;
+    WHILE (gCandBuf[i] # CHR(0)) & (gCandBuf[i] # CHR(9)) & (gCandBuf[i] # CHR(10)) DO
+      IF j <= 254 THEN name[j] := gCandBuf[i]; INC(j) END; INC(i)
+    END;
+    name[j] := CHR(0);
+    WHILE (gCandBuf[i] # CHR(0)) & (gCandBuf[i] # CHR(10)) DO INC(i) END;   (* skip kind/detail *)
+    IF gCandBuf[i] = CHR(10) THEN INC(i) END;
+    IF name[0] # CHR(0) THEN [arr addObject: ObjC.NSString(name)] END
+  END;
+  Cocoa.SetText(status, "Completions — Tab/Enter to insert.");
+  RETURN arr
+END Completions;
 
 (* The IDE controller — a real NSObject; its methods are the toolbar actions. *)
 CLASS IDE;
@@ -437,8 +794,10 @@ CLASS IDE;
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
     Cocoa.SetText(status, "Building…");
     IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
-    Assign("./target/debug/newm2-driver run --library library ", cmd);
-    Append(gPaths[sel], cmd); Append(" 2>&1", cmd);
+    (* single-quote the path: it goes through /bin/sh -c, so a space or shell
+       metacharacter in the path would otherwise split the command or inject. *)
+    Assign("./target/debug/newm2-driver run --library library '", cmd);
+    Append(gPaths[sel], cmd); Append("' 2>&1", cmd);
     rc := Proc.RunCapture(cmd, out);
     Cocoa.SetEditorText(output, out);
     marked := Cocoa.MarkErrors(gEditors[sel], out);
@@ -457,36 +816,48 @@ CLASS IDE;
   END OnHelp;
   PROCEDURE OnHome (sender: ObjC.Id);             (* "onHome:" — reveal help, restoring its text *)
   BEGIN
-    Cocoa.SetEditorText(helpPane, gHelpText);
+    MarkView.Render(helpPane, gHelpText);
     HelpShow(TRUE);
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
-  PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘/ : completions at the cursor *)
-  (* Completion is READ-ONLY and creates NO transient buffer: the editor's rope
-     is already on disk at gPaths[sel] (autosave persisted it rope->disk on the
-     last edit), so just complete against the file itself. *)
-  VAR sel, line, col, n: INTEGER; cand: ARRAY [0..65535] OF CHAR;
+  PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘I : completion popup at the cursor *)
+  (* Explicit trigger for the SAME native popup that typing '.' raises: ask the
+     focused NSTextView to `complete:`, which calls our Completions data source
+     and draws the narrowing list inline (Tab/Enter inserts).  No pane, no buffer,
+     so the old crash path is gone. *)
+  VAR sel: INTEGER; tv: ObjC.Id;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
     IF gPaths[sel][0] = CHR(0) THEN Cocoa.SetText(status, "Save the file first to enable completions."); RETURN END;
-    Cocoa.EditorCursor(gEditors[sel], line, col);
-    n := Proc.Complete(gPaths[sel], line, col, cand);
-    ShowAssist("Completions at cursor (name / kind / detail):", cand);
-    IF n > 0 THEN Cocoa.SetText(status, "Completions in the right pane.")
-    ELSE Cocoa.SetText(status, "No completions at this position.") END
+    tv := [CAST(ObjC.Id, gEditors[sel]) documentView];
+    [tv complete: NIL]
   END OnComplete;
-  PROCEDURE OnCocoaSearch (sender: ObjC.Id);      (* "onCocoaSearch:" — search the Obj-C runtime *)
-  VAR q, res: ARRAY [0..16383] OF CHAR; n: INTEGER; sv: ObjC.Id; title: ARRAY [0..511] OF CHAR;
+  PROCEDURE OnDescribe (sender: ObjC.Id);         (* "onDescribe:" — context help for the symbol at the cursor *)
+  (* Ask the compiler's `describe` engine for the symbol under the cursor and show
+     its real signature / module / siblings in the help pane (vs. the static blob).
+     Saved-file only: describe reads from disk, which autosave keeps current. *)
+  BEGIN DescribeCursor END OnDescribe;
+  PROCEDURE OnTopics (sender: ObjC.Id);           (* "onTopics:" — open the guide index in the help pane *)
+  BEGIN LoadTopic("index"); Cocoa.SetText(status, "Help topics — click a link to navigate.") END OnTopics;
+  PROCEDURE OnLink (tv, link: ObjC.Id; idx: CARDINAL): BOOLEAN <* selector "textView:clickedOnLink:atIndex:" *>;
+  (* NSTextView delegate: a click on a rendered [text](target) link. The NSLink
+     value is the target string MarkView stored; route it through HelpNavigate. *)
+  VAR tgt: ARRAY [0..1023] OF CHAR; ig: INTEGER;
+  BEGIN
+    ig := ObjC.GetString(link, tgt);
+    HelpNavigate(tgt);
+    RETURN TRUE
+  END OnLink;
+  PROCEDURE OnCocoaSearch (sender: ObjC.Id);      (* "onCocoaSearch:" — unified help + Cocoa search *)
+  (* Search both the guide docs (docs/m2-guide/*.md) and the Obj-C class list,
+     and render the combined results as markdown in the help pane; guide hits are
+     clickable topic links (OnLink -> HelpNavigate -> LoadTopic). *)
+  VAR q: ARRAY [0..16383] OF CHAR; n: INTEGER; sv: ObjC.Id;
   BEGIN
     sv := [CAST(ObjC.Id, searchField) stringValue];
     n := ObjC.GetString(sv, q);
-    IF q[0] = CHR(0) THEN Cocoa.SetText(status, "Type a Cocoa class name, then Enter."); RETURN END;
-    n := ObjC.FindClasses(q, res);
-    Assign("Cocoa classes matching '", title); Append(q, title); Append("'   (Name : Superclass):", title);
-    ShowAssist(title, res);
-    IF n > 0 THEN Cocoa.SetText(status, "Cocoa search — results in the right pane.")
-    ELSE Cocoa.SetText(status, "No Cocoa class matches that.") END
+    RunSearch(q)
   END OnCocoaSearch;
   PROCEDURE OnClose (sender: ObjC.Id);            (* "onClose:" — close the active tab (⌘W) *)
   BEGIN CloseTabAt(Cocoa.SelectedTab(tabs)) END OnClose;
@@ -499,15 +870,32 @@ CLASS IDE;
   END OnSelectTab;
   PROCEDURE TextViewDidChangeSelection (note: ObjC.Id) <* selector "textViewDidChangeSelection:" *>;
   BEGIN ShowTabStatus END TextViewDidChangeSelection;
-  PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave *)
+  PROCEDURE WindowDidResize (note: ObjC.Id) <* selector "windowDidResize:" *>;   (* keep the 3-column policy on resize *)
+  BEGIN Relayout END WindowDidResize;
+  PROCEDURE TextDidChange (note: ObjC.Id);        (* NSText delegate "textDidChange:" — autosave + completion trigger *)
   (* Autosave is just another rope-to-disk write — no buffer, no truncation,
-     whatever the document size. *)
-  VAR sel: INTEGER;
+     whatever the document size.  Then, if the character just typed is a '.', raise
+     the completion popup: we read the char immediately left of the insertion point
+     and, on a dot, ask the text view to `complete:` on the NEXT run-loop turn
+     (afterDelay: 0) — deferring past this edit notification is what AppKit wants,
+     and it keeps us off any re-entrant edit.  Typing more letters narrows the list
+     (the char before the caret is then a letter, so this does not re-fire). *)
+  VAR sel: INTEGER; tv, str: ObjC.Id; r: ObjC.NSRange; ch: CARDINAL;
   BEGIN
     sel := Cocoa.SelectedTab(tabs);
     IF sel < 0 THEN RETURN END;
-    IF gPaths[sel][0] = CHR(0) THEN RETURN END;     (* untitled: no autosave until named *)
-    IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Autosaved.") END
+    IF gPaths[sel][0] # CHR(0) THEN                 (* untitled: no autosave until named *)
+      IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Autosaved.") END
+    END;
+    tv := [note object];                            (* the NSTextView that changed *)
+    r  := [tv selectedRange];
+    IF r.location > 0 THEN
+      str := [tv string];
+      ch  := [str characterAtIndex: r.location - 1];
+      IF ch = Dot THEN
+        [tv performSelector: ObjC.Selector("complete:") withObject: NIL afterDelay: 0.0]
+      END
+    END
   END TextDidChange;
 END IDE;
 
@@ -527,6 +915,7 @@ END Tick;
 
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id;
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
+    okAdd: BOOLEAN;
 BEGIN
   gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
   Assign("library/pimmod", gProjDir);
@@ -534,8 +923,18 @@ BEGIN
 
   Cocoa.InitApp;
   win := Cocoa.MakeWindow(1100.0, 640.0, "MacM2 IDE");
+  [CAST(ObjC.Id, win) setDelegate: ctrl];                  (* windowDidResize: -> Relayout *)
+  [CAST(ObjC.Id, win) setContentMinSize: Size(1000.0, 560.0)];   (* keep sidebar+editor+help all usable *)
   content := Cocoa.ContentView(win);
   NEW(ide); ctrl := CAST(ObjC.Id, ide);
+  (* Install the completion data source on the controller's Obj-C class.  Its
+     ABI (an NSRange split into two CARDINALs, an NSInteger* out-param, an NSArray
+     return) does not fit the `<* cocoa *>` method shape, so it is a hand-written
+     IMP added at runtime. Encoding: @ ret, @: self/_cmd, @@ tv/words, QQ the
+     NSRange halves, ^q the NSInteger*. *)
+  okAdd := ObjC.AddMethod(CAST(ObjC.Class, [ctrl class]),
+                          ObjC.Selector("textView:completions:forPartialWordRange:indexOfSelectedItem:"),
+                          CAST(ADDRESS, Completions), "@@:@@QQ^q");
 
   Cocoa.AddSubview(content, CtrlButton(8.0,   604.0, 56.0,  "New", "onNew:", 8));
   Cocoa.AddSubview(content, CtrlButton(68.0,  604.0, 64.0,  "Open", "onOpen:", 8));
@@ -557,7 +956,7 @@ BEGIN
   [CAST(ObjC.Id, searchField) setFrame: Rect(700.0, 605.0, 280.0, 26.0)];
   [CAST(ObjC.Id, searchField) setTarget: ctrl];
   [CAST(ObjC.Id, searchField) setAction: ObjC.Selector("onCocoaSearch:")];
-  [[CAST(ObjC.Id, searchField) cell] setPlaceholderString: ObjC.NSString("Find Cocoa class…")];
+  [[CAST(ObjC.Id, searchField) cell] setPlaceholderString: ObjC.NSString("Search help & Cocoa…")];
   [CAST(ObjC.Id, searchField) setAutoresizingMask: 9];  (* stick top-right *)
   Cocoa.AddSubview(content, searchField);
   (* Home button — above the help pane (top-right); reveals the help/welcome pane *)
@@ -594,32 +993,47 @@ BEGIN
   Cocoa.AddSubview(editorArea, tabBar);
   gTabBarCount := 0;
 
-  output := Cocoa.MakeEditor(0.0, 0.0, 860.0, 200.0);
+  output := MakeFillEditor(0.0, 0.0, 860.0, 200.0);
   Cocoa.SetEditorText(output, "(build output appears here — Build & Run marks error lines red)");
   Cocoa.AddSubview(innerSplit, editorArea);
   Cocoa.AddSubview(innerSplit, output);
 
   (* third pane: help (F1 toggles it) — collapsed initially *)
-  helpPane := Cocoa.MakeEditor(0.0, 0.0, 320.0, 596.0);
+  helpPane := MakeFillEditor(0.0, 0.0, 320.0, 596.0);
   gHelpText[0] := CHR(0); helpNL[0] := CHR(10); helpNL[1] := CHR(0);
-  HL("MacM2 IDE — Help   (F1 to hide)");
+  HL("# MacM2 IDE Help");
+  HL("Press **F1** to toggle this pane.  **Cmd-J** describes the symbol at the cursor.");
   HL("");
-  HL("PROJECT (top-left): files in your project folder — click to open a tab.");
-  HL("LIBRARY (bottom-left): the standard library .def modules — click to read.");
+  HL("## Panes");
+  HL("- **PROJECT** (top-left): files in your project folder — click to open a tab.");
+  HL("- **LIBRARY** (bottom-left): the standard library `.def` modules — click to read.");
   HL("");
-  HL("Menu / Toolbar:");
-  HL("  Open  (Cmd-O)   choose a project folder");
-  HL("  Save  (Cmd-S)   write the active tab to disk");
-  HL("  Build & Run (Cmd-R)   compile + run the active tab; errors marked red");
-  HL("  Help  (F1)   toggle this pane");
+  HL("## Shortcuts");
+  HL("- **Open** `Cmd-O` — choose a project folder");
+  HL("- **Save** `Cmd-S` — write the active tab to disk");
+  HL("- **Build & Run** `Cmd-R` — compile + run; errors marked red");
+  HL("- **Complete** `Cmd-I` — autocomplete at the cursor");
+  HL("- **Describe** `Cmd-J` — context help for the symbol at the cursor");
   HL("");
-  HL("Modula-2 quick start:");
-  HL("  MODULE Hello;");
-  HL("  FROM STextIO IMPORT WriteString, WriteLn;");
-  HL('  BEGIN WriteString("hi"); WriteLn END Hello.');
+  HL("## Topics");
+  HL("- [Getting Started](getting-started.md)");
+  HL("- [Declarations & Types](declarations-and-types.md)");
+  HL("- [Expressions](expressions-and-operators.md)");
+  HL("- [Statements](statements-and-control-flow.md)");
+  HL("- [Procedures](procedures.md)");
+  HL("- [Objects & Classes](objects-and-classes.md)");
+  HL("- [Modules](modules-and-compilation.md)");
+  HL("- [Standard Environment](standard-environment.md)");
+  HL("- [Reference](reference.md)");
   HL("");
-  HL("Drag the pane dividers to resize.  Cmd-Q quits.");
-  Cocoa.SetEditorText(helpPane, gHelpText);
+  HL("## Quick start");
+  HL("```");
+  HL("MODULE Hello;");
+  HL("FROM STextIO IMPORT WriteString, WriteLn;");
+  HL('BEGIN WriteString("hi"); WriteLn END Hello.');
+  HL("```");
+  [[CAST(ObjC.Id, helpPane) documentView] setDelegate: ctrl];   (* link clicks -> OnLink *)
+  MarkView.Render(helpPane, gHelpText);
   (* the help / Assist pane joins rightStack (as the rightmost pane) only when
      shown — see HelpShow; hidden, it is removed so the editor fills with no band *)
   gHelpVisible := FALSE;
@@ -664,6 +1078,8 @@ BEGIN
   mHelp := AddMenu(menuBar, "Help");
   f1key[0] := CHR(0F704H); f1key[1] := CHR(0);            (* NSF1FunctionKey *)
   AddItem(mHelp, ctrl, "Show / Hide Help", "onHelp:", f1key, 800000H);  (* function-key modifier *)
+  AddItem(mHelp, ctrl, "Describe Symbol at Cursor", "onDescribe:", "j", 0);  (* ⌘J context help *)
+  AddItem(mHelp, ctrl, "Help Topics", "onTopics:", "y", 0);                  (* ⌘Y guide index *)
   [appObj setMainMenu: menuBar];
 
   Cocoa.SetListAction(OpenDoc);
@@ -672,9 +1088,9 @@ BEGIN
   IF gProjCount > 0 THEN OpenDoc(0) END;
 
   Cocoa.ShowWindow(win);                 (* show first so the splits have laid out *)
-  SetDivider(outerSplit, 0, 210.0);
-  SetDivider(innerSplit, 0, 390.0);
-  SetDivider(sidebar, 0, 360.0);
+  SetDivider(innerSplit, 0, 390.0);      (* editor over output (height) *)
+  SetDivider(sidebar, 0, 360.0);         (* project over library (height) *)
+  Relayout;                              (* apply the 3-column width policy (sidebar 160; help when shown) *)
   gHelpVisible := FALSE;                  (* help starts out of the split (editor fills) *)
   Cocoa.SetText(status, "Ready — PROJECT (top) and LIBRARY (bottom). F1 = help.");
 
@@ -687,6 +1103,22 @@ BEGIN
                   repeats: TRUE
                   block: ObjC.MakeBlock(CAST(ADDRESS, Tick))];
   Tick(NIL, NIL);                        (* show the time immediately *)
+
+  (* Hover help: the window generates mouseMoved: events to the focused editor,
+     which reports the char index under the pointer; a 0.35s dwell timer then
+     describes that symbol into the help pane (when it is open). *)
+  gHovMoved := FALSE; gHovPending := FALSE; gHovIdx := 0; gHovLine := 0; gHovCol := 0;
+  RopeEditor.SetHoverProc(HoverMove);
+  [CAST(ObjC.Id, win) setAcceptsMouseMovedEvents: TRUE];
+  [Cls("NSTimer") scheduledTimerWithTimeInterval: 0.35
+                  repeats: TRUE
+                  block: ObjC.MakeBlock(CAST(ADDRESS, HoverTick))];
+
+  (* ptcl automation channel: register IDE verbs and poll /tmp/macm2.ptcl. *)
+  RegisterCmds;
+  [Cls("NSTimer") scheduledTimerWithTimeInterval: 0.25
+                  repeats: TRUE
+                  block: ObjC.MakeBlock(CAST(ADDRESS, CmdTick))];
 
   Cocoa.RunApp;
   WriteString("MacM2 IDE closed."); WriteLn

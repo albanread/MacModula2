@@ -43,4 +43,10 @@ PROCEDURE IsDir (path: ARRAY OF CHAR): BOOLEAN;
 PROCEDURE Complete (path: ARRAY OF CHAR; line, col: INTEGER;
                     VAR out: ARRAY OF CHAR): INTEGER;
 
+(* Run the compiler's `describe` command on `path` at (1-based line, 0-based col)
+   and capture the context-help markdown for the symbol there into `out`. Returns
+   the number of code units, 0 when nothing resolves, or a negative on failure. *)
+PROCEDURE Describe (path: ARRAY OF CHAR; line, col: INTEGER;
+                    VAR out: ARRAY OF CHAR): INTEGER;
+
 END Proc.

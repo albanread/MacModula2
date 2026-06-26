@@ -153,6 +153,10 @@ name = "new-asm"
 version = "0.1.0"
 
 [[package]]
+name = "newm2-cocoa-gen"
+version = "0.0.0"
+
+[[package]]
 name = "newm2-compat-tests"
 version = "0.0.0"
 dependencies = [

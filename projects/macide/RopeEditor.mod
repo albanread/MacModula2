@@ -27,6 +27,8 @@ VAR
   gEdBuf, gEdOut: ARRAY [0..262143] OF CHAR;       (* scratch for indent/comment ops *)
   gNewRuns, gScratch: PRuns;
   gInited: BOOLEAN;
+  gHoverProc: HoverProc;        (* hover callback: char index under the pointer *)
+  gHoverSet: BOOLEAN;
 
 (* NSRange / NSRect values for struct-typed send args (selectedRange, edited:range:,
    setFrame:); the send returns NSRange as a real struct too — see Sel below. *)
@@ -404,7 +406,51 @@ CLASS RopeTextView;
     Replace(me, ls, ne-ls, gEdOut);
     [me setSelectedRange: Range(ls + (nce-le) + 1, (le-1)-ls)]
   END MoveLineDown;
+
+  (* The range that a completion REPLACES.  AppKit's default treats `foo.bar` as a
+     single word and so overtypes the receiver `foo.` when you accept a member —
+     wrong for code completion.  We restrict it to the identifier fragment that
+     ends at the insertion point, stopping at the first non-identifier char (the
+     '.').  Right after a '.', that fragment is empty, so the chosen member is
+     inserted AFTER the dot; once you have typed a few letters it replaces just
+     those letters.  Returning NSRange by value is ABI-safe — a 16-byte record
+     comes back in x0/x1, which is exactly what -rangeForUserCompletion expects. *)
+  (* Hover: report the character index under the pointer to the registered hover
+     callback. Cheap (one hit-test); the IDE debounces and describes on dwell. *)
+  PROCEDURE MouseMoved (ev: ObjC.Id) <* selector "mouseMoved:" *>;
+  VAR me: ObjC.Id; p: ObjC.NSPoint; idx: CARDINAL;
+  BEGIN
+    IF gHoverSet THEN
+      me  := CAST(ObjC.Id, SELF);
+      p   := [ev locationInWindow];
+      p   := [me convertPoint: p fromView: NIL];
+      idx := [me characterIndexForInsertionAtPoint: p];
+      gHoverProc(idx)
+    END
+  END MouseMoved;
+  PROCEDURE RangeForCompletion (): ObjC.NSRange <* selector "rangeForUserCompletion" *>;
+  VAR me, s: ObjC.Id; r: ObjC.NSRange; ip, start, ch: CARDINAL; stop: BOOLEAN;
+  BEGIN
+    me := CAST(ObjC.Id, SELF);
+    r  := [me selectedRange];
+    ip := r.location + r.length;            (* the insertion point *)
+    s  := [me string];
+    start := ip; stop := FALSE;
+    WHILE (start > 0) AND (NOT stop) DO
+      ch := [s characterAtIndex: start - 1];
+      IF ((ch >= 65) AND (ch <= 90))        (* A..Z *)
+         OR ((ch >= 97) AND (ch <= 122))    (* a..z *)
+         OR ((ch >= 48) AND (ch <= 57))     (* 0..9 *)
+         OR (ch = 95)                       (* _    *)
+      THEN DEC(start) ELSE stop := TRUE END
+    END;
+    r.location := start; r.length := ip - start;
+    RETURN r
+  END RangeForCompletion;
 END RopeTextView;
+
+PROCEDURE SetHoverProc (p: HoverProc);
+BEGIN gHoverProc := p; gHoverSet := TRUE END SetHoverProc;
 
 PROCEDURE MakeAttrs (r, g, b: REAL): ObjC.Id;
 VAR d, color: ObjC.Id;
@@ -451,5 +497,5 @@ BEGIN
 END Make;
 
 BEGIN
-  gInited := FALSE
+  gInited := FALSE; gHoverSet := FALSE
 END RopeEditor.

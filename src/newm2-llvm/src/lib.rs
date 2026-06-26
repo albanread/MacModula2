@@ -317,6 +317,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.LoadFramework".to_string(), "nm2_objc_load_framework"));
         v.push(("Proc.ReadFile".to_string(), "nm2_proc_read_file"));
         v.push(("Proc.Complete".to_string(), "nm2_ide_complete"));
+        v.push(("Proc.Describe".to_string(), "nm2_ide_describe"));
         v.push(("Proc.ListDir".to_string(), "nm2_proc_list_dir"));
         v.push(("Proc.DirEntry".to_string(), "nm2_proc_dir_entry"));
         v.push(("Proc.IsDir".to_string(), "nm2_proc_is_dir"));
@@ -1263,6 +1264,7 @@ fn for_each_runtime_binding(
         bind("ObjC.LoadFramework", newm2_runtime::objc::nm2_objc_load_framework as *const ());
         bind("Proc.ReadFile", newm2_runtime::proc::nm2_proc_read_file as *const ());
         bind("Proc.Complete", newm2_runtime::proc::nm2_ide_complete as *const ());
+        bind("Proc.Describe", newm2_runtime::proc::nm2_ide_describe as *const ());
         bind("Proc.ListDir", newm2_runtime::proc::nm2_proc_list_dir as *const ());
         bind("Proc.DirEntry", newm2_runtime::proc::nm2_proc_dir_entry as *const ());
         bind("Proc.IsDir", newm2_runtime::proc::nm2_proc_is_dir as *const ());

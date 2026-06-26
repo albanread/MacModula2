@@ -851,16 +851,12 @@ fn is_ident_b(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphanumeric()
 }
 
-/// Make a mid-edit buffer parseable by rewriting ONLY the cursor's logical line
-/// into a self-contained, terminated statement, leaving the rest untouched.
-/// The fatal-first parser otherwise dies on the half-typed line (a bare partial
-/// `Write` runs into the next statement; a trailing `rt.` has no selector).
-///
-/// Returns the repaired source + the new cursor offset (pointing right after the
-/// receiver's dot for member access, or at the word start for a bare identifier),
-/// from which `complete_at` re-derives the receiver. Client-side prefix filtering
-/// in the IDE means we can drop the half-typed word here without losing anything.
-fn repair_for_completion(raw: &str, line: usize, col: usize) -> (String, usize) {
+/// Rewrite ONLY the cursor's logical line into a self-contained, terminated
+/// statement. Returns `(line_start, line_end, repaired_line, cursor_in_line)`:
+/// the byte span of the original cursor line in `raw`, the replacement text, and
+/// the cursor's column offset *within* that replacement (right after the
+/// receiver's dot for member access, or at the word start for a bare identifier).
+fn repair_cursor_line(raw: &str, line: usize, col: usize) -> (usize, usize, String, usize) {
     let cursor = newm2_sema::line_col_to_offset(raw, line, col);
     let b = raw.as_bytes();
     let ls = raw[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -880,11 +876,34 @@ fn repair_for_completion(raw: &str, line: usize, col: usize) -> (String, usize) 
     let is_member = ps > ls && b[ps - 1] == b'.';
 
     let (repaired_line, cursor_in_line) = if is_member {
-        // Receiver = the ident/`.` run ending at the dot.
+        // Receiver = the designator ending at the dot, including postfix `^` (deref)
+        // and balanced `[...]` (index) so `arr[i].`/`p^.` keep their receiver.
         let dot = ps - 1;
         let mut rs = dot;
-        while rs > ls && (is_ident_b(b[rs - 1]) || b[rs - 1] == b'.') {
-            rs -= 1;
+        loop {
+            if rs == ls {
+                break;
+            }
+            match b[rs - 1] {
+                c if is_ident_b(c) || c == b'.' || c == b'^' => rs -= 1,
+                b']' => {
+                    let mut depth = 1usize;
+                    let mut j = rs - 1;
+                    while j > ls && depth > 0 {
+                        j -= 1;
+                        match b[j] {
+                            b']' => depth += 1,
+                            b'[' => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    if depth != 0 {
+                        break;
+                    }
+                    rs = j;
+                }
+                _ => break,
+            }
         }
         let receiver = &raw[rs..dot];
         if receiver.is_empty() {
@@ -901,11 +920,124 @@ fn repair_for_completion(raw: &str, line: usize, col: usize) -> (String, usize) 
         (indent.to_string(), indent.len())
     };
 
+    (ls, le, repaired_line, cursor_in_line)
+}
+
+/// Make a mid-edit buffer parseable by rewriting ONLY the cursor's logical line
+/// into a self-contained, terminated statement, leaving the rest untouched.
+/// The fatal-first parser otherwise dies on the half-typed line (a bare partial
+/// `Write` runs into the next statement; a trailing `rt.` has no selector).
+///
+/// Returns the repaired source + the new cursor offset (pointing right after the
+/// receiver's dot for member access, or at the word start for a bare identifier),
+/// from which `complete_at` re-derives the receiver. Client-side prefix filtering
+/// in the IDE means we can drop the half-typed word here without losing anything.
+fn repair_for_completion(raw: &str, line: usize, col: usize) -> (String, usize) {
+    let (ls, le, repaired_line, cursor_in_line) = repair_cursor_line(raw, line, col);
     let mut out = String::with_capacity(raw.len() + repaired_line.len());
     out.push_str(&raw[..ls]);
     out.push_str(&repaired_line);
     out.push_str(&raw[le..]);
     (out, ls + cursor_in_line)
+}
+
+/// Stronger repair for when [`repair_for_completion`] still won't parse — i.e.
+/// the buffer has unfinished constructs *away* from the cursor line (a half-typed
+/// statement two lines down, an unclosed `BEGIN`/`PROCEDURE`, no module `END`
+/// yet). This is the normal state while writing code top-to-bottom, and the
+/// fatal-first parser otherwise dies on it and yields zero completions.
+///
+/// Strategy: keep everything up to and including the repaired cursor line, drop
+/// the rest, then synthesize the closing tokens (`END;` / `END Name.` / `UNTIL`)
+/// needed to balance every block still open at the cursor — so the prefix parses
+/// on its own. We lose any declarations *below* the cursor (forward references in
+/// the same module), but that only matters when the full buffer was unparseable
+/// anyway, where the alternative is no completions at all.
+fn repair_for_completion_truncated(raw: &str, line: usize, col: usize) -> (String, usize) {
+    let (ls, _le, repaired_line, cursor_in_line) = repair_cursor_line(raw, line, col);
+    let mut prefix = String::with_capacity(ls + repaired_line.len() + 1);
+    prefix.push_str(&raw[..ls]);
+    prefix.push_str(&repaired_line);
+    let cursor = ls + cursor_in_line;
+
+    let tail = synthesize_closers(&prefix);
+    let mut out = prefix;
+    out.push('\n');
+    out.push_str(&tail);
+    (out, cursor)
+}
+
+/// Tokenize `prefix` and return the run of closing tokens that balances every
+/// block opener (`MODULE`/`PROCEDURE`/`BEGIN`-bearing `IF`/`WHILE`/`FOR`/`LOOP`/
+/// `WITH`/`CASE`/`RECORD`/`REPEAT`) still open at its end, innermost first. A
+/// best-effort heuristic: if it guesses wrong the synthesized buffer simply fails
+/// to parse and the caller falls back to no completions — never worse than today.
+fn synthesize_closers(prefix: &str) -> String {
+    use newm2_lexer::{Keyword, TokenKind};
+    let toks = match tokenize(prefix) {
+        Ok(t) => t,
+        Err(_) => return String::new(),
+    };
+    let ident_at = |idx: usize| -> Option<&str> {
+        match toks.get(idx).map(|t| &t.kind) {
+            Some(TokenKind::Ident(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    };
+    // Each open block contributes its closer string; innermost is last.
+    let mut stack: Vec<String> = Vec::new();
+    let mut seen_module = false;
+    for (i, t) in toks.iter().enumerate() {
+        if let TokenKind::Keyword(k) = &t.kind {
+            match k {
+                Keyword::Module => {
+                    let name = ident_at(i + 1).unwrap_or("M");
+                    // The outermost module closes with `.`; a nested local module with `;`.
+                    if seen_module {
+                        stack.push(format!("END {name};"));
+                    } else {
+                        stack.push(format!("END {name}."));
+                        seen_module = true;
+                    }
+                }
+                // A procedure *declaration* (name follows) opens a body; a procedure
+                // *type* (`PROCEDURE(...)`, no name) does not.
+                Keyword::Procedure => {
+                    if let Some(name) = ident_at(i + 1) {
+                        stack.push(format!("END {name};"));
+                    }
+                }
+                Keyword::Record
+                | Keyword::If
+                | Keyword::Case
+                | Keyword::While
+                | Keyword::For
+                | Keyword::Loop
+                | Keyword::With => stack.push("END;".to_string()),
+                Keyword::Repeat => stack.push("UNTIL TRUE;".to_string()),
+                Keyword::End => {
+                    stack.pop();
+                }
+                Keyword::Until => {
+                    match stack.iter().rposition(|s| s.starts_with("UNTIL")) {
+                        Some(p) => {
+                            stack.remove(p);
+                        }
+                        None => {
+                            stack.pop();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = String::new();
+    for closer in stack.iter().rev() {
+        out.push_str(closer);
+        out.push('\n');
+    }
+    out
 }
 
 /// Core completion, shared by the `complete` CLI verb and the daemon verb.
@@ -922,21 +1054,91 @@ pub(crate) fn complete_core(
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let (source, cursor) = repair_for_completion(&raw, line, col);
     let build_path = complete_sibling_temp(Path::new(file));
-    if std::fs::write(&build_path, &source).is_err() {
-        return Vec::new();
-    }
-    let cands = match build_graph_from_entry(&build_path, options) {
-        Ok(graph) => {
+    // First try the light repair (only the cursor line). On a clean buffer this
+    // is exact and preserves below-cursor forward declarations. If the buffer has
+    // unfinished constructs elsewhere the graph build fails — fall back to the
+    // truncate-and-close repair, which makes the prefix parse on its own.
+    let attempts =
+        [repair_for_completion(&raw, line, col), repair_for_completion_truncated(&raw, line, col)];
+    let mut cands = Vec::new();
+    for (source, cursor) in attempts {
+        if std::fs::write(&build_path, &source).is_err() {
+            break;
+        }
+        if let Ok(graph) = build_graph_from_entry(&build_path, options) {
             let sema = check_graph(&graph, options);
             let mid = entry_module_id(&graph, &build_path);
-            newm2_sema::complete_at(&graph, &sema, mid, &source, cursor)
+            cands = newm2_sema::complete_at(&graph, &sema, mid, &source, cursor);
+            break;
         }
-        Err(_) => Vec::new(),
-    };
+    }
     let _ = std::fs::remove_file(&build_path);
     cands
+}
+
+#[cfg(test)]
+mod completion_repair_tests {
+    use super::*;
+
+    // The truncate-and-close repair must turn the normal mid-edit states (an
+    // unterminated procedure, a missing semicolon below the cursor) into a buffer
+    // that actually parses — otherwise completion stays empty exactly when it is
+    // wanted most.
+    fn parses(src: &str) -> bool {
+        match tokenize(src) {
+            Ok(toks) => parse_module(&toks).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    #[test]
+    fn truncated_repair_closes_unterminated_procedure() {
+        // Writing a new proc top-to-bottom: no END for the proc or module yet.
+        let raw = "MODULE newproc;\nIMPORT Strings;\nPROCEDURE Foo;\nVAR s: ARRAY [0..20] OF CHAR;\nBEGIN\n  Strings.\n";
+        let cursor_line = 6; // the `Strings.` line (1-based)
+        let cursor_col = 10; // just after the dot
+        assert!(!parses(raw), "precondition: the raw mid-edit buffer must NOT parse");
+        let (fixed, _cur) = repair_for_completion_truncated(raw, cursor_line, cursor_col);
+        assert!(parses(&fixed), "truncated repair must parse; got:\n{fixed}");
+    }
+
+    #[test]
+    fn truncated_repair_closes_missing_semicolon_below() {
+        // A missing `;` on a later line crashes the fatal-first parser.
+        let raw = "MODULE typo;\nIMPORT Strings;\nVAR s: ARRAY [0..20] OF CHAR;\nBEGIN\n  Strings.\n  s := s\n  WriteString(s)\nEND typo.\n";
+        let (fixed, _cur) = repair_for_completion_truncated(raw, 5, 10);
+        assert!(parses(&fixed), "truncated repair must parse; got:\n{fixed}");
+    }
+
+    #[test]
+    fn truncated_repair_closes_open_if_block() {
+        let raw = "MODULE g;\nIMPORT Strings;\nVAR x: BOOLEAN;\nBEGIN\n  IF x THEN\n    Strings.\n";
+        let (fixed, _cur) = repair_for_completion_truncated(raw, 6, 12);
+        assert!(parses(&fixed), "truncated repair must parse; got:\n{fixed}");
+    }
+
+    #[test]
+    fn repair_keeps_array_and_deref_receivers() {
+        // `arr[i].` and `p^.` must keep their receiver in the repaired line, so
+        // completion resolves the element/pointee instead of the whole scope.
+        let raw = "MODULE m;\nVAR a: ARRAY [0..3] OF INTEGER;\nBEGIN\n  a[0].\nEND m.\n";
+        let (fixed, _cur) = repair_for_completion(raw, 4, 7); // just after the dot
+        assert!(fixed.contains("a[0].M2xComplete"), "must keep array receiver; got:\n{fixed}");
+
+        let raw2 = "MODULE m;\nTYPE PR = POINTER TO INTEGER;\nVAR p: PR;\nBEGIN\n  p^.\nEND m.\n";
+        let (fixed2, _cur) = repair_for_completion(raw2, 5, 5);
+        assert!(fixed2.contains("p^.M2xComplete"), "must keep deref receiver; got:\n{fixed2}");
+    }
+
+    #[test]
+    fn synthesize_balances_nested_blocks() {
+        // module + proc + while + if all open: four closers, innermost first.
+        let prefix = "MODULE m;\nPROCEDURE P;\nBEGIN\n  WHILE a DO\n    IF b THEN\n      x.M2xComplete;";
+        let tail = synthesize_closers(prefix);
+        let full = format!("{prefix}\n{tail}");
+        assert!(parses(&full), "balanced buffer must parse; got:\n{full}");
+    }
 }
 
 /// `newm2 complete <file> <line> <col>` — prints `name\tkind\tdetail` lines.
