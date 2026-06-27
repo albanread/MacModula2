@@ -1,0 +1,28 @@
+DEFINITION MODULE Sfx;
+(* Live sound-effect playback for games, in pure Modula-2. Synthesise effects with
+   the Audio module (Coin/Zap/Shoot/Explode/...), register them here, then trigger
+   them live — non-blocking and overlapping — through Cocoa's AVAudioEngine +
+   AVAudioPlayerNode, reached via the Obj-C bridge. No .wav files, no blocking; the
+   CoreAudio render thread does the mixing while the game loop runs.
+
+   This is the macOS "play live" path that Audio.def left for WaveOut.
+
+   Usage:
+     IF Sfx.Start() THEN
+       Audio.Zap(s, 0.3); Sfx.Define(ZAP, s); Audio.FreeSound(s);
+       ...
+       Sfx.Play(ZAP)            (* on the game event — returns immediately *)
+     END; *)
+IMPORT Audio;
+
+(* Create and start the live audio engine. FALSE if it could not start. *)
+PROCEDURE Start (): BOOLEAN;
+
+(* Register a synthesised Sound as effect `id` (0..63); its samples are copied
+   into a GPU-ready PCM buffer, so the caller may FreeSound(s) afterwards. *)
+PROCEDURE Define (id: CARDINAL; VAR s: Audio.Sound);
+
+(* Trigger effect `id` — schedules it on the player node and returns immediately. *)
+PROCEDURE Play (id: CARDINAL);
+
+END Sfx.
