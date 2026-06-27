@@ -1,0 +1,14 @@
+DEFINITION MODULE M2Format;
+(* A safe structural re-indenter for Modula-2 source. It rebuilds each line's
+   leading indentation from block nesting (2 spaces per level) and trims trailing
+   whitespace; it changes ONLY whitespace — the non-whitespace content of every
+   line is copied verbatim, so no token, string or comment is ever altered, and
+   running it twice in a row is a no-op. Lines that begin inside a (* … *) block
+   comment are emitted untouched, to preserve comment layout.
+
+   Returns FALSE only if the formatted text would not fit in `out`; `out` is left
+   NUL-terminated in either case. Both arrays are passed by VAR to avoid copying
+   large buffers (src is read, not modified). *)
+PROCEDURE Format (VAR src, out: ARRAY OF CHAR): BOOLEAN;
+
+END M2Format.

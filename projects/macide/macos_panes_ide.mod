@@ -25,6 +25,7 @@ IMPORT Proc;
 IMPORT RopeEditor;
 IMPORT MarkView;
 IMPORT Ptcl;
+IMPORT M2Format;
 
 CONST
   MaxFiles = 256;
@@ -53,6 +54,7 @@ VAR
   gHovLine, gHovCol: INTEGER;             (* last described hover position *)
   gHovMoved, gHovPending: BOOLEAN;        (* dwell state for the hover timer *)
   gCmdBuf: ARRAY [0..8191] OF CHAR;       (* ptcl script read from the command file *)
+  gFmtIn, gFmtOut: ARRAY [0..1048575] OF CHAR;   (* source re-indent scratch (1 MiB) *)
   helpNL: ARRAY [0..1] OF CHAR;
   gProjDir, gLibDir: ARRAY [0..1023] OF CHAR;
   gProjFiles, gLibFiles: ARRAY [0..MaxFiles-1] OF ARRAY [0..255] OF CHAR;
@@ -567,6 +569,17 @@ BEGIN Ptcl.Arg(1, path); RETURN Cocoa.Snapshot(content, path) END VSnap;
 PROCEDURE VTheme (): BOOLEAN;    (* switch editor colour theme: `theme <0..4>` *)
 BEGIN ApplyThemeAll(VAL(CARDINAL, Ptcl.ArgInt(1))); RETURN TRUE END VTheme;
 
+PROCEDURE VFormat (): BOOLEAN;   (* re-indent the active editor: `format` *)
+VAR sel: INTEGER;
+BEGIN
+  sel := Cocoa.SelectedTab(tabs);
+  IF sel < 0 THEN RETURN FALSE END;
+  Cocoa.EditorText(gEditors[sel], gFmtIn);
+  IF NOT M2Format.Format(gFmtIn, gFmtOut) THEN RETURN FALSE END;
+  Cocoa.SetEditorText(gEditors[sel], gFmtOut);
+  RETURN TRUE
+END VFormat;
+
 PROCEDURE VResize (): BOOLEAN;   (* resize the window content (drives the resize policy) *)
 BEGIN [CAST(ObjC.Id, win) setContentSize: Size(FLOAT(Ptcl.ArgInt(1)), FLOAT(Ptcl.ArgInt(2)))]; RETURN TRUE END VResize;
 
@@ -594,6 +607,7 @@ BEGIN
   Ptcl.Register("search", VSearch);
   Ptcl.Register("snap", VSnap);
   Ptcl.Register("theme", VTheme);
+  Ptcl.Register("format", VFormat);
   Ptcl.Register("resize", VResize);
   Ptcl.Register("open", VOpen);
   Ptcl.Register("describeat", VDescribeAt)
@@ -851,6 +865,20 @@ CLASS IDE;
     RopeEditor.ThemeName(t, nm); Assign("Theme: ", msg); Append(nm, msg);
     Cocoa.SetText(status, msg)
   END OnTheme;
+  PROCEDURE OnFormat (sender: ObjC.Id);           (* "onFormat:" — re-indent the active editor *)
+  VAR sel: INTEGER;
+  BEGIN
+    sel := Cocoa.SelectedTab(tabs);
+    IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
+    IF gReadOnly[sel] THEN Cocoa.SetText(status, "Library file is read-only (reference)."); RETURN END;
+    Cocoa.EditorText(gEditors[sel], gFmtIn);
+    IF M2Format.Format(gFmtIn, gFmtOut) THEN
+      Cocoa.SetEditorText(gEditors[sel], gFmtOut);
+      Cocoa.SetText(status, "Formatted — source re-indented.")
+    ELSE
+      Cocoa.SetText(status, "Format: file too large to re-indent.")
+    END
+  END OnFormat;
   PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘I : completion popup at the cursor *)
   (* Explicit trigger for the SAME native popup that typing '.' raises: ask the
      focused NSTextView to `complete:`, which calls our Completions data source
@@ -1106,6 +1134,8 @@ BEGIN
   [mEdit addItem: findItem];
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
+  mFormat := AddMenu(menuBar, "Format");                     (* source re-indenter *)
+  AddItem(mFormat, ctrl, "Re-indent Source", "onFormat:", "i", 180000H);  (* ⌥⌘I *)
   mTheme := AddMenu(menuBar, "Theme");                       (* editor colour schemes *)
   AddTagItem(mTheme, ctrl, "Default", "onTheme:", 0);
   AddTagItem(mTheme, ctrl, "Monochrome", "onTheme:", 1);
