@@ -1,0 +1,31 @@
+DEFINITION MODULE ShaderPane;
+(* A full-screen Metal fragment-shader pane, driven from pure Modula-2 — the macOS
+   counterpart of the Windows ShaderView host for the *_gpu demos. You supply an
+   MSL fragment function `fmain`; the pane runs it per pixel every frame with a
+   uniforms block. Pure M2 over the Obj-C bridge (Metal.def + selectors).
+
+   Your fragment shader is:
+     fragment float4 fmain(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]])
+   where the pane prepends:
+     struct VOut { float4 pos [[position]]; float2 uv; };   // uv in 0..1, top-left
+     struct Uniforms { float time; float aspect; float p[8]; };
+   so `u.time` is elapsed seconds, `u.aspect` width/height, `u.p[0..7]` your params
+   (set with SetParam). Example body: sample in.uv, iterate, return a colour. *)
+
+TYPE TickProc = PROCEDURE;
+
+CONST KeyLeft = 1; KeyRight = 2; KeyDown = 3; KeyUp = 4; KeyPlus = 5; KeyMinus = 6; KeyR = 7;
+
+(* Open the window + compile the shader. fragMSL is your `fragment ... fmain(...)`. *)
+PROCEDURE Create (title: ARRAY OF CHAR; w, h, scale: CARDINAL; fragMSL: ARRAY OF CHAR): BOOLEAN;
+
+PROCEDURE SetParam (i: CARDINAL; v: REAL);       (* set u.p[i], i in 0..7 *)
+PROCEDURE Time   (): REAL;                        (* elapsed seconds *)
+PROCEDURE Aspect (): REAL;                        (* width / height *)
+
+(* Run: `tick` is called ~60x/s (update params from Time()); the pane then renders.*)
+PROCEDURE Run (tick: TickProc);
+PROCEDURE KeyHeld (key: CARDINAL): BOOLEAN;
+PROCEDURE Quit;
+
+END ShaderPane.
