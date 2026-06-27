@@ -25,6 +25,8 @@ use rusqlite::{Connection, params};
 // Unix-domain-socket daemon is a later milestone; gate the module for now.
 #[cfg(windows)]
 mod server;
+#[cfg(unix)]
+mod daemon_unix;
 
 const COMMANDS: &[&str] = &[
     "dump-tokens",
@@ -370,7 +372,11 @@ fn main() -> ExitCode {
         {
             return server::run_daemon(&rest);
         }
-        #[cfg(not(windows))]
+        #[cfg(all(unix, not(windows)))]
+        {
+            return daemon_unix::run_daemon(&rest);
+        }
+        #[cfg(not(any(windows, unix)))]
         {
             let _ = &rest;
             eprintln!("newm2: the `daemon` service is not yet available on this platform");

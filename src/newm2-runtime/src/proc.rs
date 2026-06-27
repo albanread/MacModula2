@@ -261,6 +261,87 @@ fn resolve_driver_exe() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("newm2-driver"))
 }
 
+// ---- resident-daemon client (the IDE's warm channel) ----------------------
+//
+// complete/describe normally route to one long-lived `newm2-driver daemon` over
+// a Unix socket, so they don't pay a process spawn + LLVM init each call. The
+// daemon is started lazily on first use. Any miss or error falls back to
+// spawning the CLI verb, so behaviour is never worse than before.
+
+fn daemon_socket() -> std::path::PathBuf {
+    std::path::PathBuf::from("/tmp/macm2-driver.sock")
+}
+
+#[cfg(unix)]
+fn daemon_frame_write(s: &mut std::os::unix::net::UnixStream, payload: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    s.write_all(&(payload.len() as u32).to_le_bytes())?;
+    s.write_all(payload)?;
+    s.flush()
+}
+
+#[cfg(unix)]
+fn daemon_frame_read(s: &mut std::os::unix::net::UnixStream) -> Option<String> {
+    use std::io::Read;
+    let mut len = [0u8; 4];
+    s.read_exact(&mut len).ok()?;
+    let n = u32::from_le_bytes(len) as usize;
+    if n == 0 {
+        return Some(String::new());
+    }
+    if n > 64 * 1024 * 1024 {
+        return None;
+    }
+    let mut buf = vec![0u8; n];
+    s.read_exact(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+#[cfg(unix)]
+fn start_daemon() {
+    use std::process::Stdio;
+    let exe = resolve_driver_exe();
+    let _ = Command::new(exe)
+        .arg("daemon")
+        .arg("--socket")
+        .arg(daemon_socket())
+        .arg("--library")
+        .arg("library")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+/// Send `req` to the resident daemon and return its response, starting the
+/// daemon on first use. `None` => unreachable (caller falls back to spawning).
+#[cfg(unix)]
+fn daemon_request(req: &str) -> Option<String> {
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    let path = daemon_socket();
+    for attempt in 0..2 {
+        if let Ok(mut s) = UnixStream::connect(&path) {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(4)));
+            let _ = s.set_write_timeout(Some(Duration::from_secs(4)));
+            if daemon_frame_write(&mut s, req.as_bytes()).is_ok() {
+                return daemon_frame_read(&mut s);
+            }
+            return None;
+        }
+        if attempt == 0 {
+            start_daemon();
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn daemon_request(_req: &str) -> Option<String> {
+    None
+}
+
 /// `Proc.Complete(path, line, col, VAR out): INTEGER` — run the compiler's
 /// `complete` command on `path` at (1-based `line`, 0-based `col`) and capture
 /// its `name<TAB>kind<TAB>detail` candidate lines into `out`. Returns the number
@@ -294,6 +375,20 @@ pub extern "C-unwind" fn nm2_ide_complete(
     const COMPLETE_TIMEOUT: Duration = Duration::from_secs(4);
 
     let path = wide_to_string(path_ptr, path_high);
+
+    // Warm path: ask the resident daemon first; fall through to a spawn on miss.
+    if let Some(resp) = daemon_request(&format!("complete {{{path}}} {line} {col}")) {
+        if resp == "ok" {
+            write_wide(out_ptr, out_high, "");
+            return 0;
+        }
+        if !resp.starts_with("error") {
+            let count = resp.lines().filter(|l| !l.trim().is_empty()).count() as i64;
+            write_wide(out_ptr, out_high, &resp);
+            return count;
+        }
+    }
+
     let exe = resolve_driver_exe();
     let mut child = match Command::new(&exe)
         .arg("complete")
@@ -367,6 +462,20 @@ pub extern "C-unwind" fn nm2_ide_describe(
     const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(4);
 
     let path = wide_to_string(path_ptr, path_high);
+
+    // Warm path: ask the resident daemon first; fall through to a spawn on miss.
+    if let Some(resp) = daemon_request(&format!("describe {{{path}}} {line} {col}")) {
+        if resp == "ok" {
+            write_wide(out_ptr, out_high, "");
+            return 0;
+        }
+        if !resp.starts_with("error") {
+            let len = resp.encode_utf16().count() as i64;
+            write_wide(out_ptr, out_high, &resp);
+            return len;
+        }
+    }
+
     let exe = resolve_driver_exe();
     let mut child = match Command::new(&exe)
         .arg("describe")
