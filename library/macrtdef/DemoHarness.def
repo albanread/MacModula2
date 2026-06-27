@@ -1,0 +1,43 @@
+DEFINITION MODULE DemoHarness;
+(* A reusable, Ptcl-scripted test harness for the Cocoa demos.
+
+   GUI demos block in Cocoa.RunApp, so they can't be observed by a headless test.
+   This harness lets a demo be driven from a tiny Tcl script instead: the demo
+   passes its NSView plus two callbacks (advance-N-frames, deliver-a-key), and the
+   harness registers host verbs into the embedded Ptcl interpreter:
+
+       step <n>        advance the simulation n frames (default 1)
+       key  <name>     deliver a key: a single char, or  left right up down space
+       snap <path>     render the view offscreen to a PNG (no window server needed)
+       get <name> [i]  read a named integer state the demo exposes (SetQuery), so
+                       a script can branch/assert/play adaptively, e.g.
+                         if {[get gameover]} {...}   set h [get height $c]
+
+   plus everything Ptcl already gives a script (set/puts/expr/if/while/proc...).
+
+   A demo enters script mode when launched with  `-- --script <path>`  (the driver
+   forwards args after `--` to ProgramArgs); otherwise it runs interactively.
+
+       newm2-driver run --library library cocoademos/foo.mod -- --script test.tcl *)
+
+FROM Cocoa IMPORT View;
+
+TYPE
+  StepProc  = PROCEDURE (CARDINAL);     (* advance N simulation frames *)
+  KeyProc   = PROCEDURE (ARRAY OF CHAR); (* deliver one key by name *)
+  QueryProc = PROCEDURE (ARRAY OF CHAR, INTEGER): INTEGER; (* read state(name, index) *)
+
+(* TRUE + the path if the program was started with `--script <path>`. *)
+PROCEDURE ScriptArg (VAR path: ARRAY OF CHAR): BOOLEAN;
+
+(* Optionally let scripts read demo state via the `get <name> [index]` verb.
+   Call before Drive; if unset, `get` returns 0. *)
+PROCEDURE SetQuery (q: QueryProc);
+
+(* Register the standard verbs against `view` + the callbacks, read the script
+   file at `scriptPath`, and Eval it. A demo may Ptcl.Register extra verbs first.
+   Returns the Eval result (FALSE on a script error, which is also printed). *)
+PROCEDURE Drive (view: View; step: StepProc; key: KeyProc;
+                 scriptPath: ARRAY OF CHAR): BOOLEAN;
+
+END DemoHarness.
