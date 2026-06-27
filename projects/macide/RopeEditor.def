@@ -18,4 +18,15 @@ PROCEDURE Make (x, y, w, h: REAL): ObjC.Id;   (* a rope-backed editor (an NSScro
 TYPE HoverProc = PROCEDURE (CARDINAL);
 PROCEDURE SetHoverProc (p: HoverProc);
 
+(* Colour themes. SetTheme selects the palette for token colours (applied to every
+   editor's syntax highlighting) + the background/caret/selection; ApplyTheme pushes
+   the current theme onto one editor (the IDE calls it for each open tab after a
+   SetTheme, and Make applies it to new editors automatically). *)
+CONST
+  themeDefault = 0; themeMono = 1; themeAmber = 2; themeGreen = 3; themeTurbo = 4; themeCount = 5;
+PROCEDURE SetTheme   (id: CARDINAL);
+PROCEDURE ApplyTheme (editor: ObjC.Id);          (* editor = the NSScrollView from Make *)
+PROCEDURE CurrentTheme (): CARDINAL;
+PROCEDURE ThemeName  (id: CARDINAL; VAR name: ARRAY OF CHAR);
+
 END RopeEditor.

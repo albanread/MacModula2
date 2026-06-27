@@ -232,6 +232,16 @@ BEGIN
   [menu addItem: it]
 END AddItem;
 
+(* a menu item carrying a tag (read back via [sender tag] in the action). *)
+PROCEDURE AddTagItem (menu, target: ObjC.Id; title, action: ARRAY OF CHAR; tag: INTEGER);
+VAR it: ObjC.Id;
+BEGIN
+  it := [[Cls("NSMenuItem") alloc] initWithTitle: ObjC.NSString(title)
+                                   action: ObjC.Selector(action)
+                                   keyEquivalent: ObjC.NSString("")];
+  [it setTarget: target]; [it setTag: tag]; [menu addItem: it]
+END AddTagItem;
+
 PROCEDURE HL (s: ARRAY OF CHAR);   (* append a help line + newline *)
 BEGIN Append(s, gHelpText); Append(helpNL, gHelpText) END HL;
 
@@ -491,6 +501,15 @@ END HoverTick;
 
 (* ---- shared actions (used by both menu handlers and ptcl verbs) ----------- *)
 
+PROCEDURE ApplyThemeAll (t: CARDINAL);   (* set the theme + repaint every open editor *)
+VAR i: CARDINAL;
+BEGIN
+  RopeEditor.SetTheme(t);
+  IF gTabCount > 0 THEN
+    FOR i := 0 TO gTabCount-1 DO RopeEditor.ApplyTheme(CAST(ObjC.Id, gEditors[i])) END
+  END
+END ApplyThemeAll;
+
 PROCEDURE DescribeCursor;   (* describe the symbol at the active editor's cursor *)
 VAR sel, line, col, n: INTEGER; md: ARRAY [0..16383] OF CHAR;
 BEGIN
@@ -545,6 +564,9 @@ PROCEDURE VSnap (): BOOLEAN;
 VAR path: ARRAY [0..511] OF CHAR;
 BEGIN Ptcl.Arg(1, path); RETURN Cocoa.Snapshot(content, path) END VSnap;
 
+PROCEDURE VTheme (): BOOLEAN;    (* switch editor colour theme: `theme <0..4>` *)
+BEGIN ApplyThemeAll(VAL(CARDINAL, Ptcl.ArgInt(1))); RETURN TRUE END VTheme;
+
 PROCEDURE VResize (): BOOLEAN;   (* resize the window content (drives the resize policy) *)
 BEGIN [CAST(ObjC.Id, win) setContentSize: Size(FLOAT(Ptcl.ArgInt(1)), FLOAT(Ptcl.ArgInt(2)))]; RETURN TRUE END VResize;
 
@@ -571,6 +593,7 @@ BEGIN
   Ptcl.Register("describe", VDescribe);
   Ptcl.Register("search", VSearch);
   Ptcl.Register("snap", VSnap);
+  Ptcl.Register("theme", VTheme);
   Ptcl.Register("resize", VResize);
   Ptcl.Register("open", VOpen);
   Ptcl.Register("describeat", VDescribeAt)
@@ -820,6 +843,14 @@ CLASS IDE;
     HelpShow(TRUE);
     Cocoa.SetText(status, "Home — welcome / help (F1 to hide).")
   END OnHome;
+  PROCEDURE OnTheme (sender: ObjC.Id);            (* "onTheme:" — switch the editor colour theme *)
+  VAR t: CARDINAL; nm, msg: ARRAY [0..63] OF CHAR;
+  BEGIN
+    t := VAL(CARDINAL, [sender tag]);
+    ApplyThemeAll(t);
+    RopeEditor.ThemeName(t, nm); Assign("Theme: ", msg); Append(nm, msg);
+    Cocoa.SetText(status, msg)
+  END OnTheme;
   PROCEDURE OnComplete (sender: ObjC.Id);         (* "onComplete:" — ⌘I : completion popup at the cursor *)
   (* Explicit trigger for the SAME native popup that typing '.' raises: ask the
      focused NSTextView to `complete:`, which calls our Completions data source
@@ -913,7 +944,7 @@ BEGIN
   Cocoa.SetText(clock, buf)
 END Tick;
 
-VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mHelp, findItem: ObjC.Id;
+VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mTheme, mFormat, mHelp, findItem: ObjC.Id;
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
     okAdd: BOOLEAN;
 BEGIN
@@ -1075,6 +1106,12 @@ BEGIN
   [mEdit addItem: findItem];
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
+  mTheme := AddMenu(menuBar, "Theme");                       (* editor colour schemes *)
+  AddTagItem(mTheme, ctrl, "Default", "onTheme:", 0);
+  AddTagItem(mTheme, ctrl, "Monochrome", "onTheme:", 1);
+  AddTagItem(mTheme, ctrl, "Amber CRT", "onTheme:", 2);
+  AddTagItem(mTheme, ctrl, "Green CRT", "onTheme:", 3);
+  AddTagItem(mTheme, ctrl, "Turbo Pascal", "onTheme:", 4);
   mHelp := AddMenu(menuBar, "Help");
   f1key[0] := CHR(0F704H); f1key[1] := CHR(0);            (* NSF1FunctionKey *)
   AddItem(mHelp, ctrl, "Show / Hide Help", "onHelp:", f1key, 800000H);  (* function-key modifier *)

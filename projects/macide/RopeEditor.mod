@@ -4,12 +4,14 @@ IMPLEMENTATION MODULE RopeEditor;
    See docs/design/mac-text-store.md and macos_textstore.mod (the staged proof). *)
 FROM SYSTEM IMPORT CAST, ADDRESS, TSIZE;
 FROM Storage IMPORT ALLOCATE, DEALLOCATE;
-FROM Strings IMPORT Equal, Length;
+FROM Strings IMPORT Equal, Length, Assign;
 IMPORT ObjC;
 IMPORT TextRope;
 
 CONST
   kDefault = 0; kKeyword = 1; kComment = 2; kString = 3; kNumber = 4; kKinds = 5;
+  (* theme palette slots: background, caret, selection, then the 5 token classes *)
+  sBg = 0; sCaret = 1; sSel = 2; sDef = 3; sKw = 4; sCom = 5; sStr = 6; sNum = 7; nSlots = 8;
 
 TYPE
   PRopeBox = POINTER TO RECORD r: TextRope.Rope END;
@@ -29,6 +31,8 @@ VAR
   gInited: BOOLEAN;
   gHoverProc: HoverProc;        (* hover callback: char index under the pointer *)
   gHoverSet: BOOLEAN;
+  gPal: ARRAY [0..255] OF REAL;  (* flat RGB palette: [(theme*nSlots+slot)*3 + {r,g,b}], needs 120 *)
+  gThemeId: CARDINAL;           (* the active theme *)
 
 (* NSRange / NSRect values for struct-typed send args (selectedRange, edited:range:,
    setFrame:); the send returns NSRange as a real struct too — see Sel below. *)
@@ -462,15 +466,111 @@ BEGIN
   RETURN d
 END MakeAttrs;
 
+(* ---- colour themes ----------------------------------------------------
+   The palette is a FLAT REAL array (gPal), addressed [(theme*nSlots+slot)*3 + rgb].
+   This deliberately avoids record value-parameters AND VAR parameters bound to a
+   nested field of a global array element — both miscompile in this codegen and
+   silently corrupt adjacent globals. (A VAR-to-gThemes[i].field write clobbered
+   gKind; the store then handed the layout manager the stray double 0.5 instead of
+   an attributes dictionary, and objc_msgSend(0.5) segfaulted.) Flat indexed
+   reads/writes are the safe path. *)
+PROCEDURE PalBase (theme, slot: CARDINAL): CARDINAL;
+BEGIN RETURN (theme*nSlots + slot) * 3 END PalBase;
+
+PROCEDURE SetPal (theme, slot: CARDINAL; r, g, b: REAL);
+VAR k: CARDINAL;
+BEGIN k := PalBase(theme, slot); gPal[k] := r; gPal[k+1] := g; gPal[k+2] := b END SetPal;
+
+PROCEDURE ColorAt (theme, slot: CARDINAL): ObjC.Id;
+VAR k: CARDINAL; c: ObjC.Id;
+BEGIN
+  k := PalBase(theme, slot);                         (* store-then-return: never RETURN a float-arg call directly *)
+  c := [Cls("NSColor") colorWithCalibratedRed: gPal[k] green: gPal[k+1] blue: gPal[k+2] alpha: 1.0];
+  RETURN c
+END ColorAt;
+
+
+PROCEDURE SetupThemes;
+BEGIN
+  (*       theme          slot      r     g     b *)
+  SetPal(themeDefault, sBg,  1.0,1.0,1.0 );  SetPal(themeDefault, sCaret, 0.0,0.0,0.0 );  SetPal(themeDefault, sSel, 0.70,0.80,1.0);
+  SetPal(themeDefault, sDef, 0.0,0.0,0.0 );  SetPal(themeDefault, sKw,  0.15,0.15,0.8 );  SetPal(themeDefault, sCom, 0.0,0.5,0.0);
+  SetPal(themeDefault, sStr, 0.6,0.1,0.1 );  SetPal(themeDefault, sNum, 0.5,0.0,0.5);
+  SetPal(themeMono, sBg, 0.98,0.98,0.96);    SetPal(themeMono, sCaret, 0.1,0.1,0.1);      SetPal(themeMono, sSel, 0.80,0.80,0.80);
+  SetPal(themeMono, sDef, 0.12,0.12,0.12);   SetPal(themeMono, sKw, 0.0,0.0,0.0);         SetPal(themeMono, sCom, 0.5,0.5,0.5);
+  SetPal(themeMono, sStr, 0.32,0.32,0.32);   SetPal(themeMono, sNum, 0.2,0.2,0.2);
+  SetPal(themeAmber, sBg, 0.06,0.04,0.0);    SetPal(themeAmber, sCaret, 1.0,0.72,0.0);    SetPal(themeAmber, sSel, 0.40,0.26,0.0);
+  SetPal(themeAmber, sDef, 1.0,0.69,0.0);    SetPal(themeAmber, sKw, 1.0,0.85,0.30);      SetPal(themeAmber, sCom, 0.62,0.42,0.0);
+  SetPal(themeAmber, sStr, 1.0,0.78,0.35);   SetPal(themeAmber, sNum, 1.0,0.88,0.5);
+  SetPal(themeGreen, sBg, 0.0,0.04,0.0);     SetPal(themeGreen, sCaret, 0.3,1.0,0.3);     SetPal(themeGreen, sSel, 0.0,0.40,0.0);
+  SetPal(themeGreen, sDef, 0.25,1.0,0.25);   SetPal(themeGreen, sKw, 0.60,1.0,0.60);      SetPal(themeGreen, sCom, 0.0,0.55,0.0);
+  SetPal(themeGreen, sStr, 0.45,1.0,0.6);    SetPal(themeGreen, sNum, 0.7,1.0,0.4);
+  SetPal(themeTurbo, sBg, 0.0,0.0,0.66);     SetPal(themeTurbo, sCaret, 1.0,1.0,0.4);     SetPal(themeTurbo, sSel, 0.0,0.55,0.55);
+  SetPal(themeTurbo, sDef, 1.0,1.0,0.45);    SetPal(themeTurbo, sKw, 1.0,1.0,1.0);        SetPal(themeTurbo, sCom, 0.55,0.55,0.6);
+  SetPal(themeTurbo, sStr, 0.45,1.0,1.0);    SetPal(themeTurbo, sNum, 0.5,1.0,0.7)
+END SetupThemes;
+
+PROCEDURE ApplyKinds (id: CARDINAL);   (* rebuild the token attribute dicts from theme `id` *)
+VAR b: CARDINAL;
+BEGIN
+  b := id * (nSlots*3);              (* base of theme `id` in gPal *)
+  gKind[kDefault] := MakeAttrs(gPal[b+ sDef*3], gPal[b+ sDef*3+1], gPal[b+ sDef*3+2]);
+  gKind[kKeyword] := MakeAttrs(gPal[b+ sKw*3],  gPal[b+ sKw*3+1],  gPal[b+ sKw*3+2]);
+  gKind[kComment] := MakeAttrs(gPal[b+ sCom*3], gPal[b+ sCom*3+1], gPal[b+ sCom*3+2]);
+  gKind[kString]  := MakeAttrs(gPal[b+ sStr*3], gPal[b+ sStr*3+1], gPal[b+ sStr*3+2]);
+  gKind[kNumber]  := MakeAttrs(gPal[b+ sNum*3], gPal[b+ sNum*3+1], gPal[b+ sNum*3+2])
+END ApplyKinds;
+
+PROCEDURE ApplyViewColors (tv: ObjC.Id; id: CARDINAL);   (* background / caret / selection *)
+VAR selAttr: ObjC.Id;
+BEGIN
+  [tv setDrawsBackground: TRUE];
+  [tv setBackgroundColor: ColorAt(id, sBg)];
+  [tv setInsertionPointColor: ColorAt(id, sCaret)];
+  selAttr := [[Cls("NSMutableDictionary") alloc] init];
+  [selAttr setObject: ColorAt(id, sSel) forKey: ObjC.NSString("NSBackgroundColor")];
+  [tv setSelectedTextAttributes: selAttr]
+END ApplyViewColors;
+
+PROCEDURE Recolor (tv: ObjC.Id);   (* force the layout manager to refetch attributes from gKind *)
+VAR store: ObjC.Id; len: CARDINAL;
+BEGIN
+  store := [tv textStorage]; len := [store length];
+  IF len > 0 THEN [store edited: 1 range: Range(0, len) changeInLength: 0] END;  (* NSTextStorageEditedAttributes *)
+  [tv setNeedsDisplay: TRUE]
+END Recolor;
+
+PROCEDURE ApplyTheme (editor: ObjC.Id);   (* editor = an NSScrollView from Make *)
+VAR tv: ObjC.Id;
+BEGIN
+  tv := [editor documentView];
+  ApplyViewColors(tv, gThemeId); Recolor(tv)
+END ApplyTheme;
+
+PROCEDURE SetTheme (id: CARDINAL);
+BEGIN
+  IF id >= themeCount THEN RETURN END;
+  gThemeId := id; ApplyKinds(id)
+END SetTheme;
+
+PROCEDURE CurrentTheme (): CARDINAL;
+BEGIN RETURN gThemeId END CurrentTheme;
+
+PROCEDURE ThemeName (id: CARDINAL; VAR name: ARRAY OF CHAR);
+BEGIN
+  CASE id OF
+    themeMono:  Assign("Monochrome", name)
+  | themeAmber: Assign("Amber CRT", name)
+  | themeGreen: Assign("Green CRT", name)
+  | themeTurbo: Assign("Turbo Pascal", name)
+  ELSE Assign("Default", name) END
+END ThemeName;
+
 PROCEDURE EnsureInit;   (* lazy: must run after Cocoa.InitApp, so do it on first Make *)
 BEGIN
   IF gInited THEN RETURN END;
   font := [Cls("NSFont") userFixedPitchFontOfSize: 13.0];
-  gKind[kDefault] := MakeAttrs(0.0, 0.0, 0.0);
-  gKind[kKeyword] := MakeAttrs(0.15, 0.15, 0.8);
-  gKind[kComment] := MakeAttrs(0.0, 0.5, 0.0);
-  gKind[kString]  := MakeAttrs(0.6, 0.1, 0.1);
-  gKind[kNumber]  := MakeAttrs(0.5, 0.0, 0.5);
+  SetupThemes; gThemeId := themeDefault; ApplyKinds(themeDefault);
   gNewRuns := NewRuns(); gScratch := NewRuns();
   gInited := TRUE
 END EnsureInit;
@@ -493,6 +593,7 @@ BEGIN
   [scroll setHasVerticalScroller: TRUE];
   [scroll setDocumentView: tvId];
   ObjC.LineNumbers(scroll);                          (* line-number ruler *)
+  ApplyViewColors(tvId, gThemeId); Recolor(tvId);    (* new editor adopts the active theme *)
   RETURN scroll
 END Make;
 
