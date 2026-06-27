@@ -18,7 +18,7 @@ MODULE macos_panes_ide;
    objects; the toolbar buttons' actions are the controller's methods. *)
 FROM SYSTEM IMPORT CAST, ADDRESS;
 FROM STextIO IMPORT WriteString, WriteLn;
-FROM Strings IMPORT Assign, Append, Equal;
+FROM Strings IMPORT Assign, Append, Equal, Length;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT Proc;
@@ -251,33 +251,64 @@ END AddTagItem;
 PROCEDURE HL (s: ARRAY OF CHAR);   (* append a help line + newline *)
 BEGIN Append(s, gHelpText); Append(helpNL, gHelpText) END HL;
 
-(* populate one scrollable list (project or library) from its folder; buttons go
-   top-down in the flipped document, whose height grows to scroll. *)
+PROCEDURE LowerCh (c: CHAR): CHAR;
+BEGIN IF (c >= 'A') AND (c <= 'Z') THEN RETURN CHR(ORD(c) + 32) ELSE RETURN c END END LowerCh;
+
+(* TRUE for editable source we want in the file lists: *.mod / *.def (case-insensitive) *)
+PROCEDURE IsSource (VAR nm: ARRAY OF CHAR): BOOLEAN;
+VAR L: CARDINAL; a, b, c: CHAR;
+BEGIN
+  L := Length(nm);
+  IF L < 5 THEN RETURN FALSE END;            (* "x.mod" is 5 chars minimum *)
+  IF nm[L-4] # '.' THEN RETURN FALSE END;
+  a := LowerCh(nm[L-3]); b := LowerCh(nm[L-2]); c := LowerCh(nm[L-1]);
+  RETURN ((a = 'm') AND (b = 'o') AND (c = 'd')) OR ((a = 'd') AND (b = 'e') AND (c = 'f'))
+END IsSource;
+
+(* populate one scrollable list (project or library) from its folder. Shows only
+   folders ([name]) and source files; a leading [..] navigates up a level.
+   Buttons go top-down in the flipped document, whose height grows to scroll. *)
 PROCEDURE RebuildList (isLib: BOOLEAN);
-VAR i, count, limit, n: INTEGER; b: Cocoa.Object; docW, totalH: REAL;
+VAR i, raw, out, n: INTEGER; b: Cocoa.Object; docW, totalH: REAL; isDir: BOOLEAN;
+    dir, full: ARRAY [0..1023] OF CHAR; nm: ARRAY [0..255] OF CHAR; title: ARRAY [0..271] OF CHAR;
+
+  PROCEDURE Emit (VAR realName, displayTitle: ARRAY OF CHAR);
+  BEGIN
+    IF isLib THEN
+      Assign(realName, gLibFiles[out]);
+      b := Cocoa.MakeFileButton(2.0, FLOAT(out) * RowH, docW, RowH - 2.0, displayTitle, LibBase + out);
+      gLibBtns[out] := b; Cocoa.AddSubview(libDoc, b)
+    ELSE
+      Assign(realName, gProjFiles[out]);
+      b := Cocoa.MakeFileButton(2.0, FLOAT(out) * RowH, docW, RowH - 2.0, displayTitle, out);
+      gProjBtns[out] := b; Cocoa.AddSubview(projDoc, b)
+    END;
+    INC(out)
+  END Emit;
+
 BEGIN
   IF isLib THEN
     FOR i := 0 TO gLibBtnCount - 1 DO Cocoa.RemoveView(gLibBtns[i]) END;
-    gLibBtnCount := 0; count := Proc.ListDir(gLibDir)
+    gLibBtnCount := 0; Assign(gLibDir, dir); raw := Proc.ListDir(gLibDir)
   ELSE
     FOR i := 0 TO gProjBtnCount - 1 DO Cocoa.RemoveView(gProjBtns[i]) END;
-    gProjBtnCount := 0; count := Proc.ListDir(gProjDir)
+    gProjBtnCount := 0; Assign(gProjDir, dir); raw := Proc.ListDir(gProjDir)
   END;
-  IF count < 0 THEN count := 0 END;
-  limit := count; IF limit > MaxFiles - 1 THEN limit := MaxFiles - 1 END;
-  docW := 150.0;
-  FOR i := 0 TO limit - 1 DO
-    IF isLib THEN n := Proc.DirEntry(i, gLibFiles[i]);
-                  b := Cocoa.MakeFileButton(2.0, FLOAT(i) * RowH, docW, RowH - 2.0, gLibFiles[i], LibBase + i);
-                  gLibBtns[i] := b; Cocoa.AddSubview(libDoc, b)
-    ELSE          n := Proc.DirEntry(i, gProjFiles[i]);
-                  b := Cocoa.MakeFileButton(2.0, FLOAT(i) * RowH, docW, RowH - 2.0, gProjFiles[i], i);
-                  gProjBtns[i] := b; Cocoa.AddSubview(projDoc, b)
-    END
+  IF raw < 0 THEN raw := 0 END;
+  docW := 150.0; out := 0;
+  Assign("..", nm); Assign("[..]", title); Emit(nm, title);   (* up a level *)
+  i := 0;
+  WHILE (i < raw) AND (out < MaxFiles - 1) DO
+    n := Proc.DirEntry(i, nm);
+    Assign(dir, full); Append("/", full); Append(nm, full);
+    isDir := Proc.IsDir(full);
+    IF isDir THEN Assign("[", title); Append(nm, title); Append("]", title); Emit(nm, title)
+    ELSIF IsSource(nm) THEN Assign(nm, title); Emit(nm, title) END;
+    INC(i)
   END;
-  totalH := FLOAT(limit) * RowH + 4.0;
-  IF isLib THEN gLibCount := count; gLibBtnCount := limit; SetFrameOf(libDoc, 0.0, 0.0, docW + 4.0, totalH)
-  ELSE          gProjCount := count; gProjBtnCount := limit; SetFrameOf(projDoc, 0.0, 0.0, docW + 4.0, totalH);
+  totalH := FLOAT(out) * RowH + 4.0;
+  IF isLib THEN gLibCount := out; gLibBtnCount := out; SetFrameOf(libDoc, 0.0, 0.0, docW + 4.0, totalH)
+  ELSE          gProjCount := out; gProjBtnCount := out; SetFrameOf(projDoc, 0.0, 0.0, docW + 4.0, totalH);
                 Cocoa.SetText(status, gProjDir) END
 END RebuildList;
 
@@ -781,18 +812,36 @@ BEGIN
   END
 END BuildPoll;
 
+(* Strip the last "/component" of a path (go up a level). "a/b/c" -> "a/b";
+   a path with no slash -> ".". *)
+PROCEDURE ParentDir (VAR path: ARRAY OF CHAR);
+VAR i, last: INTEGER;
+BEGIN
+  last := -1; i := 0;
+  WHILE path[i] # CHR(0) DO IF path[i] = '/' THEN last := i END; INC(i) END;
+  IF last < 0 THEN Assign(".", path)
+  ELSIF last = 0 THEN path[1] := CHR(0)            (* "/x" -> "/" *)
+  ELSE path[last] := CHR(0) END
+END ParentDir;
+
 PROCEDURE OpenDoc (tag: INTEGER);
-VAR full: ARRAY [0..262143] OF CHAR; idx: INTEGER; isLib: BOOLEAN;
+VAR full: ARRAY [0..262143] OF CHAR; idx: INTEGER; isLib: BOOLEAN; name: ARRAY [0..255] OF CHAR;
 BEGIN
   isLib := tag >= LibBase;
   IF isLib THEN idx := tag - LibBase;
     IF (idx < 0) OR (idx >= gLibCount) THEN RETURN END;
-    Assign(gLibDir, full); Append("/", full); Append(gLibFiles[idx], full)
+    Assign(gLibFiles[idx], name)
   ELSE idx := tag;
     IF (idx < 0) OR (idx >= gProjCount) THEN RETURN END;
-    Assign(gProjDir, full); Append("/", full); Append(gProjFiles[idx], full)
+    Assign(gProjFiles[idx], name)
   END;
-  IF Proc.IsDir(full) THEN
+  IF Equal(name, "..") THEN                          (* up a level *)
+    IF isLib THEN ParentDir(gLibDir) ELSE ParentDir(gProjDir) END;
+    RebuildList(isLib); RETURN
+  END;
+  IF isLib THEN Assign(gLibDir, full) ELSE Assign(gProjDir, full) END;
+  Append("/", full); Append(name, full);
+  IF Proc.IsDir(full) THEN                            (* descend into a subfolder *)
     IF isLib THEN Assign(full, gLibDir) ELSE Assign(full, gProjDir) END;
     RebuildList(isLib); RETURN
   END;
