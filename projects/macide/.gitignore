@@ -1,0 +1,10 @@
+# Build artifacts from `newm2 build projects/macide/*.mod`.
+# The compiled binary is written next to each source with NO file extension on
+# macOS (e.g. macos_panes_ide, fmtcli), which *.exe/*.obj can't catch — so ignore
+# everything here except sources, and the macOS bare-name binaries go away too.
+*
+!.gitignore
+!*/
+!*.mod
+!*.def
+!*.md

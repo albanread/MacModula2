@@ -1,5 +1,5 @@
 MODULE glimmer;
-(* Glimmer — a firefly tending its light on a drifting night — running on the
+(* Glimmer — created by claude - a firefly tending its light on a drifting night — running on the
    native macOS Metal indexed pane (library/macrtdef/IndexedPane), the GPU game
    surface written in pure Modula-2. Ported from demos/glimmer.mod (Windows
    GameViewGpu); the game logic is unchanged — only the window/loop/input bind to
