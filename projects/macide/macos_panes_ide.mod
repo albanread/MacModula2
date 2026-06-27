@@ -561,19 +561,23 @@ BEGIN
 END DescribeCursor;
 
 PROCEDURE RunSearch (VAR q: ARRAY OF CHAR);   (* unified guide + Cocoa search into the help pane *)
-VAR res: ARRAY [0..16383] OF CHAR; md: ARRAY [0..65535] OF CHAR; n, gc: INTEGER;
+VAR res: ARRAY [0..65535] OF CHAR; md: ARRAY [0..131071] OF CHAR;
+    cmd: ARRAY [0..2047] OF CHAR; gc, rc: INTEGER;
 BEGIN
   IF q[0] = CHR(0) THEN Cocoa.SetText(status, "Type a search term, then Enter."); RETURN END;
   Assign("# Search: ", md); Append(q, md); Append(helpNL, md); Append(helpNL, md);
   Append("## Guide", md); Append(helpNL, md);
   gc := SearchGuide(q, md);
   IF gc <= 0 THEN Append("_no guide matches_", md); Append(helpNL, md) END;
-  Append(helpNL, md); Append("## Cocoa classes", md); Append(helpNL, md);
-  n := ObjC.FindClasses(q, res);
-  IF n > 0 THEN Append("```", md); Append(helpNL, md); Append(res, md); Append(helpNL, md); Append("```", md)
-  ELSE Append("_no class matches_", md) END;
+  Append(helpNL, md);
+  (* Cocoa methods & types from the compiler's own selector database (cocoadb):
+     each selector shows its return type + arg count — the useful detail. *)
+  Assign("./target/debug/newm2-driver cocoa --library library '", cmd);
+  Append(q, cmd); Append("' 2>&1", cmd);
+  rc := Proc.RunCapture(cmd, res);
+  Append(res, md);
   MarkView.Render(helpPane, md); HelpShow(TRUE);
-  Cocoa.SetText(status, "Search results in the help pane — click a topic to open it.")
+  Cocoa.SetText(status, "Search results in the help pane.")
 END RunSearch;
 
 (* ---- ptcl automation: register IDE actions as verbs; a timer runs scripts

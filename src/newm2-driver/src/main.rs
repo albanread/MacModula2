@@ -43,6 +43,7 @@ const COMMANDS: &[&str] = &[
     "analyze",
     "complete",
     "describe",
+    "cocoa",
     "run",
     "build",
     "daemon",
@@ -422,6 +423,7 @@ fn main() -> ExitCode {
         "analyze" => run_analyze(&paths, &options),
         "complete" => run_complete(&paths, &options),
         "describe" => run_describe(&paths, &options),
+        "cocoa" => run_cocoa(&paths, &options),
         "run" => run_run(&paths, &rest, &options),
         "build" => run_build(&paths, &rest, &options),
         "build-stdlib" => run_build_stdlib(&options, &rest),
@@ -1269,6 +1271,105 @@ fn locate_describe_db(entry: &Path) -> Option<PathBuf> {
 /// `newm2 describe <file> <line> <col>` — prints the context-help markdown for
 /// the symbol at the cursor (1-based `line`, 0-based `col`), or nothing when no
 /// symbol resolves there.
+/// Decode a Cocoa selector return-kind code into a readable Modula-2 type.
+fn cocoa_ret_type(ret: &str) -> String {
+    match ret {
+        "@" => "object".into(),
+        ":" => "SEL".into(),
+        "i" => "INTEGER".into(),
+        "u" => "CARDINAL".into(),
+        "d" => "REAL".into(),
+        "B" => "BOOLEAN".into(),
+        "v" => "(void)".into(),
+        "?" => "(other)".into(),
+        "N" => "NSRange".into(),
+        "P" => "NSPoint".into(),
+        "S" => "NSSize".into(),
+        "R" => "NSRect".into(),
+        s if s.starts_with('{') => format!("struct `{s}`"),
+        s => s.into(),
+    }
+}
+
+/// `newm2 cocoa <query>` — search the Cocoa selector database (the same data the
+/// compiler uses for typed message sends) and print Markdown: matching selectors
+/// with their return type + arg count, and matching class names. Surfaced in the
+/// IDE's help pane so the Cocoa search shows real signatures, not a bare list.
+fn run_cocoa(paths: &[PathBuf], options: &DriverOptions) -> ExitCode {
+    let query = paths.first().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    if query.trim().is_empty() {
+        println!("_type a search term_");
+        return ExitCode::SUCCESS;
+    }
+    // Locate cocoa-selectors.json beside the ObjC bindings on the library path.
+    let mut json: Option<PathBuf> = None;
+    for root in &options.library_paths {
+        for cand in [root.join("macrtdef/cocoa-selectors.json"), root.join("cocoa-selectors.json")] {
+            if cand.exists() {
+                json = Some(cand);
+                break;
+            }
+        }
+        if json.is_some() {
+            break;
+        }
+    }
+    if json.is_none() {
+        let c = PathBuf::from("library/macrtdef/cocoa-selectors.json");
+        if c.exists() {
+            json = Some(c);
+        }
+    }
+    let Some(json) = json else {
+        println!("_Cocoa selector database not found (build with --library)_");
+        return ExitCode::SUCCESS;
+    };
+    let db = newm2_sema::cocoadb::CocoaDb::load(&json);
+    let q = query.to_lowercase();
+    const CAP: usize = 80;
+
+    // Selectors (method + struct-type lookup) — the useful detail.
+    let mut sels: Vec<(&String, &newm2_sema::cocoadb::SelSig)> =
+        db.selectors.iter().filter(|(s, _)| s.to_lowercase().contains(&q)).collect();
+    sels.sort_by(|a, b| a.0.cmp(b.0));
+    println!("## Cocoa selectors matching `{query}` ({})", sels.len());
+    if sels.is_empty() {
+        println!("_no selector matches_");
+    } else {
+        for (sel, sig) in sels.iter().take(CAP) {
+            let args = if sig.argc == 1 {
+                " (1 arg)".to_string()
+            } else if sig.argc > 1 {
+                format!(" ({} args)", sig.argc)
+            } else {
+                String::new()
+            };
+            println!("- `{sel}`{args} → {}", cocoa_ret_type(&sig.ret));
+        }
+        if sels.len() > CAP {
+            println!("_…and {} more (narrow the search)_", sels.len() - CAP);
+        }
+    }
+
+    // Classes (names known to the binding generator).
+    let mut classes: Vec<&String> =
+        db.classes.iter().filter(|c| c.to_lowercase().contains(&q)).collect();
+    classes.sort();
+    println!();
+    println!("## Cocoa classes matching `{query}` ({})", classes.len());
+    if classes.is_empty() {
+        println!("_no class matches_");
+    } else {
+        for c in classes.iter().take(CAP) {
+            println!("- `{c}`");
+        }
+        if classes.len() > CAP {
+            println!("_…and {} more (narrow the search)_", classes.len() - CAP);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_describe(paths: &[PathBuf], options: &DriverOptions) -> ExitCode {
     let Some(file) = paths.first().and_then(|p| p.to_str()) else {
         eprintln!("newm2 describe: expected <file> <line> <col>");
