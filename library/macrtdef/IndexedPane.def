@@ -1,0 +1,60 @@
+DEFINITION MODULE IndexedPane;
+(* A retro indexed-graphics game pane, GPU-rendered with Metal — but every line of
+   it is Modula-2 (library/macrtmod/IndexedPane.mod), driving Metal through the
+   Obj-C bridge. It is the macOS counterpart of the Windows GameViewGpu module, and
+   intentionally mirrors a subset of its API so the GPU game demos port across with
+   minimal change.
+
+   The pane: a w x h grid of 8-bit palette indices. Colours — indices 1..15 are
+   PER-LINE (16 colours on each line), indices 16..255 are GLOBAL (240 shared); a
+   Metal fragment shader does the index -> colour lookup. Index 0 is ALWAYS
+   transparent. Sprites are 16-colour, multi-frame, each with its own palette;
+   index 0 transparent; composited over the pane on the GPU (scale/rotation/alpha).
+   Coordinates are pixels, origin top-left. *)
+
+TYPE TickProc = PROCEDURE;
+
+CONST                              (* key ids for KeyHeld (letters: pass ORD(CAP ch)) *)
+  KeyLeft = 1; KeyRight = 2; KeyDown = 3; KeyUp = 4; KeySpace = 5;
+
+PROCEDURE Create (title: ARRAY OF CHAR; w, h, scale: CARDINAL): BOOLEAN;
+
+(* palette *)
+PROCEDURE SetRGB     (index, r, g, b: CARDINAL);          (* global, index 16..255 *)
+PROCEDURE SetLineRGB (y, index, r, g, b: CARDINAL);       (* per-line, index 1..15 *)
+PROCEDURE LoadDefaultPalette;
+
+(* pane drawing (index 0 = transparent) *)
+PROCEDURE Cls      (index: CARDINAL);
+PROCEDURE Pset     (x, y: INTEGER; index: CARDINAL);
+PROCEDURE Pget     (x, y: INTEGER): CARDINAL;
+PROCEDURE FillRect (x, y, w, h: INTEGER; index: CARDINAL);
+PROCEDURE Circle   (cx, cy, r: INTEGER; index: CARDINAL);
+PROCEDURE Disc     (cx, cy, r: INTEGER; index: CARDINAL);
+PROCEDURE Line     (x0, y0, x1, y1: INTEGER; index: CARDINAL);
+PROCEDURE Text     (x, y: INTEGER; s: ARRAY OF CHAR; index: CARDINAL);
+
+(* sprite definitions — `rows` is '/'-separated; each char a hex index, '.'=0 *)
+PROCEDURE DefineSprite (id: CARDINAL; rows: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE AddFrame     (id: CARDINAL; rows: ARRAY OF CHAR): BOOLEAN;
+PROCEDURE SpriteRGB    (id, index, r, g, b: CARDINAL);
+
+(* sprite instances *)
+PROCEDURE Place       (inst, def: CARDINAL; x, y: REAL);
+PROCEDURE MoveTo      (inst: CARDINAL; x, y: REAL);
+PROCEDURE SetScale    (inst: CARDINAL; s: REAL);
+PROCEDURE SetRotation (inst: CARDINAL; degrees: REAL);
+PROCEDURE SetAlpha    (inst: CARDINAL; a: REAL);
+PROCEDURE SetFrame    (inst, frame: CARDINAL);
+PROCEDURE Show        (inst: CARDINAL);
+PROCEDURE Hide        (inst: CARDINAL);
+PROCEDURE Hit         (a, b: CARDINAL): BOOLEAN;          (* bounding-box overlap *)
+
+(* the frame: upload + GPU draw the pane and all visible sprites *)
+PROCEDURE Present;
+(* run the game: `tick` is called ~60x/s; it should update, draw, and Present *)
+PROCEDURE Run (tick: TickProc);
+PROCEDURE KeyHeld (key: CARDINAL): BOOLEAN;
+PROCEDURE Quit;
+
+END IndexedPane.
