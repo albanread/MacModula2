@@ -637,6 +637,14 @@ fn t40_090_const_array_index() {
 }
 
 #[test]
+fn t40_095_openarray_strassign() {
+    // `openArr := "literal"` / `:= stringConst` inside an open ARRAY OF CHAR
+    // param copies the chars bounded by the runtime HIGH+1 (regression: it used
+    // to fall through to a Store of the literal's pointer bits -> garbage).
+    check("t-40-095-openarray-strassign.mod", "SINE\nHELLO\nSIN3\n");
+}
+
+#[test]
 fn t40_060_with() {
     // WITH statement: a bare field name inside WITH r DO ... END resolves
     // against r's record. Covers a simple record, an array-element designator,

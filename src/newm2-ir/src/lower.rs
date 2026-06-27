@@ -2018,6 +2018,34 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     self.call_runtime("NM2Str.WNCopy", params, None, vec![src, dst, cap]);
                     return;
                 }
+                // `openArr := "literal"` where `openArr` is an OPEN `ARRAY OF CHAR`
+                // VAR/value parameter: the same string-rvalue hazard as a fixed
+                // array, but the capacity is the param's *runtime* HIGH+1, not a
+                // static bound — so the fixed-array checks above miss it. Without
+                // this, the assignment falls through to a plain Store of the
+                // literal's pointer bits (garbage). Dispatch wide vs narrow exactly
+                // like the fixed-array path: Char/Uchar -> WCopy, Achar -> WNCopy.
+                if self.is_string_rvalue(value)
+                    && let Some(wide) = self.open_char_array_width(target)
+                    && let Some(high) = self.open_array_index_high(&target.base)
+                {
+                    let src = self.eval_expr(value);
+                    let dst = self.eval_lvalue(target);
+                    let one = self.fresh();
+                    self.push(Inst::Const { dst: one, val: ConstVal::Int(1) });
+                    let cap = self.fresh();
+                    self.push(Inst::Binary { dst: cap, op: BinOp::Add, lhs: high, rhs: one });
+                    let addr = self.ctx.addr_ty();
+                    let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
+                    let params = vec![
+                        IrParam { name: "src".into(), ty: addr, is_var: false },
+                        IrParam { name: "dst".into(), ty: addr, is_var: false },
+                        IrParam { name: "cap".into(), ty: card, is_var: false },
+                    ];
+                    let rt = if wide { "NM2Str.WCopy" } else { "NM2Str.WNCopy" };
+                    self.call_runtime(rt, params, None, vec![src, dst, cap]);
+                    return;
+                }
                 // `v[i] := x` SIMD lane write: read-modify-write the whole vector
                 // (insertelement) since a lane has no independent address.
                 if self.try_vector_lane_write(target, value) {
@@ -5424,6 +5452,26 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     _ => None,
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// When `d` names a whole OPEN `ARRAY OF CHAR` (no selectors), return its
+    /// string-model width: `Some(true)` for the WIDE model (`Char`/`Uchar`,
+    /// copied via `WCopy`) and `Some(false)` for the NARROW model (`Achar`,
+    /// copied via `WNCopy`) — mirroring the fixed-array dispatch. `None` when
+    /// `d` is not a simple open-array-of-char designator.
+    fn open_char_array_width(&self, d: &ast::Designator) -> Option<bool> {
+        if !d.selectors.is_empty() {
+            return None;
+        }
+        let ty = self.ctx.sema.designator_type(self.ctx.mid, d.span)?;
+        match self.ctx.sema.types.get(ty) {
+            TypeKind::OpenArray { base } => match self.ctx.sema.types.get(*base) {
+                TypeKind::Builtin(Builtin::Char | Builtin::Uchar) => Some(true),
+                TypeKind::Builtin(Builtin::Achar) => Some(false),
+                _ => None,
+            },
             _ => None,
         }
     }
