@@ -1,0 +1,46 @@
+DEFINITION MODULE BigNum;
+(*
+ * Arbitrary-precision integers (BigInt) and exact rationals (BigRat) for the
+ * macOS/arm64 build. The multi-precision inner loops — carry-propagating add,
+ * borrow-propagating subtract, 64x64->128 multiply-accumulate, and 128/64 long
+ * division — are written in inline AArch64 assembler in the implementation; the
+ * algorithms above them are plain Modula-2.
+ *
+ * BigInt is sign + little-endian magnitude in 64-bit limbs, fixed capacity
+ * (Limbs * 64 bits). BigRat is num/den kept in lowest terms with den > 0.
+ *
+ * Result and operand variables may be the same (e.g. Add(x, x, y) is fine).
+ *)
+
+CONST Limbs = 160;        (* capacity: 160 * 64 = 10240 bits *)
+
+TYPE
+  BigInt = RECORD
+    neg: BOOLEAN;                         (* sign of the value *)
+    n:   CARDINAL;                        (* significant limbs (0 => zero) *)
+    d:   ARRAY [0..Limbs-1] OF CARDINAL;  (* magnitude, little-endian *)
+  END;
+
+  BigRat = RECORD num, den: BigInt END;   (* den > 0, gcd(num,den)=1 *)
+
+(* ---- BigInt ---- *)
+PROCEDURE SetCard (VAR x: BigInt; v: CARDINAL);          (* x := v *)
+PROCEDURE Copy    (VAR dst: BigInt; VAR src: BigInt);    (* dst := src *)
+PROCEDURE Cmp     (VAR a, b: BigInt): INTEGER;           (* signed: -1 / 0 / 1 *)
+PROCEDURE Add     (VAR r, a, b: BigInt);                 (* r := a + b *)
+PROCEDURE Sub     (VAR r, a, b: BigInt);                 (* r := a - b *)
+PROCEDURE Mul     (VAR r, a, b: BigInt);                 (* r := a * b *)
+PROCEDURE MulCard (VAR x: BigInt; m: CARDINAL);          (* x := x * m *)
+PROCEDURE DivMod  (VAR q, r, a, b: BigInt);              (* q := a DIV b; r := a MOD b *)
+PROCEDURE Div     (VAR q, a, b: BigInt);                 (* q := a DIV b (truncated) *)
+PROCEDURE Gcd     (VAR g, a, b: BigInt);                 (* g := gcd(|a|,|b|) *)
+PROCEDURE Print   (VAR x: BigInt);                       (* write decimal to stdout *)
+
+(* ---- BigRat ---- *)
+PROCEDURE RatSetCard (VAR r: BigRat; num: INTEGER; den: CARDINAL);  (* r := num/den *)
+PROCEDURE RatSet     (VAR r: BigRat; VAR num, den: BigInt);         (* r := num/den *)
+PROCEDURE RatAdd     (VAR r, x, y: BigRat);                         (* r := x + y *)
+PROCEDURE RatMul     (VAR r, x, y: BigRat);                         (* r := x * y *)
+PROCEDURE RatPrint   (VAR r: BigRat);                               (* "num" or "num/den" *)
+
+END BigNum.
