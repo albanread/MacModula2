@@ -4,9 +4,6 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
-[[bin]]
-name = "newm2-test-results"
-path = "src/bin/newm2-test-results.rs"
 
 [features]
 # Opt-in GC test lane; enables the collector across the pipeline so the

@@ -41,12 +41,13 @@ pub unsafe extern "C-unwind" fn nm2_storage_allocate(
         unsafe { *addr_slot = std::ptr::null_mut() };
         return;
     }
-    let layout = Layout::from_size_align(n, STORAGE_ALIGN)
-        .expect("nm2_storage_allocate: invalid layout");
+    let Ok(layout) = Layout::from_size_align(n, STORAGE_ALIGN) else {
+        unsafe { *addr_slot = std::ptr::null_mut() };
+        return;
+    };
     let ptr = unsafe { std::alloc::alloc(layout) };
-    if ptr.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
+    // Return NIL gracefully if the allocator is exhausted.
+    // if ptr.is_null(), std::alloc::alloc already returns null, which we write to addr_slot.
     unsafe { *addr_slot = ptr };
 }
 
@@ -67,8 +68,10 @@ pub unsafe extern "C-unwind" fn nm2_storage_deallocate(
         unsafe { *addr_slot = std::ptr::null_mut() };
         return;
     }
-    let layout = Layout::from_size_align(n, STORAGE_ALIGN)
-        .expect("nm2_storage_deallocate: invalid layout");
+    let Ok(layout) = Layout::from_size_align(n, STORAGE_ALIGN) else {
+        unsafe { *addr_slot = std::ptr::null_mut() };
+        return;
+    };
     unsafe { std::alloc::dealloc(ptr, layout) };
     unsafe { *addr_slot = std::ptr::null_mut() };
 }

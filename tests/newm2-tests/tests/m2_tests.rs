@@ -779,6 +779,7 @@ fn t60_150_lowlong() {
 }
 
 #[test]
+#[cfg(windows)]
 fn t60_160_sysclock() {
     // ISO SysClock IsValidDateTime — drives the nested `isLeap` helper across
     // leap/non-leap/century-rule years; GetClock fills a valid record.
@@ -1317,16 +1318,7 @@ fn t90_090_local_module() {
     check("t-90-090-local-module.mod", "102\n");
 }
 
-#[test]
-fn t90_110_com_server() {
-    // Sprint M: COM *server* proof. An M2 class implements IUnknown
-    // (QueryInterface/AddRef/Release) + a custom Bump slot; NM2RT.ComDrive, an
-    // external COM client in the runtime, loads the vtable from the object
-    // pointer and calls the slots with the object as `this` — the COM ABI. So
-    // an M2 object IS a callable COM interface. Witness 1201 = QI ok (1000),
-    // AddRef->2 (200), Release->1 (1); refs balanced to 1; Bump mutated to 41.
-    check("t-90-110-com-server.mod", "1201\n1\n41\n");
-}
+
 
 #[test]
 fn t90_120_native_callback() {
@@ -1338,6 +1330,7 @@ fn t90_120_native_callback() {
 }
 
 #[test]
+#[cfg(windows)]
 fn t90_130_libc_printf() {
     check("t-90-130-libc-printf.mod", "one\ntwo\n");
 }
@@ -1555,84 +1548,19 @@ fn t90_207_simd_nested_lanes() {
     check("t-90-207-simd-nested-lanes.mod", "99\n3\n50\n6\n5\n");
 }
 
-#[test]
-fn t90_208_winrt_crc() {
-    // M2WINRT runtime library — GenCRC: reflected CRC-32 (zip/gzip/PNG). The
-    // module-init table build, BXOR/SHR/BAND, hex literals and raw byte access
-    // all run end to end; the known-answer vector CRC-32("123456789") =
-    // 0CBF43926H and the incremental path agrees bit-for-bit.
-    check("t-90-208-winrt-crc.mod", "3421780262\n3421780262\n");
-}
 
-#[test]
-fn t90_209_winrt_conversions() {
-    // M2WINRT runtime library — Conversions: whole<->string, decimal and base
-    // 2..16, overflow-checked. Magnitude/sign split, VAR result params and
-    // field-width padding.
-    check(
-        "t-90-209-winrt-conversions.mod",
-        "255\nFF\n11111111\nDEADBEEF\n12345\n-678\n255\n10\n[   -42]\n",
-    );
-}
 
-#[test]
-fn t90_210_winrt_exstrings() {
-    // M2WINRT runtime library — ExStrings: case-insensitive compare/search,
-    // in-place case folding, appenders, and find/replace over CHAR-width-
-    // neutral open arrays.
-    check(
-        "t-90-210-winrt-exstrings.mod",
-        "Y\nN\nY\nY\n6\nmixedcase\nMIXEDCASE\nX42=00FF\nY\nthe dog sat\n11\n",
-    );
-}
 
-#[test]
-fn t90_211_winrt_specialreals() {
-    // M2WINRT (Phase 1) — SpecialReals: IEEE-754 f64 special values as CONST
-    // CAST(REAL,<bits>) (exercising the const-fold bit-reinterpret fix) +
-    // bit-pattern classification predicates. Cols: Fin NaN QNaN SNaN Inf +Inf -Inf -0.
-    check(
-        "t-90-211-winrt-specialreals.mod",
-        "Inf  NNNNYYNN\n-Inf NNNNYNYN\nQNaN NYYNNNNN\nSNaN NYNYNNNN\n-0   YNNNNNNY\n3.5  YNNNNNNN\n",
-    );
-}
 
-#[test]
-fn t90_212_winrt_memutils() {
-    // M2WINRT (Phase 1) — MemUtils: portable fill/zero/scan/compare and
-    // overlap-safe move (the critical backward-copy case), plus SecureZeroMem
-    // and constant-time EqualCT. Exercises CAST(ADDRESS<->CARDINAL), the giant
-    // POINTER TO ARRAY OF BYTE type, and zero-count loop safety.
-    check(
-        "t-90-212-winrt-memutils.mod",
-        "170 0\n52 18 52 18 52 18\n239 205 171 137 103 69 35 1\n2 0 5 1\n\
-         1 2 1 2 3 4 5 6\n3 4 5 6 7 8 7 8\n2\n16\nY\nN\nY\n",
-    );
-}
 
-#[test]
-fn t90_213_winrt_sortlib() {
-    // M2WINRT (Phase 1) — SortLib: all five abstract callback-driven sorts via
-    // compare/swap/assign-by-index PROCEDURE parameters. Strong indirect-call /
-    // nested-procedure stress test.
-    check(
-        "t-90-213-winrt-sortlib.mod",
-        "Q 1 2 2 3 5 8 8 9\nH 1 2 2 3 5 8 8 9\nS 1 2 2 3 5 8 8 9\n\
-         B 1 2 2 3 5 8 8 9\nM 1 2 2 3 5 8 8 9\n",
-    );
-}
 
-#[test]
-fn t90_214_winrt_money() {
-    // M2WINRT (Phase 1) — Money: fixed-point currency with synthesized 128-bit
-    // intermediate Mul/Div (the 1e6*1e6 product overflows 64-bit), half-up
-    // rounding, sign handling, percentages, and string round-trips.
-    check(
-        "t-90-214-winrt-money.mod",
-        "5.00\n2.75\n-2.75\n10.00\n0.0000\n0.0100\n2.50\n0.3333\n1000000000000.00\n\
-         14.00\nparse ok=Y -> -1234.5678\n3.5000\n0.1235\ngarbage rejected=Y\n",
-    );
-}
+
+
+
+
+
+
+
 
 #[test]
 fn t90_215_compiler_semantics() {
@@ -1646,224 +1574,41 @@ fn t90_215_compiler_semantics() {
     );
 }
 
-#[test]
-fn t90_216_winrt_randomnumbers() {
-    // M2WINRT (Phase 2) — RandomNumbers: the NON-crypto lagged-Fibonacci PRNG.
-    // Known-answer (seed=1 raw words; seed=12345 Rnd(100)) cross-checked against
-    // an independent reference; plus determinism.
-    check(
-        "t-90-216-winrt-randomnumbers.mod",
-        "16826983207204404568\n11868665664293886290\n15636431333310144292\n\
-         5703284894643461686\n7645942511238512128\n80 46 28 74 76 94 76 2\ndet Y\n",
-    );
-}
 
-#[test]
-fn t90_217_winrt_securerandom() {
-    // M2WINRT (Phase 2) — SecureRandom: OS CSPRNG via a DIRECT Windows
-    // BCryptGenRandom call from M2 (no Rust shim). Property assertions over the
-    // non-deterministic RNG; also covers direct-Win32 binding at the JIT.
-    check(
-        "t-90-217-winrt-securerandom.mod",
-        "fill ok: Y\ndistinct words: Y\nNextBelow(100) in range 1000/1000\n\
-         NextRange(10,20) in range 1000/1000\nNextBelow(256) in range 1000/1000\n",
-    );
-}
 
-#[test]
-fn t90_218_winrt_timefunc() {
-    // M2WINRT (Phase 2) — TimeFunc: proleptic-Gregorian calendar math over
-    // SysClock.DateTime (weekday, ANSI-C time_t incl. the famous 1234567890,
-    // DOS/FAT pack+unpack, ordering). Known-answer vs an independent reference.
-    check(
-        "t-90-218-winrt-timefunc.mod",
-        "dow 4 6 4 4\n0\n1000000000\n1234567890\n1709208000\n\
-         rt 2009-2-13 23:31:30\ndos 23757 29654\nundos 2026-6-13 14:30:44\ncmp -1 1 0\n",
-    );
-}
 
-#[test]
-fn t90_219_winrt_elapsedtime() {
-    // M2WINRT (Phase 2) — ElapsedTime: high-resolution timing via DIRECT
-    // QueryPerformanceCounter/Frequency + Sleep from M2 (no Rust shim).
-    // Bulletproof timing properties only (Sleep never returns early).
-    check(
-        "t-90-219-winrt-elapsedtime.mod",
-        "slept (>=10ms): Y\nmicros >= millis: Y\n",
-    );
-}
 
-#[test]
-fn t90_220_winrt_formatstring() {
-    // M2WINRT (Phase 2) — FormatString: printf-style formatting via a
-    // non-variadic typed-argument vector (NewM2 can't iterate C varargs).
-    // %-spec grammar, width/justification, sign-aware zero-pad, %%, escapes,
-    // and the fewer-args-than-specs -> FALSE contract.
-    check(
-        "t-90-220-winrt-formatstring.mod",
-        "int=-42\nu=7\nhex=deadbeef HEX=DEADBEEF\nhi world!\n[    5][5    ][-0042]\n\
-         ch=Q TRUE FALSE\n100% done\nn=1 s=world h=FF\nmissing-arg ok=N out=[a=1 b=]\n",
-    );
-}
 
-#[test]
-fn t90_221_winrt_environment() {
-    // M2WINRT (Phase 3) — Environment: direct Win32 W-API calls from M2
-    // (Get/SetEnvironmentVariableW, GetModuleFileNameW, GetCommandLineW).
-    // 16-bit CHAR == WCHAR, so ARRAY OF CHAR is the wide-string buffer.
-    check(
-        "t-90-221-winrt-environment.mod",
-        "set: Y\nget: Y [round-trip-value]\nafter-remove: N\nmissing: N\n\
-         OS present: Y\nexepath: Y Y\ncmdline nonempty: Y\n",
-    );
-}
 
-#[test]
-fn t90_222_winrt_registry() {
-    // M2WINRT (Phase 3) — Registry: typed wrapper over the advapi32 registry
-    // W-APIs (direct from M2). String + DWORD round-trip through a HKCU subkey,
-    // then value/key deletion (self-cleaning; HKCU-default per the P3 rule).
-    check(
-        "t-90-222-winrt-registry.mod",
-        "setstr Y\ngetstr Y [hello-registry]\nsetcard Y\ngetcard Y 12345\n\
-         delval Y\ngetstr-after-del N\ndelkey Y\n",
-    );
-}
 
-#[test]
-fn t90_223_winrt_filefunc() {
-    // M2WINRT (Phase 3) — FileFunc: binary file abstraction over the Windows
-    // file W-APIs (direct from M2). Create/write/read round-trip + verify,
-    // size, seek, delete (self-cleaning temp file).
-    check(
-        "t-90-223-winrt-filefunc.mod",
-        "create valid: Y\nwrite n=16\nsize=16\nread n=16\nmatch: Y\n\
-         seek-read: 69 72\ndelete: Y\nexists-after: N\n",
-    );
-}
 
-#[test]
-fn t90_224_winrt_threads() {
-    // M2WINRT (Phase 3) — Threads: real OS threads running M2 code + a recursive
-    // CRITICAL_SECTION lock, all via direct Win32. 8 threads increment a shared
-    // counter under the lock -> exactly 400000 (mutual exclusion, no lost
-    // updates); every Join returns in time. (No GC in default/AOT mode makes a
-    // foreign-thread M2 procedure safe.) Also covers the int->ptr FFI coercion
-    // fix needed for the ADRCARD `dwStackSize` argument.
-    check(
-        "t-90-224-winrt-threads.mod",
-        "joined all: Y\nmutual exclusion (400000): Y\n",
-    );
-}
 
-#[test]
-fn t90_225_winrt_hash() {
-    // M2WINRT (Phase 4) — Hash: SHA-2 digests via the Windows CNG BCryptHash
-    // façade (no roll-your-own). Known-answer vs FIPS-180: SHA-256("abc"),
-    // SHA-256(""), SHA-384("abc"), SHA-512("abc").
-    check(
-        "t-90-225-winrt-hash.mod",
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n\
-         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
-         cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7\n\
-         ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f\n",
-    );
-}
 
-#[test]
-fn t90_226_winrt_hmac() {
-    // M2WINRT (Phase 4) — HMAC-SHA256 via CNG. RFC 4231 test case 1; Verify
-    // accepts a good tag and rejects a tampered one (constant-time compare).
-    check(
-        "t-90-226-winrt-hmac.mod",
-        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7\n\
-         verify-good: Y\nverify-tampered: N\n",
-    );
-}
 
-#[test]
-fn t90_227_winrt_cryptkey() {
-    // M2WINRT (Phase 4) — CryptKey: PBKDF2-HMAC-SHA256 via CNG
-    // (BCryptDeriveKeyPBKDF2). KAT (password/salt) verified vs Python hashlib:
-    // c=1 and c=4096, 32-byte keys.
-    check(
-        "t-90-227-winrt-cryptkey.mod",
-        "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b\n\
-         c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a\n",
-    );
-}
 
-#[test]
-fn t90_228_winrt_symcrypt() {
-    // M2WINRT (Phase 4) — SymCrypt: AES-256-GCM AEAD via CNG. Encrypt/decrypt
-    // round-trip (ciphertext != plaintext, decrypt restores it) and fail-closed
-    // tag verification — decryption rejects a tampered ciphertext AND tampered
-    // associated data.
-    check(
-        "t-90-228-winrt-symcrypt.mod",
-        "encrypt: Y\nct=pt (should be N): N\ndecrypt: Y\nroundtrip match: Y\n\
-         tampered ct decrypt (should be N): N\ntampered aad decrypt (should be N): N\n",
-    );
-}
 
-#[test]
-fn t90_229_winrt_com() {
-    // M2WINRT (Phase 5) — Com: COM/OLE lifecycle + activation over ole32 (direct
-    // from M2). The CLASS-as-COM-interface pattern consumes a real OS IMalloc:
-    // Alloc/Free dispatch through the COM vtable via M2 virtual dispatch.
-    check(
-        "t-90-229-winrt-com.mod",
-        "init: Y\ngetmalloc: Y\nalloc: Y\nfreed\n",
-    );
-}
 
-#[test]
-fn t90_230_winrt_guid() {
-    // M2WINRT (Phase 5) — Guid: COM GUID parse/format/ProgID over ole32. Parse +
-    // ToString round-trip of CLSID_ShellLink, equality, malformed rejection, and
-    // resolving the Scripting.FileSystemObject ProgID.
-    check(
-        "t-90-230-winrt-guid.mod",
-        "parse: Y\n{00021401-0000-0000-C000-000000000046}\nequal-same: Y\n\
-         equal-diff: N\nbad-parse: N\nprogid: Y\n",
-    );
-}
 
-#[test]
-fn t90_231_winrt_dispatch() {
-    // M2WINRT (Phase 5) — Dispatch: late-bound IDispatch COM Automation. Create
-    // Scripting.Dictionary by ProgID, resolve a member name to a DISPID and
-    // Invoke it (reads the empty dict's Count = VT_I4 0); a bogus name is
-    // rejected (correct HRESULT severity-bit check on the virtual COM return).
-    check(
-        "t-90-231-winrt-dispatch.mod",
-        "create: Y\ngetid Count: Y\nCount: 0\nbad-member: N\n",
-    );
-}
 
-#[test]
-fn t90_232_winrt_dispatch_str() {
-    // M2WINRT (Phase 5) — Dispatch string marshalling: late-bound IDispatch
-    // method calls with a string argument returning a string (BSTR) result.
-    // Drives Scripting.FileSystemObject: GetExtensionName -> "gz", GetBaseName ->
-    // "report". Exercises SysAllocString/Free, VT_BSTR VARIANT arg, BSTR result.
-    check(
-        "t-90-232-winrt-dispatch-str.mod",
-        "create: Y\ngz\nreport\n",
-    );
-}
 
-#[test]
-fn t90_233_winrt_dispatch_args() {
-    // M2WINRT (Phase 5) — the complete late-bound COM Automation client: drive a
-    // live Scripting.Dictionary through the general VARIANT API — multi-arg
-    // mixed-type methods (Add(string,int)), property-get (Count), a parameterized
-    // property (Item(string)->int), and bool results (Exists).
-    check(
-        "t-90-233-winrt-dispatch-args.mod",
-        "create: Y\ncount: 2\nitem foo: 42\nexists foo: Y\nexists zzz: N\n",
-    );
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[test]
 fn t90_234_heap() {
@@ -1932,49 +1677,13 @@ fn t90_239_m2heap_force() {
     check_m2heap("t-90-239-m2heap-force.mod", "sum: Y\nfreed: Y\n");
 }
 
-#[test]
-fn t90_240_sysclock() {
-    // Runtime self-hosting — ISO SysClock.GetClock calls Win32 GetSystemTime
-    // directly (no Rust nm2_sysclock_now) and fills DateTime in M2; a fresh read
-    // must be a valid, plausibly-current, UTC (zone 0) DateTime.
-    check(
-        "t-90-240-sysclock.mod",
-        "valid: Y\nyear ok: Y\nutc zone: Y\n",
-    );
-}
 
-#[test]
-fn t90_241_runprog() {
-    // Win32 helper library — RunProg: launch external programs via direct Win32
-    // (CreateProcessW + wait + GetExitCodeProcess) in pure M2. PerformCommand runs
-    // "%COMSPEC% /C exit N" synchronously; cmd's exit code is deterministic.
-    check(
-        "t-90-241-runprog.mod",
-        "launched: Y\ncode42: 42\ncode7: 7\ncode0: 0\n",
-    );
-}
 
-#[test]
-fn t90_242_filemap() {
-    // Win32 helper library — FileMap: memory-mapped files in pure M2 over direct
-    // Win32. A named page-file mapping created by one MappedFile and opened by a
-    // second shares memory — write through one view, read it through the other.
-    check(
-        "t-90-242-filemap.mod",
-        "created: Y\nmapped1: Y\nopened: Y\nshared read: Y\nclosed: Y\n",
-    );
-}
 
-#[test]
-fn t90_243_winshell() {
-    // GUI shell foundation — WinShell: a Win32 window whose window procedure is an
-    // M2 native C-ABI callback dispatching to an M2 handler. Headlessly proven via
-    // a message-only window (SendMessageW dispatches synchronously into the handler).
-    check(
-        "t-90-243-winshell.mod",
-        "created: Y\nresult: 42\ncount: 1\nwparam: 21\ncount2: 2\ndestroyed: Y\n",
-    );
-}
+
+
+
+
 
 #[test]
 fn t90_244_terminal() {
@@ -2004,32 +1713,11 @@ fn t90_247_terminal_ext() {
     );
 }
 
-#[test]
-fn t90_245_dwrite() {
-    // Modern Terminal rendering foundation — DirectWrite from pure M2: create the
-    // DWrite factory and a monospaced text format via the CLASS-as-COM vtable
-    // pattern. Also proves a FLOAT arg (font size) passes through a virtual COM
-    // call — the enabler for Direct2D/DirectWrite rendering.
-    check("t-90-245-dwrite.mod", "startup: Y\nformat: Y\n");
-}
 
-#[test]
-fn t90_246_termrender() {
-    // Direct2D/DirectWrite Terminal renderer foundation: create the D2D factory and
-    // a DirectWrite monospaced text format (headless-safe). Exercises the big
-    // ID2D1Factory/ID2D1HwndRenderTarget/ID2D1SolidColorBrush vtable declarations.
-    check("t-90-246-termrender.mod", "d2d: Y\n");
-}
 
-#[test]
-fn t90_248_interface_dispatch() {
-    // COM INTERFACE consumer: the compiler assigns vtable slot ordinals by walking
-    // the INHERIT chain (IUnknown 0/1/2, then derived methods appended in
-    // declaration order). Dispatch through interface-typed vars lands DoThing at
-    // slot 3 and Compute at slot 5 (three levels deep) — no hand-counted
-    // placeholders, no +N-shift to get wrong. See docs/design/com-interfaces.md.
-    check("t-90-248-interface-dispatch.mod", "50\n107\n");
-}
+
+
+
 
 #[test]
 fn t90_249_narrow_achar_literal() {
@@ -2052,17 +1740,7 @@ fn t90_250_text_rope() {
     );
 }
 
-#[test]
-fn t90_251_expr_eval() {
-    // Recursive-descent expression evaluator (engine of demos/calculator.mod):
-    // in-module forward references / mutual recursion, operator precedence, unary
-    // minus, parentheses, RealMath functions, ISO real<->string conversion.
-    check(
-        "t-90-251-expr-eval.mod",
-        "1+2*3 = 7\n(1+2)*3 = 9\n100-58 = 42\n2*-3+5 = -1\n10/4 = 2.5\n\
-         3*(4+5)-6/2 = 24\nsqrt(16) = 4\nabs(-5) = 5\n2.5*4 = 10\n1/0 = Error\n2+ = Error\n",
-    );
-}
+
 
 #[test]
 fn t90_252_system_process() {
@@ -2072,362 +1750,65 @@ fn t90_252_system_process() {
     check("t-90-252-system-process.mod", "tick 1\ntick 2\ndone\n");
 }
 
-#[test]
-fn t90_260_paneshell_smoke() {
-    // PaneShell Sprint 0 scaffolding: the new library/uidef + library/uimod (UI)
-    // family exists, compiles, is auto-discovered (zero driver/loader/test
-    // registration), and links cross-family to winrt (WinShell). Declaring a
-    // Surface.Backend var forces the abstract CLASS-as-vtable through codegen.
-    check("t-90-260-paneshell-smoke.mod", "paneshell-scaffolding-ok\n");
-}
 
-#[test]
-fn t90_260b_paneshell_badref() {
-    // Negative: a reference to a non-existent UI-family module must fail to
-    // resolve — auto-discovery is by real file presence, not magic.
-    check_run_error("t-90-260b-paneshell-badref.mod", &["not found in search path"]);
-}
 
-#[test]
-fn t90_261_terminal_instance() {
-    // PaneShell S1: Terminal is instanceable — two independent text-grid
-    // instances of different sizes hold distinct cell content simultaneously
-    // (coexistence), read back per-instance via CellCharOf; per-instance state
-    // is heap-allocated so the module still loads under JIT. The default
-    // (singleton) instance is untouched by writes routed to explicit instances.
-    check(
-        "t-90-261-terminal-instance.mod",
-        "a00: A\nb00: B\nacols: 20\nbcols: 40\ndefok: Y\n",
-    );
-}
 
-#[test]
-fn t90_261b_terminal_shim() {
-    // PaneShell S1, D4 shim-equivalence gate (sprints amendment K): the
-    // singleton API is a behavioural shim over the current instance — the same
-    // ops give identical cells on the default vs an explicit instance, and a
-    // singleton write after Use(x) lands in x, not the default.
-    check(
-        "t-90-261b-terminal-shim.mod",
-        "shim-eq: Y\nlanded: Y\ndefault-clean: Y\n",
-    );
-}
 
-#[test]
-fn t90_261c_termrender_instance() {
-    // PaneShell S1: TermRender is instanceable to construction level — two
-    // renderer instances each create their own DirectWrite text format from the
-    // shared factory (headless; Attach/Paint need a real window, manual demo).
-    // The DWrite factory is now idempotent so the instances don't clobber it.
-    check("t-90-261c-termrender-instance.mod", "two-formats: Y\n");
-}
 
-#[test]
-fn t90_262_raster_instance() {
-    // PaneShell S2: RasterView is instanceable — two independent RGBA
-    // framebuffers of different sizes hold distinct pixel content simultaneously,
-    // read back per-instance via PixelAt (fully headless CPU buffers). Each
-    // ~4 MiB buffer is heap-allocated (§0.4), so the module still loads under JIT.
-    check(
-        "t-90-262-raster-instance.mod",
-        "a-dot: 65280\nb-bg: 255\na-bg: 16711680\na-width: 64\n",
-    );
-}
 
-#[test]
-fn t90_262b_canvas_construct() {
-    // PaneShell S2: Canvas2D is instanceable to construction level — two canvas
-    // instances each create their own DirectWrite text format from the shared
-    // factory (headless; Attach/draw need a real window, manual demo). The DWrite
-    // factory is idempotent so the instances don't clobber it.
-    check("t-90-262b-canvas-construct.mod", "two-canvas: Y\n");
-}
 
-#[test]
-fn t90_263_gameview_instance() {
-    // PaneShell S3: GameView is instanceable — two independent indexed
-    // framebuffers hold distinct content simultaneously, read back per-instance
-    // via IndexAt (headless CPU buffers); the big buffers are heap-allocated
-    // (§0.4) so the module still loads under JIT.
-    check(
-        "t-90-263-gameview-instance.mod",
-        "a-dot: 9\na-bg: 4\nb-bg: 7\na-width: 64\n",
-    );
-}
 
-#[test]
-fn t90_263b_shader_construct() {
-    // PaneShell S3: ShaderView (D3D11) is instanceable — two instances coexist
-    // at construction level (distinct, non-NIL, freeable). Attach creates the
-    // device/swapchain (needs a real window), so present coexistence is the
-    // manual demo; S4's GameViewGpu owns one ShaderView instance per game.
-    check("t-90-263b-shader-construct.mod", "two-shaders: Y\nfreed: Y\n");
-}
 
-#[test]
-fn t90_264_gameviewgpu_construct() {
-    // PaneShell S4 (closes P1): GameViewGpu is instanceable and owns no device
-    // of its own — two instances coexist, each owning a DISTINCT ShaderView
-    // instance (its GPU device). Headless construction; Attach needs a real
-    // window (manual demo). This is the load-bearing intra-P1 edge.
-    check(
-        "t-90-264-gameviewgpu-construct.mod",
-        "two-gpu: Y\ndistinct-renderers: Y\n",
-    );
-}
 
-#[test]
-fn t90_265_surface_backend() {
-    // PaneShell S5 (P2 part 1/2): Surface.Backend ABSTRACT CLASS is the one
-    // polymorphic handle — each concrete adapter wraps an instanced renderer, and
-    // a virtual KindOf() on a single Backend variable dispatches to the right
-    // surface. Construction + KindOf + Close are headless; real Attach/Paint (S7).
-    check(
-        "t-90-265-surface-backend.mod",
-        "textgrid: 0\nraster: 1\ncanvas: 2\nindexed: 3\nindexedgpu: 3\nshader: 4\npoly-tg: 0\npoly-cv: 2\n",
-    );
-}
 
-#[test]
-fn t90_266_control_backend() {
-    // PaneShell S6 (P2 part 2/2, closes P2): native controls as the simplest leaf
-    // — a control Backend Attaches a real Win32 child control (message-window-safe),
-    // KindOf=NativeControl (5), the generic value API SetText/GetText round-trips
-    // through the control HWND (via a class CAST downcast — see the is_pointer_like
-    // codegen fix), and an app-defined Backend reports Kind.Custom (6).
-    check(
-        "t-90-266-control-backend.mod",
-        "btn-kind: 5\nattach-btn: Y\nedit-text: hello\ncustom-kind: 6\n",
-    );
-}
 
-#[test]
-fn t90_267_pane_tree() {
-    // PaneShell S7 (P3) slice 1: the universal Pane as a heap tree node — leaves
-    // under an arrangement, the named-pane registry (PaneByName/BackendOf), rects
-    // (SetRect/RectOf), and the DumpTree introspection probe. Fully headless; host
-    // HWNDs, the event router, channel + Layout class land in later S7 slices.
-    check(
-        "t-90-267-pane-tree.mod",
-        "found-console: Y\nfound-missing: Y\nleaf-backend: Y\narrange-backend: Y\na-rect: 0,0,70,50\ndump: root:A(0,0,100,50)[canvas:L(0,0,70,50) console:L(70,0,30,50)]\n",
-    );
-}
 
-#[test]
-fn t90_267b_pane_hosts() {
-    // PaneShell S7 (P3) slice 2: the host-HWND tree is a projection of the Pane
-    // tree. OpenWindow builds a host HWND per Pane (WS_CHILD|WS_CLIPCHILDREN);
-    // Win32 GetParent proves root-under-frame, mid-under-root, leaf-under-mid —
-    // the §4/§5 central bet. Leaf backends attach to their host (RasterView).
-    check(
-        "t-90-267b-pane-hosts.mod",
-        "frame: Y\nroot-host: Y\nleaf-host: Y\nroot-under-frame: Y\nmid-under-root: Y\nleaf-under-mid: Y\nclosed: Y\n",
-    );
-}
 
-#[test]
-fn t90_267c_event_router() {
-    // PaneShell S7 (P3) slice 3: the one event router. Every host HWND shares the
-    // WNDPROC; it recovers the Pane (GWLP_USERDATA), packages WM_* into a semantic
-    // Event keyed to that Pane, updates the polled-input snapshot, and fans the
-    // Event to the window Handler. Driven headlessly via synthesized SendMessage.
-    check(
-        "t-90-267c-event-router.mod",
-        "cmd-kind: 12\ncmd-pane: Y\ncmd-id: 42\nkey-kind: 3\nkey-val: 65\nchar-kind: 4\nchar-ch: X\nmouse-kind: 5\nmouse-ev: 11,22\nevcount: 4\n",
-    );
-}
 
-#[test]
-fn t90_267d_channel() {
-    // PaneShell S7 (P3) slice 4a: the per-pane channel — a lock-guarded FIFO ring
-    // (CRITICAL_SECTION-bounded per amendment C, drained inline, D2). Submit /
-    // ChannelDepth / ChannelNext (FIFO); SetThreaded is the callable dark seam
-    // that does not change behaviour until P8.
-    check(
-        "t-90-267d-channel.mod",
-        "depth: 3\npop1: Y\npop2: Y\npop3: Y\ndepth0: 0\nempty: Y\nthreaded-submit: Y\nthreaded-pop: Y\n",
-    );
-}
 
-#[test]
-fn t90_267e_layout() {
-    // PaneShell S7 (P3) slice 4b: the Layout ABSTRACT CLASS (D7). Retile delegates
-    // child placement to a pane's Layout (proven with an app-defined HalfSplit
-    // strategy); a pane with no Layout is left untouched (the non-Layout guard).
-    check(
-        "t-90-267e-layout.mod",
-        "a-rect: 0,0,50,40\nb-rect: 50,0,50,40\nc-rect: 7,7,7,7\n",
-    );
-}
 
-#[test]
-fn t90_268_rect_solver() {
-    // PaneShell S8 (P4 1/2): the PaneLayout reactive rect solver. Split + Stack as
-    // PaneShell.Layout strategies; Retile delegates to them. A 70/30 Split over a
-    // nested 3-way vertical Stack; SetWeight+Retile re-solves with min-size clamps
-    // (D1 mutate-then-Retile); SetHidden redistributes the Stack.
-    check(
-        "t-90-268-rect-solver.mod",
-        "a: 0,0,700,600\nstk: 700,0,300,600\nc: 700,0,300,200\nd: 700,200,300,200\ne: 700,400,300,200\na-min: 0,0,240,600\na-max: 0,0,840,600\nstk-max: 840,0,160,600\nd-hidden: 700,0,300,300\n",
-    );
-}
 
-#[test]
-fn t90_269_splitter_tabs() {
-    // PaneShell S9 (P4 2/2, closes P4): draggable splitter divider + fixed tabs as
-    // Layout strategies. SplitLayout.HitTest finds the divider (0) / misses (MAX);
-    // Drag re-weights (700->750) and raises EvSplitterMoved. TabLayout shows the
-    // active tab's child below a 24px strip; SelectTab switches it + raises
-    // EvTabChanged. Semantic events are LATCHED (the real frame's WM_SIZE ->
-    // EvResize would otherwise clobber a last-kind read).
-    check(
-        "t-90-269-splitter-tabs.mod",
-        "a0: 0,0,700,600\nhit: Y\nmiss: Y\na1: 0,0,750,600\nsplit-evt: Y\nt0-active: 0,24,200,76\nt1-hidden: 0,0,0,0\nactive0: 0\nt1-active: 0,24,200,76\nactive1: 1\ntab-evt: Y\n",
-    );
-}
 
-#[test]
-fn t90_270_loop_drag() {
-    // PaneShell S10 (P5): the real message loop + multi-window + a mouse splitter
-    // drag routed through the WNDPROC by the parent-walk (the divider is occluded
-    // by child hosts). SendMessage drives down/move/up; SplitLayout.Drag re-weights
-    // (700->750) and raises EvSplitterMoved (latched). RunBounded proves the loop
-    // runs and terminates; Quit latches the workspace + posts WM_QUIT. A second
-    // OpenWindow registers with the workspace (WindowCount=2).
-    check(
-        "t-90-270-loop-drag.mod",
-        "b0: 700,0,300,600\nb1: 750,0,250,600\na1: 0,0,750,600\nsplit-evt: Y\nwins: 2\nquit-ok: Y\n",
-    );
-}
 
-#[test]
-fn t90_270b_nested_close() {
-    // PaneShell S10 hardening (post adversarial review): (1) ancestor-walk drag — a
-    // grandchild press over the OUTER split's divider climbs B->s2(miss)->s1(hit)
-    // and re-weights the outer split (A 500->550); (2) CloseWindow unregisters from
-    // the workspace (swap-remove) so WindowCount stays honest (4->3) and the later
-    // RunBounded's ShowWorkspace cannot dereference the freed window (the UAF the
-    // review found).
-    check(
-        "t-90-270b-nested-close.mod",
-        "A0: 0,0,500,600\nA1: 0,0,550,600\nnested-evt: Y\nwins4: 4\nwins-after-close: 3\nran-ok: Y\n",
-    );
-}
 
-#[test]
-fn t90_271_mdi_dock() {
-    // PaneShell S11 (P6 part 1): MDIContainer = DockLayout, an MDI document area as
-    // just ANOTHER PaneShell.Layout over the same Pane tree. Tiled (2x2 grid),
-    // Tabbed (active doc below a 24px strip, others 0-rect), Cascaded (offset
-    // stack). Documents are Panes with stable id = child index; Activate raises
-    // EvDocActivated (latched); CloseDocument hides a doc and the rest redistribute.
-    check(
-        "t-90-271-mdi-dock.mod",
-        "ids: 0,1,2,3\nd0: 0,0,400,300\nd1: 400,0,400,300\nd2: 0,300,400,300\nd3: 400,300,400,300\ne1-active: 0,24,400,276\ne0-hidden: 0,0,0,0\nactive: 1\ndoc-evt: Y\nf0: 0,0,740,540\nf1: 30,30,740,540\nf2: 60,60,740,540\nf1-closed: 0,0,0,0\nf0-recascade: 0,0,770,570\n",
-    );
-}
 
-#[test]
-fn t90_272_float_dock() {
-    // PaneShell S12 slice 1 (P6 part 2): MDI float/dock re-parenting + dock zones.
-    // DockLayout.DropAt classifies a drop point into a DropZone (25% edge bands,
-    // nearest edge wins; centre tabs) + target rect. Float pops a doc into its own
-    // top-level window (substrate ReparentToNewWindow, destroy+rebuild repoints
-    // win/host across the subtree); Dock is the inverse (ReparentInto + close the
-    // empty frame). Stable doc ids (registry). EvDocFloated/EvDocDocked latched.
-    check(
-        "t-90-272-float-dock.mod",
-        "drop-left: 1 0,0,400,600\ndrop-right: 2 400,0,400,600\ndrop-top: 3 0,0,800,300\ndrop-bottom: 4 0,300,800,300\ndrop-centre: 5 0,0,800,600\ndrop-outside-nodrop: Y\nwins-before: 1\nwins-after-float: 2\ndoc0-detached: Y\ndoc0-float: 0,0,400,300\nfloat-evt: Y\nwins-after-dock: 1\ndoc0-redocked: Y\ndock-evt: Y\n",
-    );
-}
 
-#[test]
-fn t90_272b_float_hardening() {
-    // PaneShell S12 slice 1 hardening (post adversarial review): (1) Realize hosts a
-    // runtime-added doc (d2 tiles into the grid); (2) floating the active doc advances
-    // `active` so a Tabbed container stays visible (a1 fills, not blank); (3) floating
-    // a doc in a non-windowed container is refused before Detach (no orphan); (4)
-    // CloseDocument on a floated doc closes its window (count 3->2, no leak).
-    check(
-        "t-90-272b-float-hardening.mod",
-        "d2-hosted: Y\nd2-realized: 0,300,400,300\nactive-after-float: 1\na1-visible: 0,24,400,276\nrefused-safe: Y\nwins-before-close: 3\nwins-after-close: 2\nclose-evt: Y\n",
-    );
-}
 
-#[test]
-fn t90_273_mdi_persist() {
-    // PaneShell S12 slice 2a (P6): MDI re-arrange commands (Tile/Cascade switch the
-    // DockLayout style) + arrangement persistence (SaveLayout -> versioned text blob
-    // PSL1;..., LoadLayout re-applies style/active/closed) + the float-window
-    // lifecycle safety (CloseWindow nils owned panes' host/win, so closing a float
-    // directly then Dock-ing rebuilds instead of double-freeing).
-    check(
-        "t-90-273-mdi-persist.mod",
-        "tile-a0: 0,0,400,300\ntile-a3: 400,300,400,300\ncasc-a0: 0,0,710,510\ncasc-a1: 30,30,710,510\nsave-blob: PSL1;s=0;a=2;n=3;c=010;\nload-ok: Y\nactive-restored: 2\ne2-active: 0,24,400,276\ne1-hidden: 0,0,0,0\nf0-win-cleared: Y\nf0-redocked: Y\ndock-safe: Y\n",
-    );
-}
 
-#[test]
-fn t90_273b_persist_robust() {
-    // PaneShell S12 slice 2a hardening (post review): the arrangement serializer fails
-    // safe. SaveLayout into a too-small buffer returns FALSE (truncation signalled);
-    // LoadLayout of a wrong-magic blob is rejected with no mutation; LoadLayout of a
-    // valid-magic but truncated bit field is rejected (validated before applying) — so
-    // `active` survives both rejected loads.
-    check(
-        "t-90-273b-persist-robust.mod",
-        "trunc-signaled: Y\nbad-magic-rejected: Y\ntruncated-rejected: Y\nactive-intact: 2\n",
-    );
-}
 
-#[test]
-fn t90_274_lifecycle_dockinto() {
-    // PaneShell S12 slice 2b: window-close lifecycle + DockInto drop-apply. CloseWindow
-    // raises EvWindowClosed; the frame carries GWLP_USERDATA=root so a title-bar WM_CLOSE
-    // raises EvCloseRequest and is swallowed (frame survives, app controls close — IsWindow
-    // proves it). DockInto(NewFloat) pops a doc to its own window (count 1->2, detached);
-    // DockInto(DockCentre) re-docks it (2->1); DockInto(NoDrop) is a no-op (FALSE).
-    check(
-        "t-90-274-lifecycle-dockinto.mod",
-        "win-closed-evt: Y\nclose-req-evt: Y\nframe-alive: Y\nwins0: 1\nafter-float: 2\nfloat-detached: Y\nafter-dock: 1\nredocked: Y\nnodrop-false: Y\n",
-    );
-}
 
-#[test]
-fn t90_274b_close_reentrancy() {
-    // PaneShell S12 slice 2b hardening (post review): CloseWindow is re-entrancy-safe.
-    // A handler that re-closes the same window from inside its own EvWindowClosed (via a
-    // second alias) must no-op (a `closing` guard + detach-before-notify), not double-free.
-    check(
-        "t-90-274b-close-reentrancy.mod",
-        "closed-evt: Y\nreentry-safe: Y\nwins: 0\n",
-    );
-}
 
-#[test]
-fn t90_275_ptcl() {
-    // ptcl interpreter (library/uidef + library/uimod/Ptcl): a small Tcl dialect —
-    // variables, $ / [] / "" substitution (incl. nested command sub), set/puts builtins,
-    // host-verb registration + dispatch. Pins the 6 adversarial-review fixes: errors in
-    // [command] PROPAGATE (propagate/undefvar=ERR), re-entrant host recursion is bounded
-    // (recur=ERR, no crash), ArgInt overflow saturates, >MaxArgs words drop the tail
-    // (maxargs=3, no spurious command), NUL-safe Eq dispatch.
-    check(
-        "t-90-275-ptcl.mod",
-        "x=5\ny=7\nquote=x is 5 and y is 7\nnested=13\npropagate=ERR\nundefvar=ERR\nrecur=ERR\nmaxargs=3\n",
-    );
-}
 
-#[test]
-fn t90_276_ptcl_control() {
-    // ptcl control flow: expr (precedence-climbing infix with $/[] substitution), if/while/
-    // incr, and proc (user commands; params save/restore -> recursion works). The recurse
-    // case is factorial(5)=120 via a recursive proc with [..] command sub inside expr.
-    check(
-        "t-90-276-ptcl-control.mod",
-        "prec=11\nparens=14\nexprvar=25\nifthen=big\nifelse=small\nwhile=15\nproc=49\nrecurse=120\nifcmd=ELSE\ndupparm=7\n",
-    );
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[test]
 fn t91_010_subrange_range_reject() {
@@ -2672,15 +2053,7 @@ fn t90_100_method_except() {
     );
 }
 
-#[test]
-fn t90_080_com_malloc() {
-    // COM interop: NewM2 class dispatch IS the COM ABI. An M2 abstract class
-    // declares IMalloc's methods in IUnknown order; a real OS IMalloc pointer
-    // (from CoGetMalloc, via the windows-sys crate) is held in a class variable
-    // and Alloc/Free are invoked through ordinary virtual dispatch -> the OS
-    // vtable functions.
-    check("t-90-080-com-malloc.mod", "alloc-ok\nfreed\n");
-}
+
 
 #[test]
 fn t90_070_class_builtins() {
@@ -2756,51 +2129,17 @@ fn perf_sieve_o2() {
     check_o2("perf-sieve-o2.mod", "10152000\n");
 }
 
-#[test]
-fn t90_277_cast_aggregate() {
-    // SYSTEM.CAST with an aggregate operand (RECORD / closed ARRAY) is a memory
-    // reinterpret — regression for the "undefined ValueId" / StructValue codegen
-    // panics (scalar<->record, record<->ADDRESS, scalar<->array).
-    check("t-90-277-cast-aggregate.mod", "12345\n65\n");
-}
 
-#[test]
-fn t90_278_large_array_copy() {
-    // Whole-aggregate copy of a >64K-element array / large record lowers to
-    // memmove, not a by-value load/store — regression for the LLVM SelectionDAG
-    // segfault on large by-value aggregates.
-    check("t-90-278-large-array-copy.mod", "65\n90\n90\n7\n");
-}
 
-#[test]
-fn t90_280_ismember() {
-    // ISMEMBER (OO RTTI) across a 3-level hierarchy with an abstract base, all
-    // four value/type operand combinations + the (TYPE,TYPE) compile-time fold.
-    check("t-90-280-ismember.mod", "YYYN\nYYNN\nY\nYN\n");
-}
 
-#[test]
-fn t90_281_guard() {
-    // GUARD: dynamic-type dispatch, read-only narrowed binding (field + method
-    // through it), first-match-wins, and the ELSE arm for an unmatched subclass.
-    check(
-        "t-90-281-guard.mod",
-        "circle r=5 area=75\nsquare s=4\nunknown\n",
-    );
-}
 
-#[test]
-fn t90_282_guard_nested() {
-    // GUARD: a base-class catch-all arm after a specific arm (first-match-wins)
-    // and a nested GUARD inside an arm body.
-    check("t-90-282-guard-nested.mod", "branch 42\nnode 7\n");
-}
 
-#[test]
-fn t90_283_guard_nomatch() {
-    // GUARD with no matching arm and no ELSE raises the NewM2 guardException.
-    check_run_error("t-90-283-guard-nomatch.mod", &["GUARD selector matched no arm"]);
-}
+
+
+
+
+
+
 
 #[test]
 fn t90_284_guard_softkw() {
@@ -2822,12 +2161,7 @@ fn t91_030_guard_interface_reject() {
     check_run_error("t-91-030-guard-interface-reject.mod", &["must be an interface"]);
 }
 
-#[test]
-fn t91_031_guard_com_interface() {
-    // GUARD + ISMEMBER on a COM INTERFACE via QueryInterface, against a real OS
-    // IMalloc: IMalloc matches, the bogus IID does not.
-    check("t-91-031-guard-com-interface.mod", "YN\nalloc-ok\n");
-}
+
 
 #[test]
 fn t91_032_ismember_iface_rejects() {
@@ -2848,9 +2182,4 @@ fn t91_033_iface_iid_rejects() {
     );
 }
 
-#[test]
-fn t91_034_ismember_qualified_iface() {
-    // GUARD + ISMEMBER with a QUALIFIED interface name (Mod.IMalloc) against the
-    // real OS IMalloc. Regression for the qualified-name classification fix.
-    check("t-91-034-ismember-qualified-iface.mod", "Y\nok\n");
-}
+

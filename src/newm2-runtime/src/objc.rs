@@ -249,7 +249,11 @@ pub extern "C-unwind" fn nm2_objc_nsstring_to_wide(
 /// typed PROCEDURE and calls indirectly (per-call-site ABI).
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_objc_msgsend_ptr() -> *mut c_void {
-    sym_or_null("objc_msgSend")
+    let p = sym_or_null("objc_msgSend");
+    if p.is_null() {
+        panic!("objc_msgSend not found in the ObjC runtime");
+    }
+    p
 }
 
 /// `ObjC.NSString(s)` — build an autoreleased `NSString*` from a (wide) M2

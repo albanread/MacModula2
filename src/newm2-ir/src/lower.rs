@@ -7205,6 +7205,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn extern_func_carries_dll_metadata_from_sema() {
         let dir = tmpdir("extern_func_dll_metadata");
         fs::write(

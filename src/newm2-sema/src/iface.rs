@@ -801,6 +801,7 @@ mod tests {
             selector_bindings: HashMap::new(),
             resolved_names: HashMap::new(),
             diagnostics: Vec::new(),
+            objc_send_sigs: std::collections::HashMap::new(),
             pervasive,
         };
         let reint = crate::print::format_module_interface(&sema2, &graph, new_mid);

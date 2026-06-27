@@ -84,12 +84,24 @@ pub(crate) fn runtime_write_str(s: &str) {
     write_str_inner(s);
 }
 
-fn format_int(value: i64, _width: i64) -> String {
-    value.to_string()
+fn format_int(value: i64, width: i64) -> String {
+    let s = value.to_string();
+    let w = width.max(0) as usize;
+    if s.len() < w {
+        format!("{}{}", " ".repeat(w - s.len()), s)
+    } else {
+        s
+    }
 }
 
-fn format_card(value: u64, _width: u64) -> String {
-    value.to_string()
+fn format_card(value: u64, width: u64) -> String {
+    let s = value.to_string();
+    let w = width as usize;
+    if s.len() < w {
+        format!("{}{}", " ".repeat(w - s.len()), s)
+    } else {
+        s
+    }
 }
 
 pub(crate) fn render_utf16_units(units: &[u16]) -> String {
@@ -146,8 +158,8 @@ pub unsafe extern "C-unwind" fn nm2_io_write_ustr(ptr: *const u16, _high: u64) {
 /// Write a signed integer (value, field_width — width is ignored for now).
 /// Bound to: SWholeIO.WriteInt, InOut.WriteInt
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn nm2_io_write_int(value: i64, _width: i64) {
-    write_str_inner(&format_int(value, _width));
+pub extern "C-unwind" fn nm2_io_write_int(value: i64, width: i64) {
+    write_str_inner(&format_int(value, width));
 }
 
 /// Write a signed integer through the UCHAR-family text path.
@@ -160,8 +172,8 @@ pub extern "C-unwind" fn nm2_io_write_uint(value: i64, width: i64) {
 /// Write a cardinal/unsigned integer (value, field_width).
 /// Bound to: SWholeIO.WriteCard, InOut.WriteCard
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn nm2_io_write_card(value: u64, _width: u64) {
-    write_str_inner(&format_card(value, _width));
+pub extern "C-unwind" fn nm2_io_write_card(value: u64, width: u64) {
+    write_str_inner(&format_card(value, width));
 }
 
 /// Write a cardinal through the UCHAR-family text path.

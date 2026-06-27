@@ -428,8 +428,8 @@ fn main() -> ExitCode {
         "dump-heap" => run_dump_heap(&paths, &rest, &options),
         _ => {
             // Stub: not implemented yet.
-            println!("TODO: newm2 {command}");
-            ExitCode::SUCCESS
+            eprintln!("newm2: command '{command}' is not implemented yet");
+            ExitCode::from(1)
         }
     }
 }
@@ -1571,7 +1571,7 @@ const ISO_MODULES: &[&str] = &[
 /// `newm2 build PROG --stdlib stdlib.lib` links against it instead of
 /// re-lowering the whole library from source.
 fn run_build_stdlib(options: &DriverOptions, raw_args: &[String]) -> ExitCode {
-    let out_lib = options.out.clone().unwrap_or_else(|| PathBuf::from("stdlib.lib"));
+    let out_lib = options.out.clone().unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "stdlib.lib" } else { "libstdlib.a" }));
 
     // Synthesise a root that imports the whole ISO surface so the loader pulls
     // in every ISO module and its transitive runtime-support modules.
@@ -1714,6 +1714,7 @@ fn read_stdlib_manifest(lib: &Path) -> Result<StdlibManifest, String> {
 }
 
 /// Archive an object file into a static library with the MSVC librarian.
+#[cfg(windows)]
 fn archive_lib(obj: &Path, lib: &Path) -> Result<(), String> {
     let mut cmd = cc::windows_registry::find("x86_64-pc-windows-msvc", "lib.exe")
         .ok_or("could not locate the MSVC librarian (lib.exe)")?;
@@ -1724,6 +1725,23 @@ fn archive_lib(obj: &Path, lib: &Path) -> Result<(), String> {
     if !out.status.success() {
         return Err(format!(
             "lib.exe failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn archive_lib(obj: &Path, lib: &Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("ar");
+    cmd.arg("rcs");
+    cmd.arg(lib);
+    cmd.arg(obj);
+    let out = cmd.output().map_err(|e| format!("ar: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "ar failed: {}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ));
@@ -1784,7 +1802,7 @@ fn run_build(paths: &[PathBuf], raw_args: &[String], options: &DriverOptions) ->
     // sibling object file.
     let exe_path = options.out.clone().unwrap_or_else(|| {
         let stem = entry.file_stem().and_then(|s| s.to_str()).unwrap_or("a");
-        entry.with_file_name(format!("{stem}.exe"))
+        entry.with_file_name(if cfg!(windows) { format!("{stem}.exe") } else { stem.to_string() })
     });
     let obj_path = exe_path.with_extension("obj");
 
@@ -1876,7 +1894,7 @@ fn build_against_stdlib(
 
     let exe_path = options.out.clone().unwrap_or_else(|| {
         let stem = entry.file_stem().and_then(|s| s.to_str()).unwrap_or("a");
-        entry.with_file_name(format!("{stem}.exe"))
+        entry.with_file_name(if cfg!(windows) { format!("{stem}.exe") } else { stem.to_string() })
     });
     let obj_path = exe_path.with_extension("obj");
 
