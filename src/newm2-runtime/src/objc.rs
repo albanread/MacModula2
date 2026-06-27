@@ -841,8 +841,72 @@ pub extern "C-unwind" fn nm2_cocoa_run_app() {
     let _ = s1(app_menu, sel(c"addItem:"), quit);
     let _ = s1(app, sel(c"setMainMenu:"), main_menu);
 
+    // Demos (no main menu of their own): quit the app when the last window
+    // closes, so [NSApp run] returns, the M2 program ends, and the driver
+    // process exits instead of lingering window-less. Only if the program did
+    // not install its own app delegate.
+    if s0(app, sel(c"delegate")).is_null() {
+        let dcls = quit_on_last_window_class();
+        if !dcls.is_null() {
+            let inst = s0(s0(dcls, sel(c"alloc")), sel(c"init"));
+            let _ = s1(app, sel(c"setDelegate:"), inst);
+        }
+    }
+
     let _ = s1b(app, sel(c"activateIgnoringOtherApps:"), true);
     let _ = s0(app, sel(c"run"));
+}
+
+/// Delegate method `applicationShouldTerminateAfterLastWindowClosed:` → YES, so a
+/// windowed demo quits (and its driver exits) when the user closes the window.
+extern "C" fn nm2_app_should_terminate_last(
+    _self: *mut c_void,
+    _cmd: *mut c_void,
+    _sender: *mut c_void,
+) -> bool {
+    true
+}
+
+static QUIT_DELEGATE_CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// A tiny NSObject subclass that answers
+/// `applicationShouldTerminateAfterLastWindowClosed:` with YES. Built once.
+fn quit_on_last_window_class() -> *mut c_void {
+    (*QUIT_DELEGATE_CLASS.get_or_init(|| {
+        let getcls = sym_or_null("objc_getClass");
+        let alloc_pair = sym_or_null("objc_allocateClassPair");
+        let add_method = sym_or_null("class_addMethod");
+        let reg_pair = sym_or_null("objc_registerClassPair");
+        let reg = sym_or_null("sel_registerName");
+        if getcls.is_null() || alloc_pair.is_null() || add_method.is_null()
+            || reg_pair.is_null() || reg.is_null()
+        {
+            return 0;
+        }
+        let getcls: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(getcls) };
+        let alloc_pair: extern "C" fn(*mut c_void, *const i8, usize) -> *mut c_void =
+            unsafe { std::mem::transmute(alloc_pair) };
+        let add_method: extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i8) -> bool =
+            unsafe { std::mem::transmute(add_method) };
+        let reg_pair: extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(reg_pair) };
+        let reg: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg) };
+        let superc = getcls(c"NSObject".as_ptr());
+        if superc.is_null() {
+            return 0;
+        }
+        let cls = alloc_pair(superc, c"NM2QuitOnLastWindow".as_ptr(), 0);
+        if cls.is_null() {
+            return 0;
+        }
+        add_method(
+            cls,
+            reg(c"applicationShouldTerminateAfterLastWindowClosed:".as_ptr()),
+            nm2_app_should_terminate_last as *mut c_void,
+            c"B@:@".as_ptr(),
+        );
+        reg_pair(cls);
+        cls as usize
+    })) as *mut c_void
 }
 
 // Internal: build an NSString from a UTF-8 C pointer using already-resolved fns.
