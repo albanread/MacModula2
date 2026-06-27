@@ -645,6 +645,15 @@ fn t40_095_openarray_strassign() {
 }
 
 #[test]
+fn t40_096_indirect_record_abi() {
+    // arm64 indirect-call struct-ABI classifier: a 12-byte record (three 32-bit
+    // fields) is <=16 bytes so it passes in registers, not indirectly. Regression
+    // for the classifier over-approximating each scalar to 8 bytes (12 -> 24 ->
+    // wrongly indirect, corrupting the returned record).
+    check("t-40-096-indirect-record-abi.mod", "111 222 333\n");
+}
+
+#[test]
 fn t40_060_with() {
     // WITH statement: a bare field name inside WITH r DO ... END resolves
     // against r's record. Covers a simple record, an array-element designator,

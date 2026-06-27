@@ -525,58 +525,80 @@ impl<'ctx, 'ir> Codegen<'ctx, 'ir> {
         }
     }
 
-    /// arm64 AAPCS: a record is passed/returned **indirectly** when it is larger
-    /// than 16 bytes and is *not* a homogeneous float aggregate of ≤4 members
-    /// (those go in registers). Returns the LLVM struct type for such a record.
-    /// Used for both sret returns (x8) and byval args (a pointer to a copy) —
-    /// LLVM's by-value aggregate handling does not match the C/objc_msgSend ABI for
-    /// an indirect (function-pointer) call, so we implement both explicitly.
+    /// arm64 AAPCS64: a record is passed/returned **indirectly** when its size is
+    /// larger than 16 bytes and it is *not* a homogeneous floating-point aggregate
+    /// (an HFA: 1..=4 members, all the *same* fundamental FP type, with nested
+    /// records and arrays flattened — those go in v-registers regardless of size).
+    /// Returns the LLVM struct type for such a record. Used for both sret returns
+    /// (x8) and byval args (a pointer to a copy) — LLVM's by-value aggregate
+    /// handling does not match the C/objc_msgSend ABI for an indirect
+    /// (function-pointer) call, so we implement both explicitly.
     fn record_indirect_type(&self, ty: newm2_sema::TypeId) -> Option<StructType<'ctx>> {
         if !matches!(self.types.get(ty), TypeKind::Record(_)) {
             return None;
         }
-        let (size, floats, total) = self.record_shape(ty);
-        let is_hfa = total > 0 && floats == total && total <= 4;
+        let BasicTypeEnum::StructType(st) = self.llvm_type(ty) else {
+            return None;
+        };
+        // Exact ABI size from the target data layout. (The old hand-rolled shape
+        // over-approximated every scalar to 8 bytes — so an all-32-bit record was
+        // counted double, and an array-typed field was counted as a single
+        // scalar — mis-classifying both directions of the >16-byte boundary.)
+        let td = inkwell::targets::TargetData::create(
+            self.module.get_data_layout().as_str().to_str().unwrap_or(""),
+        );
+        let size = td.get_abi_size(&st);
+        let is_hfa = matches!(self.fp_homogeneous(ty), Some((_, n)) if (1..=4).contains(&n));
         if size > 16 && !is_hfa {
-            if let BasicTypeEnum::StructType(st) = self.llvm_type(ty) {
-                return Some(st);
-            }
+            return Some(st);
         }
         None
     }
 
-    /// (approx byte size, float-member count, total scalar-member count) of a
-    /// record, recursing nested records — enough to classify the arm64 return ABI.
-    /// Scalars are over-approximated to 8 bytes, which is exact for the >16-byte
-    /// test on the structs Cocoa returns by value.
-    fn record_shape(&self, ty: newm2_sema::TypeId) -> (u64, u32, u32) {
-        let TypeKind::Record(layout) = self.types.get(ty) else {
-            return (8, 0, 1);
-        };
-        let (mut size, mut floats, mut total) = (0u64, 0u32, 0u32);
-        for f in &layout.fields {
-            match self.types.get(f.ty) {
-                TypeKind::Record(_) => {
-                    let (s, fl, t) = self.record_shape(f.ty);
-                    size += s;
-                    floats += fl;
-                    total += t;
-                }
-                TypeKind::Builtin(b) => {
-                    use newm2_sema::types::Builtin::*;
-                    if matches!(b, Real | LongReal | Real32 | Real16) {
-                        floats += 1;
+    /// AAPCS64 homogeneous-float-aggregate test. If `ty` flattens — through nested
+    /// records and arrays — to a set of scalars that are ALL the *same* fundamental
+    /// floating-point type, return `Some((fp_bit_width, member_count))`; else
+    /// `None`. `None` covers a non-FP member *and* a mix of FP widths: `{REAL,
+    /// REAL32}` is `{f64, f32}`, which is NOT an HFA (AAPCS requires one FP type),
+    /// whereas `{REAL, LONGREAL}` is `{f64, f64}`, which is. The caller treats
+    /// 1..=4 members as the v-register class; >4 falls back to the size rule (so an
+    /// `ARRAY [0..7] OF LONGREAL` field — 8 doubles — is correctly indirect).
+    fn fp_homogeneous(&self, ty: newm2_sema::TypeId) -> Option<(u32, u32)> {
+        use newm2_sema::types::Builtin::*;
+        match self.types.get(ty) {
+            TypeKind::Record(layout) => {
+                let mut kind: Option<u32> = None;
+                let mut count: u32 = 0;
+                for (_, fty) in layout.flatten_fields() {
+                    let (k, c) = self.fp_homogeneous(fty)?;
+                    if c == 0 {
+                        continue;
                     }
-                    size += 8;
-                    total += 1;
+                    match kind {
+                        None => kind = Some(k),
+                        Some(k0) if k0 == k => {}
+                        _ => return None,
+                    }
+                    count = count.saturating_add(c);
                 }
-                _ => {
-                    size += 8;
-                    total += 1;
-                }
+                kind.map(|k| (k, count))
             }
+            TypeKind::Array { indices, base } => {
+                let (k, c) = self.fp_homogeneous(*base)?;
+                let mut n: u128 = 1;
+                for &idx in indices {
+                    let dim = self.types.ordinal_cardinality(idx).unwrap_or(1).max(0) as u128;
+                    n = n.saturating_mul(dim);
+                }
+                let n = n.min(u32::MAX as u128) as u32;
+                Some((k, c.saturating_mul(n)))
+            }
+            TypeKind::Subrange { host, .. } => self.fp_homogeneous(*host),
+            TypeKind::Builtin(Real16) => Some((16, 1)),
+            TypeKind::Builtin(Real32) => Some((32, 1)),
+            TypeKind::Builtin(Real | LongReal) => Some((64, 1)),
+            _ => None,
         }
-        (size, floats, total)
     }
 
 
