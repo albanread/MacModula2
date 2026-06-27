@@ -14,6 +14,10 @@ FROM IndexedPane IMPORT
   Hit, Show, Hide, Present;
 FROM NM2Math IMPORT sin;
 FROM WholeStr IMPORT CardToStr;
+FROM SYSTEM IMPORT CAST;
+IMPORT ObjC;
+FROM Abc IMPORT Tune, ParseTune;
+IMPORT SmfFile;
 
 VAR gSeed: CARDINAL;
 PROCEDURE Randomize (s: CARDINAL); BEGIN gSeed := 22695477 END Randomize;
@@ -43,6 +47,51 @@ VAR
   sx, sy, sTw: ARRAY [0..NStars-1] OF CARDINAL;
   fAct: ARRAY [0..NFlash-1] OF BOOLEAN;
   fX, fY, fT: ARRAY [0..NFlash-1] OF CARDINAL;
+
+(* ---- sound: a bell per catch + a warm drone, via Abc -> SMF -> AVMIDIPlayer,
+   each played non-blocking (no Pump) and held so ARC keeps it alive ---- *)
+VAR bellPlayer: ARRAY [0..4] OF ObjC.Id; emberPlayer, dronePlayer: ObjC.Id;
+    abc: ARRAY [0..255] OF CHAR; an: CARDINAL;
+
+PROCEDURE Cls0 (n: ARRAY OF CHAR): ObjC.Id;
+BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(n)) END Cls0;
+
+PROCEDURE ALn (s: ARRAY OF CHAR);
+  VAR i: CARDINAL;
+BEGIN i:=0; WHILE (i<=HIGH(s)) AND (s[i]#0C) DO abc[an]:=s[i]; INC(an); INC(i) END;
+  abc[an]:=CHR(10); INC(an); abc[an]:=0C END ALn;
+
+PROCEDURE MakePlayer (path: ARRAY OF CHAR): ObjC.Id;
+  VAR url, p: ObjC.Id;
+BEGIN
+  url := [Cls0("NSURL") fileURLWithPath: ObjC.NSString(path)];
+  p := [[Cls0("AVMIDIPlayer") alloc] initWithContentsOfURL: url soundBankURL: NIL error: NIL];
+  IF p # NIL THEN [p prepareToPlay] END;
+  RETURN p
+END MakePlayer;
+
+PROCEDURE BuildTune (q, prog, note, path: ARRAY OF CHAR): ObjC.Id;
+  VAR t: Tune;
+BEGIN
+  an := 0; ALn("X:1"); ALn("M:4/4"); ALn("L:1/16"); ALn(q); ALn(prog); ALn("K:C"); ALn(note);
+  IF ParseTune(abc, t) THEN IF SmfFile.WriteSmf(path, t) THEN RETURN MakePlayer(path) END END;
+  RETURN NIL
+END BuildTune;
+
+PROCEDURE BuildSounds;
+BEGIN
+  ObjC.LoadFramework("AVFoundation");
+  bellPlayer[0] := BuildTune("Q:1/4=220","%%MIDI program 10","c4 z12|",  "/tmp/glim_b0.mid");
+  bellPlayer[1] := BuildTune("Q:1/4=220","%%MIDI program 10","e4 z12|",  "/tmp/glim_b1.mid");
+  bellPlayer[2] := BuildTune("Q:1/4=220","%%MIDI program 10","g4 z12|",  "/tmp/glim_b2.mid");
+  bellPlayer[3] := BuildTune("Q:1/4=220","%%MIDI program 10","c'4 z12|", "/tmp/glim_b3.mid");
+  bellPlayer[4] := BuildTune("Q:1/4=220","%%MIDI program 10","e'4 z12|", "/tmp/glim_b4.mid");
+  emberPlayer   := BuildTune("Q:1/4=160","%%MIDI program 89","E,,4 C,,8 z4|","/tmp/glim_e.mid");
+  dronePlayer   := BuildTune("Q:1/4=90", "%%MIDI program 89","C,,64 E,,64 C,,64 G,,64|","/tmp/glim_d.mid")
+END BuildSounds;
+
+PROCEDURE PlaySfx (p: ObjC.Id);
+BEGIN IF p # NIL THEN [p setCurrentPosition: 0.0]; [p play: NIL] END END PlaySfx;
 
 PROCEDURE DefineSprites;
 BEGIN
@@ -151,11 +200,12 @@ BEGIN
   INC(combo); tier := combo-1; IF tier > 4 THEN tier := 4 END;
   score := score + (col+1)*5 + combo*2;
   glow := glow + 0.07; IF glow > 1.0 THEN glow := 1.0 END;
+  PlaySfx(bellPlayer[tier]);
   AddFlash(px, py)
 END Catch;
 
 PROCEDURE Hurt;
-BEGIN combo := 0; glow := glow - 0.22; IF glow < 0.25 THEN glow := 0.25 END END Hurt;
+BEGIN combo := 0; glow := glow - 0.22; IF glow < 0.25 THEN glow := 0.25 END; PlaySfx(emberPlayer) END Hurt;
 
 PROCEDURE UpdateMotes;
   VAR i: CARDINAL; dx: REAL;
@@ -225,6 +275,7 @@ END DrawHud;
 
 PROCEDURE Frame;                                   (* one game tick (~60 Hz) *)
 BEGIN
+  IF frame MOD 600 = 0 THEN PlaySfx(dronePlayer) END;   (* keep the warm pad going *)
   Cls(1);
   DrawStars; DrawHalo; UpdateFly; UpdateMotes; UpdateEmbers; DrawFlashes; UpdateSky; DrawHud;
   Present;
@@ -248,5 +299,6 @@ BEGIN
   SetRGB(CHalo, 70,58,28); SetRGB(CFlash, 255,240,180);
   DefineSprites;
   Place(FlyI, DFly, fx, fy); Show(FlyI);
+  BuildSounds;                                   (* the drone starts on frame 0 (see Frame) *)
   Run(Frame)
 END glimmer.
