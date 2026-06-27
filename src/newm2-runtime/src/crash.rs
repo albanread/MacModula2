@@ -22,9 +22,84 @@
 #[cfg(windows)]
 pub use imp::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub use imp_unix::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
+
+// Shared JIT symbol registry used by the POSIX handler to name JIT-compiled
+// frames (dladdr handles the AOT binary's real symbols; this covers Build & Run
+// demos JITted in the driver). The Windows handler keeps its own equivalent.
+#[cfg(unix)]
+mod jit_syms {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    pub struct Sym {
+        pub addr: usize,
+        pub name: String,
+    }
+
+    static PENDING: Mutex<Vec<Sym>> = Mutex::new(Vec::new());
+    static FROZEN_PTR: AtomicPtr<Sym> = AtomicPtr::new(core::ptr::null_mut());
+    static FROZEN_LEN: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn register(addr: usize, name: *const u8, len: usize) {
+        if addr == 0 || name.is_null() || len == 0 {
+            return;
+        }
+        let bytes = unsafe { core::slice::from_raw_parts(name, len) };
+        let name = String::from_utf8_lossy(bytes).into_owned();
+        if let Ok(mut v) = PENDING.lock() {
+            v.push(Sym { addr, name });
+        }
+    }
+
+    pub fn finalize() {
+        let Ok(mut v) = PENDING.lock() else { return };
+        let mut syms = core::mem::take(&mut *v);
+        syms.sort_by_key(|s| s.addr);
+        let boxed: Box<[Sym]> = syms.into_boxed_slice();
+        let len = boxed.len();
+        let ptr = Box::leak(boxed).as_mut_ptr();
+        FROZEN_LEN.store(len, Ordering::Release);
+        FROZEN_PTR.store(ptr, Ordering::Release);
+    }
+
+    /// Nearest registered symbol with `addr <= pc`, plus byte offset.
+    pub fn resolve(pc: usize) -> Option<(&'static str, usize)> {
+        let ptr = FROZEN_PTR.load(Ordering::Acquire);
+        let len = FROZEN_LEN.load(Ordering::Acquire);
+        if ptr.is_null() || len == 0 {
+            return None;
+        }
+        let syms = unsafe { core::slice::from_raw_parts(ptr, len) };
+        let (mut lo, mut hi) = (0usize, len);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if syms[mid].addr <= pc {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo == 0 {
+            return None;
+        }
+        let s = &syms[lo - 1];
+        let offset = pc - s.addr;
+        if offset > (1 << 20) {
+            return None;
+        }
+        Some((s.name.as_str(), offset))
+    }
+}
+#[cfg(unix)]
+use jit_syms::{
+    finalize as finalize_jit_symbols, register as register_jit_symbol, resolve as resolve_jit_symbol,
+};
+
+// Fallback for any non-Windows, non-Unix target: no-op.
+#[cfg(not(any(windows, unix)))]
 mod imp_stub {
-    /// No-op on non-Windows targets (this runtime is Windows-first).
     #[unsafe(no_mangle)]
     pub extern "C-unwind" fn nm2_install_crash_handler() {}
     #[unsafe(no_mangle)]
@@ -32,8 +107,225 @@ mod imp_stub {
     #[unsafe(no_mangle)]
     pub extern "C-unwind" fn nm2_finalize_jit_symbols() {}
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, unix)))]
 pub use imp_stub::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
+
+// ── POSIX (macOS / Linux) crash handler ───────────────────────────────────────
+//
+// Mirrors the Windows handler: on a fatal signal it writes an annotated backtrace
+// to stderr — async-signal-safe (no heap, no locking; output via a fixed stack
+// buffer and raw write(2)) — then restores the default disposition and re-raises
+// so the OS still produces its normal crash report (.ips / core). Frames are named
+// via dladdr (the AOT IDE binary carries real `Module.Proc` symbols), and the
+// faulting address is decoded: if its bit-pattern is a finite IEEE-754 double it
+// flags the "a REAL was used as an object pointer" miscompile class directly.
+#[cfg(unix)]
+mod imp_unix {
+    use core::ffi::c_void;
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn write_all(bytes: &[u8]) {
+        let mut off = 0usize;
+        while off < bytes.len() {
+            let r = unsafe {
+                libc::write(2, bytes[off..].as_ptr() as *const c_void, bytes.len() - off)
+            };
+            if r <= 0 {
+                break;
+            }
+            off += r as usize;
+        }
+    }
+
+    /// Fixed-capacity, no-alloc line buffer (signal-safe).
+    struct Line {
+        buf: [u8; 512],
+        len: usize,
+    }
+    impl Line {
+        fn new() -> Self {
+            Line { buf: [0u8; 512], len: 0 }
+        }
+        fn push(&mut self, s: &[u8]) {
+            let n = s.len().min(self.buf.len() - self.len);
+            self.buf[self.len..self.len + n].copy_from_slice(&s[..n]);
+            self.len += n;
+        }
+        fn push_str(&mut self, s: &str) {
+            self.push(s.as_bytes());
+        }
+        fn push_hex(&mut self, mut v: usize) {
+            if v == 0 {
+                self.push(b"0");
+                return;
+            }
+            let mut tmp = [0u8; 16];
+            let mut i = tmp.len();
+            while v != 0 {
+                i -= 1;
+                let d = (v & 0xf) as u8;
+                tmp[i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+                v >>= 4;
+            }
+            self.push(&tmp[i..]);
+        }
+        fn push_dec(&mut self, mut v: usize) {
+            if v == 0 {
+                self.push(b"0");
+                return;
+            }
+            let mut tmp = [0u8; 20];
+            let mut i = tmp.len();
+            while v != 0 {
+                i -= 1;
+                tmp[i] = b'0' + (v % 10) as u8;
+                v /= 10;
+            }
+            self.push(&tmp[i..]);
+        }
+        fn flush(&mut self) {
+            write_all(&self.buf[..self.len]);
+            self.len = 0;
+        }
+    }
+
+    fn sig_name(sig: i32) -> &'static str {
+        match sig {
+            libc::SIGSEGV => "SIGSEGV (segmentation fault)",
+            libc::SIGBUS => "SIGBUS (bus error)",
+            libc::SIGILL => "SIGILL (illegal instruction)",
+            libc::SIGFPE => "SIGFPE (arithmetic fault)",
+            libc::SIGABRT => "SIGABRT (abort)",
+            libc::SIGTRAP => "SIGTRAP (trap)",
+            _ => "fatal signal",
+        }
+    }
+
+    static IN_HANDLER: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn handler(sig: i32, info: *mut libc::siginfo_t, _ctx: *mut c_void) {
+        // Re-entrancy (a fault while dumping): go straight to default.
+        if IN_HANDLER.swap(true, Ordering::SeqCst) {
+            unsafe {
+                libc::signal(sig, libc::SIG_DFL);
+                libc::raise(sig);
+            }
+            return;
+        }
+
+        let fault = if info.is_null() {
+            0usize
+        } else {
+            unsafe { (*info).si_addr as usize }
+        };
+
+        let mut l = Line::new();
+        l.push_str("\n=== MacM2 fatal signal: ");
+        l.push_str(sig_name(sig));
+        l.push_str(" — faulting address 0x");
+        l.push_hex(fault);
+        l.push_str(" ===\n");
+        // Decode: is the faulting address actually a finite IEEE-754 double? That
+        // is the signature of a REAL used where an object pointer was expected
+        // (e.g. objc_msgSend on a float — the 0.5 codegen class).
+        let bits = fault as u64;
+        let d = f64::from_bits(bits);
+        let exp = (bits >> 52) & 0x7ff;
+        if bits != 0 && d.is_finite() && (0x380..=0x44f).contains(&exp) {
+            l.push_str("  hint: that address is a valid IEEE-754 double — a REAL was\n");
+            l.push_str("        likely used as an object pointer (a float reached objc_msgSend).\n");
+        }
+        l.flush();
+
+        // Backtrace, symbolised via dladdr (works for the AOT binary's real
+        // Module.Proc symbols) with a fallback to the nearest JIT symbol.
+        let mut frames: [*mut c_void; 64] = [core::ptr::null_mut(); 64];
+        let n = unsafe { libc::backtrace(frames.as_mut_ptr(), frames.len() as i32) } as usize;
+        for (i, &f) in frames.iter().take(n).enumerate() {
+            let pc = f as usize;
+            if pc == 0 {
+                break;
+            }
+            let mut ln = Line::new();
+            ln.push_str("  #");
+            ln.push_dec(i);
+            ln.push_str("  0x");
+            ln.push_hex(pc);
+            let mut named = false;
+            let mut di: libc::Dl_info = unsafe { core::mem::zeroed() };
+            if unsafe { libc::dladdr(f as *const c_void, &mut di) } != 0 && !di.dli_sname.is_null() {
+                // length of the NUL-terminated symbol name (bounded scan)
+                let mut len = 0usize;
+                while len < 512 && unsafe { *di.dli_sname.add(len) } != 0 {
+                    len += 1;
+                }
+                let name = unsafe { core::slice::from_raw_parts(di.dli_sname as *const u8, len) };
+                ln.push_str("  ");
+                ln.push(name);
+                if !di.dli_saddr.is_null() {
+                    ln.push_str("+0x");
+                    ln.push_hex(pc - di.dli_saddr as usize);
+                }
+                named = true;
+            }
+            if !named {
+                if let Some((nm, off)) = super::resolve_jit_symbol(pc) {
+                    ln.push_str("  M2 ");
+                    ln.push_str(nm);
+                    ln.push_str("+0x");
+                    ln.push_hex(off);
+                } else {
+                    ln.push_str("  <unknown>");
+                }
+            }
+            ln.push_str("\n");
+            ln.flush();
+        }
+        let mut tail = Line::new();
+        tail.push_str("=== end backtrace (OS crash report follows) ===\n");
+        tail.flush();
+
+        // Restore default disposition and re-raise so the OS still produces its
+        // normal crash report; the process terminates as it otherwise would.
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    static INSTALL: Once = Once::new();
+
+    #[unsafe(no_mangle)]
+    pub extern "C-unwind" fn nm2_install_crash_handler() {
+        INSTALL.call_once(|| unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = handler as libc::sighandler_t;
+            sa.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+            libc::sigemptyset(&mut sa.sa_mask);
+            for &s in &[
+                libc::SIGSEGV,
+                libc::SIGBUS,
+                libc::SIGILL,
+                libc::SIGFPE,
+                libc::SIGABRT,
+                libc::SIGTRAP,
+            ] {
+                libc::sigaction(s, &sa, core::ptr::null_mut());
+            }
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C-unwind" fn nm2_register_jit_symbol(addr: usize, name: *const u8, len: usize) {
+        super::register_jit_symbol(addr, name, len);
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C-unwind" fn nm2_finalize_jit_symbols() {
+        super::finalize_jit_symbols();
+    }
+}
 
 #[cfg(windows)]
 mod imp {
