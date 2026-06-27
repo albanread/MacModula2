@@ -7,8 +7,18 @@ DEFINITION MODULE Proc;
 FROM SYSTEM IMPORT ADDRESS;
 
 (* Run `cmd` via /bin/sh -c, capturing stdout+stderr into `output`. Returns the
-   process exit code (-1 if it could not be started). *)
+   process exit code (-1 if it could not be started). BLOCKS until the child
+   closes stdout — do not use for GUI programs on the main thread. *)
 PROCEDURE RunCapture (cmd: ARRAY OF CHAR; VAR output: ARRAY OF CHAR): INTEGER;
+
+(* Asynchronous run — does NOT block the caller, so the IDE's run loop keeps
+   pumping while a (possibly GUI) program runs. RunAsync starts `cmd` on a worker
+   thread and returns a job id (>0), or -1 on failure. Poll RunDone (1=done,
+   0=running, -1=unknown); once done, RunCollect copies the captured output and
+   returns the exit code (-2 if polled before done, -1 if the id is unknown). *)
+PROCEDURE RunAsync (cmd: ARRAY OF CHAR): INTEGER;
+PROCEDURE RunDone (id: INTEGER): INTEGER;
+PROCEDURE RunCollect (id: INTEGER; VAR output: ARRAY OF CHAR): INTEGER;
 
 (* Write `content` to `path` (UTF-8). Returns 0 on success, -1 on error. *)
 PROCEDURE WriteFile (path: ARRAY OF CHAR; content: ARRAY OF CHAR): INTEGER;

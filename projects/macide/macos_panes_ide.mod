@@ -67,6 +67,9 @@ VAR
   ctrl: ObjC.Id;
   gCandBuf: ARRAY [0..65535] OF CHAR;   (* completion candidates, module-level so the *)
                                         (* delegate never puts a 128 KB array on the stack *)
+  gBuildJob: INTEGER;                   (* async build/run job id (0 = idle) *)
+  gBuildTab: INTEGER;                   (* the tab whose build is running *)
+  gBuildOut: ARRAY [0..65535] OF CHAR;  (* captured build output (module-level: big) *)
 
 (* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
    NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
@@ -587,6 +590,9 @@ PROCEDURE VOpen (): BOOLEAN;     (* open a file path in a new editor tab *)
 VAR path: ARRAY [0..1023] OF CHAR;
 BEGIN Ptcl.Arg(1, path); OpenPath(path, FALSE); RETURN TRUE END VOpen;
 
+PROCEDURE VBuild (): BOOLEAN;    (* build & run the active tab: `build` — same path as the toolbar action *)
+BEGIN BuildRunSelected; RETURN TRUE END VBuild;
+
 PROCEDURE VDescribeAt (): BOOLEAN;   (* describe the symbol at (line,col) of the active tab -> help pane.
                                         This is exactly the hover payload (idx -> describe -> render). *)
 VAR sel, n: INTEGER; md: ARRAY [0..16383] OF CHAR;
@@ -610,6 +616,7 @@ BEGIN
   Ptcl.Register("format", VFormat);
   Ptcl.Register("resize", VResize);
   Ptcl.Register("open", VOpen);
+  Ptcl.Register("build", VBuild);
   Ptcl.Register("describeat", VDescribeAt)
 END RegisterCmds;
 
@@ -617,6 +624,7 @@ END RegisterCmds;
 PROCEDURE CmdTick (block, timer: ObjC.Id);
 VAR n, ig: INTEGER; out: ARRAY [0..1023] OF CHAR; ok: BOOLEAN;
 BEGIN
+  BuildPoll;                              (* collect an async build/run when it ends *)
   IF Proc.FileSize("/tmp/macm2.ptcl") > 0 THEN
     n  := Proc.ReadFile("/tmp/macm2.ptcl", gCmdBuf);
     ig := Proc.WriteFile("/tmp/macm2.ptcl", "");   (* consume so it runs once *)
@@ -712,6 +720,51 @@ BEGIN
   INC(gTabCount);
   RebuildTabBar; ShowTabStatus
 END OpenPath;
+
+(* Build & run the active tab — shared by the toolbar/menu action and the `build`
+   ptcl verb. Starts the program on a WORKER THREAD (Proc.RunAsync) and returns
+   immediately, so the IDE's run loop keeps pumping while the program runs. A
+   GUI demo used to freeze the IDE here (RunCapture blocked the main thread until
+   its window closed — the beachball). BuildPoll, ticked from the run loop,
+   collects the output once the program exits. *)
+PROCEDURE BuildRunSelected;
+VAR sel: INTEGER; cmd: ARRAY [0..2047] OF CHAR;
+BEGIN
+  IF gBuildJob # 0 THEN Cocoa.SetText(status, "A program is already running — close its window first."); RETURN END;
+  sel := Cocoa.SelectedTab(tabs);
+  IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
+  IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
+  Assign("./target/debug/newm2-driver run --library library '", cmd);
+  Append(gPaths[sel], cmd); Append("' 2>&1", cmd);
+  gBuildTab := sel;
+  gBuildJob := Proc.RunAsync(cmd);
+  IF gBuildJob <= 0 THEN gBuildJob := 0; Cocoa.SetText(status, "Build failed — could not start.")
+  ELSE Cocoa.SetText(status, "Building & running…  (IDE stays live — close the program window when done)") END
+END BuildRunSelected;
+
+(* Run-loop tick: if a build is running, see if it has finished and, if so,
+   collect its output. Non-blocking — if still running, just returns. *)
+PROCEDURE BuildPoll;
+VAR rc, marked, errLine: INTEGER;
+BEGIN
+  IF gBuildJob = 0 THEN RETURN END;
+  IF Proc.RunDone(gBuildJob) # 1 THEN RETURN END;        (* still running: stay responsive *)
+  rc := Proc.RunCollect(gBuildJob, gBuildOut);
+  IF rc = -2 THEN RETURN END;                            (* not ready yet — retry next tick *)
+  gBuildJob := 0;
+  Cocoa.SetEditorText(output, gBuildOut);
+  IF (gBuildTab >= 0) AND (gBuildTab < gTabCount) THEN
+    marked := Cocoa.MarkErrors(gEditors[gBuildTab], gBuildOut);
+    IF rc = 0 THEN Cocoa.SetText(status, "Build & run finished (exit 0).")
+    ELSE
+      errLine := Cocoa.GotoFirstError(gEditors[gBuildTab], gBuildOut);
+      IF errLine > 0 THEN Cocoa.SetText(status, "Build failed — jumped to first error.")
+      ELSE Cocoa.SetText(status, "Build/run reported errors.") END
+    END
+  ELSE
+    Cocoa.SetText(status, "Build & run finished.")
+  END
+END BuildPoll;
 
 PROCEDURE OpenDoc (tag: INTEGER);
 VAR full: ARRAY [0..262143] OF CHAR; idx: INTEGER; isLib: BOOLEAN;
@@ -825,26 +878,7 @@ CLASS IDE;
     IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
   PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
-  VAR sel, rc, marked, errLine: INTEGER; out: ARRAY [0..65535] OF CHAR; cmd: ARRAY [0..2047] OF CHAR;
-  BEGIN
-    sel := Cocoa.SelectedTab(tabs);
-    IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
-    Cocoa.SetText(status, "Building…");
-    IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
-    (* single-quote the path: it goes through /bin/sh -c, so a space or shell
-       metacharacter in the path would otherwise split the command or inject. *)
-    Assign("./target/debug/newm2-driver run --library library '", cmd);
-    Append(gPaths[sel], cmd); Append("' 2>&1", cmd);
-    rc := Proc.RunCapture(cmd, out);
-    Cocoa.SetEditorText(output, out);
-    marked := Cocoa.MarkErrors(gEditors[sel], out);
-    IF rc = 0 THEN Cocoa.SetText(status, "Build & run succeeded (exit 0).")
-    ELSE
-      errLine := Cocoa.GotoFirstError(gEditors[sel], out);   (* jump the cursor to the first error *)
-      IF errLine > 0 THEN Cocoa.SetText(status, "Build failed — jumped to first error.")
-      ELSE Cocoa.SetText(status, "Build/run reported errors.") END
-    END
-  END OnBuildRun;
+  BEGIN BuildRunSelected END OnBuildRun;
   PROCEDURE OnHelp (sender: ObjC.Id);              (* "onHelp:" — F1 shows/hides the help pane *)
   BEGIN
     HelpShow(NOT gHelpVisible);
@@ -976,7 +1010,7 @@ VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mTheme, mFormat, mHel
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
     okAdd: BOOLEAN;
 BEGIN
-  gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
+  gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0; gBuildJob := 0;
   Assign("library/pimmod", gProjDir);
   Assign("library/pimdef", gLibDir);
 

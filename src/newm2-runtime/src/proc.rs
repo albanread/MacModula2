@@ -4,7 +4,10 @@
 
 #![cfg(not(windows))]
 
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -66,6 +69,104 @@ pub extern "C-unwind" fn nm2_proc_run_capture(
             write_wide(out_ptr, out_high, &format!("failed to run command: {e}"));
             -1
         }
+    }
+}
+
+// ---- asynchronous run -----------------------------------------------------
+// `RunCapture` blocks the calling thread until the child closes its stdout. For
+// a GUI program (e.g. a Cocoa demo) that never happens until the user closes its
+// window, so running it on the IDE's main thread freezes the whole UI (the
+// beachball). The async API below runs the command on a worker thread and lets
+// the caller poll for completion from its run-loop timer, so the IDE stays live.
+
+/// Result slot shared with the worker thread: `Some((exit_code, output))` once
+/// the child has finished.
+type JobSlot = Arc<Mutex<Option<(i64, String)>>>;
+
+fn job_table() -> &'static Mutex<HashMap<u64, JobSlot>> {
+    static T: OnceLock<Mutex<HashMap<u64, JobSlot>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+
+/// `Proc.RunAsync(cmd): INTEGER` — start `cmd` via `/bin/sh -c` on a worker
+/// thread and return a job id (>0), or -1 if the table is unavailable. Never
+/// blocks: poll with `RunDone` and gather the result with `RunCollect`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_run_async(cmd_ptr: *const u16, cmd_high: u64) -> i64 {
+    let cmd = wide_to_string(cmd_ptr, cmd_high);
+    let slot: JobSlot = Arc::new(Mutex::new(None));
+    let id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+    {
+        let Ok(mut t) = job_table().lock() else {
+            return -1;
+        };
+        t.insert(id, slot.clone());
+    }
+    // Detach the worker: it owns its slot clone and stores the result there.
+    std::thread::spawn(move || {
+        let res = match Command::new("/bin/sh").arg("-c").arg(&cmd).output() {
+            Ok(o) => {
+                let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+                s.push_str(&String::from_utf8_lossy(&o.stderr));
+                (o.status.code().unwrap_or(-1) as i64, s)
+            }
+            Err(e) => (-1, format!("failed to run command: {e}")),
+        };
+        if let Ok(mut g) = slot.lock() {
+            *g = Some(res);
+        }
+    });
+    id as i64
+}
+
+/// `Proc.RunDone(id): INTEGER` — 1 if the job has finished, 0 if still running,
+/// -1 if `id` is unknown (already collected or never existed).
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_run_done(id: i64) -> i64 {
+    let Ok(t) = job_table().lock() else {
+        return -1;
+    };
+    match t.get(&(id as u64)) {
+        Some(slot) => match slot.lock() {
+            Ok(g) if g.is_some() => 1,
+            _ => 0,
+        },
+        None => -1,
+    }
+}
+
+/// `Proc.RunCollect(id, VAR output): INTEGER` — when the job is done, copy its
+/// captured stdout+stderr into `output`, drop the job, and return the exit code.
+/// Returns -2 if the job is not finished yet (nothing written), -1 if unknown.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_proc_run_collect(
+    id: i64,
+    out_ptr: *mut u16,
+    out_high: u64,
+) -> i64 {
+    // Take the slot Arc out under a short lock, but only remove the job once we
+    // know its result is ready (so a premature poll doesn't lose the output).
+    let slot = {
+        let Ok(t) = job_table().lock() else {
+            return -1;
+        };
+        match t.get(&(id as u64)) {
+            Some(s) => s.clone(),
+            None => return -1,
+        }
+    };
+    let ready = slot.lock().ok().and_then(|mut g| g.take());
+    match ready {
+        Some((code, s)) => {
+            if let Ok(mut t) = job_table().lock() {
+                t.remove(&(id as u64));
+            }
+            write_wide(out_ptr, out_high, &s);
+            code
+        }
+        None => -2, // not finished yet — caller should keep polling
     }
 }
 

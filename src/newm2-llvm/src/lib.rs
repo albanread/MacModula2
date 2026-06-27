@@ -310,6 +310,9 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.Highlight".to_string(), "nm2_ide_highlight"));
         v.push(("ObjC.MarkErrors".to_string(), "nm2_ide_mark_errors"));
         v.push(("Proc.RunCapture".to_string(), "nm2_proc_run_capture"));
+        v.push(("Proc.RunAsync".to_string(), "nm2_proc_run_async"));
+        v.push(("Proc.RunDone".to_string(), "nm2_proc_run_done"));
+        v.push(("Proc.RunCollect".to_string(), "nm2_proc_run_collect"));
         v.push(("Proc.WriteFile".to_string(), "nm2_proc_write_file"));
         v.push(("Proc.WriteBytes".to_string(), "nm2_proc_write_bytes"));
         v.push(("Proc.FileSize".to_string(), "nm2_proc_file_size"));
@@ -1257,6 +1260,9 @@ fn for_each_runtime_binding(
         bind("ObjC.Highlight", newm2_runtime::objc::nm2_ide_highlight as *const ());
         bind("ObjC.MarkErrors", newm2_runtime::objc::nm2_ide_mark_errors as *const ());
         bind("Proc.RunCapture", newm2_runtime::proc::nm2_proc_run_capture as *const ());
+        bind("Proc.RunAsync", newm2_runtime::proc::nm2_proc_run_async as *const ());
+        bind("Proc.RunDone", newm2_runtime::proc::nm2_proc_run_done as *const ());
+        bind("Proc.RunCollect", newm2_runtime::proc::nm2_proc_run_collect as *const ());
         bind("Proc.WriteFile", newm2_runtime::proc::nm2_proc_write_file as *const ());
         bind("Proc.WriteBytes", newm2_runtime::proc::nm2_proc_write_bytes as *const ());
         bind("Proc.FileSize", newm2_runtime::proc::nm2_proc_file_size as *const ());
