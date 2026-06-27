@@ -1,0 +1,11 @@
+# Build artifacts from `newm2 build projects/mf66ide/*.mod`.
+# The compiled binary is written next to each source with NO file extension on
+# macOS (e.g. mf66ide), which *.exe/*.obj can't catch — so ignore everything here
+# except sources + scripts, and the macOS bare-name binaries go away too.
+*
+!.gitignore
+!*/
+!*.mod
+!*.def
+!*.md
+!*.sh

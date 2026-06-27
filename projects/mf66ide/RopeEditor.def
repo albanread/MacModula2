@@ -1,0 +1,44 @@
+DEFINITION MODULE RopeEditor;
+(* A rope-backed code editor for the MacM2 IDE: Make builds an NSTextView whose
+   NSTextStorage is the Modula-2 RopeStore (characters in a TextRope, syntax
+   colours from an M2 lexer + run list, incremental re-lex on edit). It returns
+   an NSScrollView whose documentView is that text view — so the existing
+   Cocoa.SetEditorText / EditorText / SetEditorCursor / GotoFirstError all work
+   on it unchanged (they go through `documentView`), and typing flows straight
+   into the rope. No separate HighlightEditor pass is needed; the store colours
+   itself. See docs/design/mac-text-store.md. *)
+IMPORT ObjC;
+
+PROCEDURE Make (x, y, w, h: REAL): ObjC.Id;   (* a rope-backed editor (an NSScrollView) *)
+
+(* Hover support: a callback invoked (on mouseMoved:) with the UTF-16 character
+   index under the pointer. The IDE registers one, debounces it (dwell), maps the
+   index to line/col, and asks the compiler to describe the symbol there. The
+   window must have setAcceptsMouseMovedEvents: TRUE for the editor to get moves. *)
+TYPE HoverProc = PROCEDURE (CARDINAL);
+PROCEDURE SetHoverProc (p: HoverProc);
+
+(* Enter hook: invoked when Return is pressed in an editor; returns TRUE if it
+   handled the key (then no newline is inserted). The IDE uses this to make the
+   CNSL pane an interactive console — process the typed line in place. Other
+   editors return FALSE and get the normal auto-indent newline. *)
+TYPE EnterProc = PROCEDURE (ObjC.Id): BOOLEAN;
+PROCEDURE SetEnterProc (p: EnterProc);
+
+(* Lexer mode for syntax colouring: 0 = Forth (.f), 1 = JASM masm (.masm). The IDE
+   sets it for the active editor (on open + tab switch) so re-lexing uses the right
+   grammar. *)
+PROCEDURE SetLexMode (mode: CARDINAL);
+
+(* Colour themes. SetTheme selects the palette for token colours (applied to every
+   editor's syntax highlighting) + the background/caret/selection; ApplyTheme pushes
+   the current theme onto one editor (the IDE calls it for each open tab after a
+   SetTheme, and Make applies it to new editors automatically). *)
+CONST
+  themeDefault = 0; themeMono = 1; themeAmber = 2; themeGreen = 3; themeTurbo = 4; themeCount = 5;
+PROCEDURE SetTheme   (id: CARDINAL);
+PROCEDURE ApplyTheme (editor: ObjC.Id);          (* editor = the NSScrollView from Make *)
+PROCEDURE CurrentTheme (): CARDINAL;
+PROCEDURE ThemeName  (id: CARDINAL; VAR name: ARRAY OF CHAR);
+
+END RopeEditor.

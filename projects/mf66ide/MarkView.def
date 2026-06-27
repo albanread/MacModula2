@@ -1,0 +1,23 @@
+(* MarkView — render a small markdown subset into a Cocoa text view as styled
+   attributed text, so the IDE's help pane shows real headings / code / links
+   instead of a raw plain-text dump. The macOS analogue of the Windows IDE's
+   terminal-grid markdown renderer (FastPanesM2.RenderHelp), emitting attributed
+   runs into an NSTextView's NSTextStorage instead of painting cells.
+
+   Recognised subset (the exact subset the compiler's `describe` engine emits,
+   plus the docs/m2-guide pages): # / ## / ### headings, ``` fenced code blocks,
+   `- ` bullets, `---` rules, [text](target) links, **bold**, `inline code`. *)
+DEFINITION MODULE MarkView;
+
+IMPORT ObjC;
+
+(* Build the font / colour / attribute palette. Lazy — Render calls it on first
+   use (after Cocoa.InitApp), so a separate call is optional. *)
+PROCEDURE Init;
+
+(* Parse `md` and install it as styled attributed text in `editor` (an
+   NSScrollView wrapping an NSTextView — i.e. a Cocoa.MakeEditor / RopeEditor
+   view). Replaces the view's whole contents and makes it read-only. *)
+PROCEDURE Render (editor: ObjC.Id; md: ARRAY OF CHAR);
+
+END MarkView.
