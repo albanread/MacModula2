@@ -57,9 +57,16 @@ DRIVER="target/$PROFILE/newm2-driver"
 
 # --- 2. AOT-compile the IDE to a standalone Mach-O ------------------------------
 say "Compiling the IDE ($IDE_SRC)…"
+IDE_BASE="${IDE_SRC%.mod}"
+# Drop any stale outputs FIRST, so we can only ship the binary THIS build produces
+# (the driver now writes <name> with no extension on macOS; older builds wrote
+# <name>.exe — copying that blindly shipped a stale IDE).
+rm -f "$IDE_BASE" "$IDE_BASE.exe"
 "$DRIVER" build --library library "$IDE_SRC"
-IDE_BIN="${IDE_SRC%.mod}.exe"          # the driver writes <name>.exe (a Mach-O)
-[ -f "$IDE_BIN" ] || { echo "IDE binary not produced at $IDE_BIN" >&2; exit 1; }
+if   [ -f "$IDE_BASE" ];     then IDE_BIN="$IDE_BASE"
+elif [ -f "$IDE_BASE.exe" ]; then IDE_BIN="$IDE_BASE.exe"
+else echo "IDE binary not produced (neither $IDE_BASE nor $IDE_BASE.exe)" >&2; exit 1; fi
+say "  shipping IDE binary: $IDE_BIN"
 
 # --- 3. Compile the launcher (a real Mach-O main executable) --------------------
 say "Compiling the launcher…"
