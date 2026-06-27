@@ -29,6 +29,7 @@ IMPORT M2Format;
 
 CONST
   MaxFiles = 256;
+  MaxJobs  = 16;            (* concurrent Build & Run jobs we track for output/errors *)
   LibBase  = 1000;          (* sidebar tags >= LibBase address the library list *)
   RowH     = 27.0;
   Dot      = 2EH;           (* '.' as a unichar (ORD('.')) — the completion trigger *)
@@ -67,9 +68,9 @@ VAR
   ctrl: ObjC.Id;
   gCandBuf: ARRAY [0..65535] OF CHAR;   (* completion candidates, module-level so the *)
                                         (* delegate never puts a 128 KB array on the stack *)
-  gBuildJob: INTEGER;                   (* async build/run job id (0 = idle) *)
-  gBuildTab: INTEGER;                   (* the tab whose build is running *)
-  gBuildOut: ARRAY [0..65535] OF CHAR;  (* captured build output (module-level: big) *)
+  gJobs:   ARRAY [0..MaxJobs-1] OF INTEGER;  (* async run job ids (0 = free slot) *)
+  gJobTab: ARRAY [0..MaxJobs-1] OF INTEGER;  (* tab each job came from (for error marking) *)
+  gBuildOut: ARRAY [0..65535] OF CHAR;       (* captured run output (module-level: big) *)
 
 (* A flipped NSView: y=0 at the TOP, so a file list lays out top-down inside an
    NSScrollView. An ordinary M2 class overriding NSView's isFlipped. *)
@@ -722,47 +723,55 @@ BEGIN
 END OpenPath;
 
 (* Build & run the active tab — shared by the toolbar/menu action and the `build`
-   ptcl verb. Starts the program on a WORKER THREAD (Proc.RunAsync) and returns
-   immediately, so the IDE's run loop keeps pumping while the program runs. A
-   GUI demo used to freeze the IDE here (RunCapture blocked the main thread until
-   its window closed — the beachball). BuildPoll, ticked from the run loop,
-   collects the output once the program exits. *)
+   ptcl verb. Fire-and-forget: launch the program on a WORKER THREAD
+   (Proc.RunAsync) and return immediately. The IDE never blocks, never waits for a
+   window to close, and never limits how many programs you run at once — launch as
+   many as you like. The job is parked in a free slot only so its output / error
+   marks can be shown WHEN it eventually exits; if every slot is busy it still
+   runs, just untracked. Nothing is ever gated on a previous run. *)
 PROCEDURE BuildRunSelected;
-VAR sel: INTEGER; cmd: ARRAY [0..2047] OF CHAR;
+VAR sel, i, slot, job: INTEGER; cmd: ARRAY [0..2047] OF CHAR;
 BEGIN
-  IF gBuildJob # 0 THEN Cocoa.SetText(status, "A program is already running — close its window first."); RETURN END;
   sel := Cocoa.SelectedTab(tabs);
   IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
   IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
   Assign("./target/debug/newm2-driver run --library library '", cmd);
   Append(gPaths[sel], cmd); Append("' 2>&1", cmd);
-  gBuildTab := sel;
-  gBuildJob := Proc.RunAsync(cmd);
-  IF gBuildJob <= 0 THEN gBuildJob := 0; Cocoa.SetText(status, "Build failed — could not start.")
-  ELSE Cocoa.SetText(status, "Building & running…  (IDE stays live — close the program window when done)") END
+  job := Proc.RunAsync(cmd);
+  IF job <= 0 THEN Cocoa.SetText(status, "Build failed — could not start."); RETURN END;
+  slot := -1;
+  FOR i := 0 TO MaxJobs-1 DO IF (slot < 0) AND (gJobs[i] = 0) THEN slot := i END END;
+  IF slot >= 0 THEN gJobs[slot] := job; gJobTab[slot] := sel END;   (* else: runs untracked — never blocked *)
+  Cocoa.SetText(status, "Building & running…  (IDE stays live — launch as many as you like)")
 END BuildRunSelected;
 
-(* Run-loop tick: if a build is running, see if it has finished and, if so,
-   collect its output. Non-blocking — if still running, just returns. *)
+(* Run-loop tick: reap any finished run and surface its output / error marks.
+   Non-blocking: each still-running job is simply left alone. *)
 PROCEDURE BuildPoll;
-VAR rc, marked, errLine: INTEGER;
+VAR i, rc, marked, errLine, tab: INTEGER;
 BEGIN
-  IF gBuildJob = 0 THEN RETURN END;
-  IF Proc.RunDone(gBuildJob) # 1 THEN RETURN END;        (* still running: stay responsive *)
-  rc := Proc.RunCollect(gBuildJob, gBuildOut);
-  IF rc = -2 THEN RETURN END;                            (* not ready yet — retry next tick *)
-  gBuildJob := 0;
-  Cocoa.SetEditorText(output, gBuildOut);
-  IF (gBuildTab >= 0) AND (gBuildTab < gTabCount) THEN
-    marked := Cocoa.MarkErrors(gEditors[gBuildTab], gBuildOut);
-    IF rc = 0 THEN Cocoa.SetText(status, "Build & run finished (exit 0).")
-    ELSE
-      errLine := Cocoa.GotoFirstError(gEditors[gBuildTab], gBuildOut);
-      IF errLine > 0 THEN Cocoa.SetText(status, "Build failed — jumped to first error.")
-      ELSE Cocoa.SetText(status, "Build/run reported errors.") END
+  FOR i := 0 TO MaxJobs-1 DO
+    IF gJobs[i] # 0 THEN
+      IF Proc.RunDone(gJobs[i]) = 1 THEN
+        rc := Proc.RunCollect(gJobs[i], gBuildOut);
+        IF rc # -2 THEN                                  (* -2 = not ready; retry next tick *)
+          tab := gJobTab[i];
+          gJobs[i] := 0;
+          Cocoa.SetEditorText(output, gBuildOut);
+          IF (tab >= 0) AND (tab < gTabCount) THEN
+            marked := Cocoa.MarkErrors(gEditors[tab], gBuildOut);
+            IF rc = 0 THEN Cocoa.SetText(status, "A run finished (exit 0).")
+            ELSE
+              errLine := Cocoa.GotoFirstError(gEditors[tab], gBuildOut);
+              IF errLine > 0 THEN Cocoa.SetText(status, "Build failed — jumped to first error.")
+              ELSE Cocoa.SetText(status, "Run reported errors.") END
+            END
+          ELSE
+            Cocoa.SetText(status, "A run finished.")
+          END
+        END
+      END
     END
-  ELSE
-    Cocoa.SetText(status, "Build & run finished.")
   END
 END BuildPoll;
 
@@ -1009,8 +1018,10 @@ END Tick;
 VAR ide: IDE; appObj, menuBar, mApp, mFile, mEdit, mBuild, mTheme, mFormat, mHelp, findItem: ObjC.Id;
     f1key, upKey, downKey: ARRAY [0..2] OF CHAR;
     okAdd: BOOLEAN;
+    gi: INTEGER;
 BEGIN
-  gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0; gBuildJob := 0;
+  gProjBtnCount := 0; gLibBtnCount := 0; gTabCount := 0;
+  FOR gi := 0 TO MaxJobs-1 DO gJobs[gi] := 0 END;
   Assign("library/pimmod", gProjDir);
   Assign("library/pimdef", gLibDir);
 
