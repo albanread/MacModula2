@@ -6756,13 +6756,34 @@ fn classify_transfer_cast(
     }
 
     // Pointer-involved transfers: reinterpret rather than convert.
+    //
+    // ptrtoint/inttoptr have an *integer* operand and result, so they can only
+    // bridge a pointer and an ordinal. When the non-pointer side is a REAL (a
+    // float in the IR — e.g. `CAST(REAL, anAddress)` / `CAST(ADDRESS, aReal)`),
+    // reinterpret the same-width bit pattern through memory instead; otherwise
+    // emit_cast would call `target.into_int_type()` on a `double` and panic.
+    let is_real_xfer = |t: newm2_sema::types::TypeId| {
+        matches!(transfer_class(&sema.types, t), Some(TransferClass::Real))
+    };
     match (
         is_pointer_like(&sema.types, source_ty),
         is_pointer_like(&sema.types, target_ty),
     ) {
         (true, true) => return Some(CastKind::BitCast),
-        (true, false) => return Some(CastKind::PtrToInt),
-        (false, true) => return Some(CastKind::IntToPtr),
+        (true, false) => {
+            return Some(if is_real_xfer(target_ty) {
+                CastKind::MemReinterpret
+            } else {
+                CastKind::PtrToInt
+            });
+        }
+        (false, true) => {
+            return Some(if is_real_xfer(source_ty) {
+                CastKind::MemReinterpret
+            } else {
+                CastKind::IntToPtr
+            });
+        }
         (false, false) => {}
     }
 
@@ -7289,5 +7310,59 @@ mod tests {
 
         assert!(cast_count >= 2, "expected transfer builtins to lower as IR casts");
         assert!(!has_transfer_call, "transfer builtins should not lower as function references");
+    }
+
+    /// Regression: `SYSTEM.CAST` between a pointer (ADDRESS) and a REAL must
+    /// reinterpret the bit pattern through memory (MemReinterpret), not pick
+    /// PtrToInt/IntToPtr. Those have an integer operand/result, so codegen's
+    /// `into_int_type()` panicked on the `double` side ("Found FloatType … but
+    /// expected the IntType variant") for `CAST(REAL, addr)` / `CAST(ADDRESS, r)`.
+    #[test]
+    fn cast_address_real_reinterprets_via_memory() {
+        let dir = tmpdir("cast_addr_real");
+        fs::write(
+            dir.join("CR.mod"),
+            "MODULE CR;\n\
+             FROM SYSTEM IMPORT CAST, ADDRESS;\n\
+             VAR a: ADDRESS; r: REAL;\n\
+             BEGIN\n\
+               r := 1.5;\n\
+               a := CAST(ADDRESS, r);\n\
+               r := CAST(REAL, a)\n\
+             END CR.\n",
+        )
+        .unwrap();
+
+        let mut sp = SearchPath::new();
+        sp.push(&dir);
+        let graph = build_module_graph(&dir.join("CR.mod"), &sp).unwrap();
+        let sema = newm2_sema::check_module_graph(&graph);
+        assert!(!sema.has_errors(), "sema errors: {:?}", sema.diagnostics);
+
+        let mid = graph.lookup("CR").unwrap();
+        let ir = lower_module(&graph, mid, &sema, MemoryMode::NoGc).unwrap();
+
+        let (mut mem_reinterp, mut ptr_int) = (0usize, 0usize);
+        for f in &ir.funcs {
+            for b in &f.blocks {
+                for inst in &b.insts {
+                    if let Inst::Cast { kind, .. } = inst {
+                        match kind {
+                            CastKind::MemReinterpret => mem_reinterp += 1,
+                            CastKind::PtrToInt | CastKind::IntToPtr => ptr_int += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            mem_reinterp >= 2,
+            "ADDRESS<->REAL should reinterpret via memory; got {mem_reinterp} MemReinterpret"
+        );
+        assert_eq!(
+            ptr_int, 0,
+            "ADDRESS<->REAL must not lower to PtrToInt/IntToPtr; got {ptr_int}"
+        );
     }
 }
