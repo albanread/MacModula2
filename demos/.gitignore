@@ -1,8 +1,13 @@
-# Build artifacts from `newm2 build demos/*.mod`
-*.exe
-*.obj
-*.pdb
-*.ilk
-*.lib
-*.manifest
-_*.txt
+# Build artifacts from `newm2 build demos/*.mod`.
+# The compiled binary is written next to each source. On macOS it has NO file
+# extension (e.g. `reversi_cocoa`, `audio_sfx`), so a `*.exe`/`*.obj` rule can't
+# catch it. So: ignore everything here except sources + assets — this covers the
+# macOS bare-name binaries and the Windows *.exe/*.obj/*.pdb/... leftovers alike.
+*
+!.gitignore
+!*/
+!*.mod
+!*.def
+!*.md
+!*.mid
+!*.wav
