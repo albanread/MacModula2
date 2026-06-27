@@ -8,4 +8,4 @@ pub mod substitute;
 pub mod types;
 
 pub use substitute::build_module_asm_string;
-pub use types::{AsmParam, AsmProc, AsmRetType, AsmType};
+pub use types::{Arch, AsmParam, AsmProc, AsmRetType, AsmType};

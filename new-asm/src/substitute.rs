@@ -65,14 +65,34 @@
 //!
 //! [llvm]: https://llvm.org/doxygen/group__LLVMCCoreModule.html
 
-use crate::types::{AsmProc, AsmRetType};
+use crate::types::{Arch, AsmProc, AsmRetType};
 
-/// Build the complete string for `LLVMAppendModuleInlineAsm`. See
-/// the crate-level docstring for the output shape.
-pub fn build_module_asm_string(proc: &AsmProc) -> String {
+/// Build the complete string for `LLVMAppendModuleInlineAsm`.
+///
+/// `arch` selects the assembler dialect: x86-64 prepends
+/// `.intel_syntax noprefix`; AArch64 emits native GAS syntax (no directive).
+/// `sym_prefix` is the object-format symbol prefix — `"_"` for Mach-O (macOS),
+/// `""` for ELF/COFF — so the exported label matches the mangled symbol that the
+/// companion LLVM `declare` resolves to. See the crate-level docstring for the
+/// output shape; internal labels in the body are emitted verbatim (no prefix).
+///
+/// ## AAPCS64 cheat-sheet (AArch64)
+///
+/// | Slot | Integer / pointer | Float (REAL) |
+/// |------|-------------------|--------------|
+/// | 0    | `x0` (`w0`)       | `d0` (`s0`)  |
+/// | 1    | `x1`              | `d1`         |
+/// | …    | … up to `x7`      | … up to `d7` |
+/// | 8+   | on the stack      | on the stack |
+///
+/// Return: integer/pointer → `x0`; REAL → `d0`. End the body with `ret`.
+pub fn build_module_asm_string(proc: &AsmProc, arch: Arch, sym_prefix: &str) -> String {
     let mut out = String::new();
-    out.push_str(".intel_syntax noprefix\n");
-    out.push_str(&format!(".globl {0}\n{0}:\n", proc.name));
+    if arch == Arch::X86_64 {
+        out.push_str(".intel_syntax noprefix\n");
+    }
+    let label = format!("{sym_prefix}{}", proc.name);
+    out.push_str(&format!(".globl {0}\n{0}:\n", label));
     for line in proc.body.lines() {
         let t = line.trim();
         if t.is_empty() {
@@ -111,7 +131,7 @@ pub fn ret_type_str(rt: AsmRetType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AsmParam, AsmType};
+    use crate::types::{Arch, AsmParam, AsmType};
 
     fn word(name: &str) -> AsmParam {
         AsmParam { name: name.into(), ty: AsmType::Word }
@@ -125,7 +145,7 @@ mod tests {
             return_type: AsmRetType::Word,
             body: "mov rax, rcx\nadd rax, rdx\nret".into(),
         };
-        let s = build_module_asm_string(&proc);
+        let s = build_module_asm_string(&proc, Arch::X86_64, "");
         assert!(s.contains(".intel_syntax noprefix"));
         assert!(s.contains(".globl fast_add"));
         assert!(s.contains("fast_add:"));
@@ -147,7 +167,7 @@ mod tests {
             body: "mov rax, 0\nmov rdx, rcx\nloop:\n  add rax, rdx\n  dec rdx\n  jnz loop\nret"
                 .into(),
         };
-        let s = build_module_asm_string(&proc);
+        let s = build_module_asm_string(&proc, Arch::X86_64, "");
         assert!(s.contains("looper:\n"));
         // Inner label flush-left, instructions indented.
         assert!(s.contains("\nloop:\n"));
@@ -166,7 +186,7 @@ mod tests {
             return_type: AsmRetType::Void,
             body: "mov rax, 1\n\nmov rdx, 2\nret".into(),
         };
-        let s = build_module_asm_string(&proc);
+        let s = build_module_asm_string(&proc, Arch::X86_64, "");
         // Three indented instruction lines + one blank in the body.
         let body_lines: Vec<&str> = s.lines().skip(3).collect();
         assert_eq!(
@@ -186,7 +206,7 @@ mod tests {
             return_type: AsmRetType::Void,
             body: "ret  # legacy comment style".into(),
         };
-        let s = build_module_asm_string(&proc);
+        let s = build_module_asm_string(&proc, Arch::X86_64, "");
         assert!(s.contains("ret  # legacy comment style"));
     }
 }

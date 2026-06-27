@@ -153,9 +153,12 @@ pub fn emit_module<'ctx>(
     }
 
     // Pass 4: emit ASM procedure bodies as `module asm` blobs and add
-    // matching `declare`s for type-checked call sites.
+    // matching `declare`s for type-checked call sites. The dialect (Intel x86
+    // vs AArch64 GAS) and symbol prefix (`_` on Mach-O) follow the target so the
+    // same `ASM … END` mechanism works on Apple Silicon, not just Windows x64.
+    let (asm_arch, asm_prefix) = asm_target_flavor();
     for proc in &ir.asm_procs {
-        let asm_str = new_asm::build_module_asm_string(proc);
+        let asm_str = new_asm::build_module_asm_string(proc, asm_arch, asm_prefix);
         unsafe {
             inkwell::llvm_sys::core::LLVMAppendModuleInlineAsm(
                 module.as_mut_ptr(),
@@ -168,6 +171,26 @@ pub fn emit_module<'ctx>(
 
     drop(cg);
     module
+}
+
+/// Select the ASM dialect + symbol prefix from the host/target triple.
+/// AArch64 (Apple Silicon) → native GAS syntax, Mach-O `_` symbol prefix;
+/// x86-64 → Intel syntax, no prefix on COFF/ELF.
+fn asm_target_flavor() -> (new_asm::Arch, &'static str) {
+    let triple = TargetMachine::get_default_triple();
+    let t = triple.as_str().to_string_lossy().to_lowercase();
+    let arch = if t.contains("aarch64") || t.contains("arm64") {
+        new_asm::Arch::Aarch64
+    } else {
+        new_asm::Arch::X86_64
+    };
+    let prefix =
+        if t.contains("apple") || t.contains("darwin") || t.contains("macho") || t.contains("ios") {
+            "_"
+        } else {
+            ""
+        };
+    (arch, prefix)
 }
 
 fn emit_asm_proc_declare<'ctx>(

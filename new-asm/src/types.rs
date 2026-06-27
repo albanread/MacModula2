@@ -1,5 +1,19 @@
 //! Core types for ASM procedure declarations.
 
+/// Target architecture for an ASM body — selects the assembler dialect the
+/// `module asm` blob is emitted in (and therefore which mnemonics / ABI register
+/// names the author must use). The actual assembling is done by LLVM's
+/// integrated assembler (LLVM-MC), which handles both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// x86-64 — Intel syntax (`.intel_syntax noprefix`); Win64/SysV registers
+    /// (args rcx/rdx/r8/r9 or rdi/rsi/…, result rax; floats xmm0..).
+    X86_64,
+    /// AArch64 — native GAS syntax; AAPCS64 registers (args x0-x7 / v0-v7,
+    /// result x0 / v0).
+    Aarch64,
+}
+
 /// ABI register class for a parameter or return value.
 ///
 /// Maps to Windows x64 register families. Packed-SIMD types
