@@ -46,6 +46,9 @@ PROCEDURE SetScale    (inst: CARDINAL; s: REAL);
 PROCEDURE SetRotation (inst: CARDINAL; degrees: REAL);
 PROCEDURE SetAlpha    (inst: CARDINAL; a: REAL);
 PROCEDURE SetFrame    (inst, frame: CARDINAL);
+PROCEDURE Animate     (inst: CARDINAL; fps: REAL);       (* auto-cycle frames; 0 = stop *)
+PROCEDURE SpriteX     (inst: CARDINAL): REAL;            (* current x *)
+PROCEDURE SpriteY     (inst: CARDINAL): REAL;
 PROCEDURE Show        (inst: CARDINAL);
 PROCEDURE Hide        (inst: CARDINAL);
 PROCEDURE Hit         (a, b: CARDINAL): BOOLEAN;          (* bounding-box overlap *)

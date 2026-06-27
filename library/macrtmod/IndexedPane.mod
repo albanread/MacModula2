@@ -24,7 +24,7 @@ TYPE
   END;
   Inst = RECORD
     used, visible: BOOLEAN; def, frame: CARDINAL;
-    x, y, scale, rot, alpha: REAL;
+    x, y, scale, rot, alpha, animFps, animAcc: REAL;
   END;
 
 VAR
@@ -166,6 +166,11 @@ END SetLineRGB;
 PROCEDURE LoadDefaultPalette;
   VAR i: CARDINAL;
 BEGIN
+  (* the classic 16-colour palette on indices 1..15 (per-line defaults) *)
+  SetRGB(1,0,0,170);    SetRGB(2,0,170,0);    SetRGB(3,0,170,170);  SetRGB(4,170,0,0);
+  SetRGB(5,170,0,170);  SetRGB(6,170,85,0);   SetRGB(7,170,170,170);SetRGB(8,85,85,85);
+  SetRGB(9,85,85,255);  SetRGB(10,85,255,85); SetRGB(11,85,255,255);SetRGB(12,255,85,85);
+  SetRGB(13,255,85,255);SetRGB(14,255,255,85);SetRGB(15,255,255,255);
   FOR i := 16 TO 255 DO SetRGB(i, (i*5) MOD 256, (i*7) MOD 256, (i*11) MOD 256) END
 END LoadDefaultPalette;
 
@@ -337,13 +342,18 @@ PROCEDURE Place (i, def: CARDINAL; x, y: REAL);
 BEGIN
   IF i >= MAXINST THEN RETURN END;
   inst[i].used:=TRUE; inst[i].visible:=FALSE; inst[i].def:=def; inst[i].frame:=0;
-  inst[i].x:=x; inst[i].y:=y; inst[i].scale:=1.0; inst[i].rot:=0.0; inst[i].alpha:=1.0
+  inst[i].x:=x; inst[i].y:=y; inst[i].scale:=1.0; inst[i].rot:=0.0; inst[i].alpha:=1.0;
+  inst[i].animFps:=0.0; inst[i].animAcc:=0.0
 END Place;
 PROCEDURE MoveTo (i: CARDINAL; x, y: REAL); BEGIN IF i<MAXINST THEN inst[i].x:=x; inst[i].y:=y END END MoveTo;
 PROCEDURE SetScale (i: CARDINAL; s: REAL); BEGIN IF i<MAXINST THEN inst[i].scale:=s END END SetScale;
 PROCEDURE SetRotation (i: CARDINAL; d: REAL); BEGIN IF i<MAXINST THEN inst[i].rot:=d END END SetRotation;
 PROCEDURE SetAlpha (i: CARDINAL; a: REAL); BEGIN IF i<MAXINST THEN inst[i].alpha:=a END END SetAlpha;
 PROCEDURE SetFrame (i, f: CARDINAL); BEGIN IF i<MAXINST THEN inst[i].frame:=f END END SetFrame;
+PROCEDURE Animate (i: CARDINAL; fps: REAL);
+BEGIN IF i<MAXINST THEN inst[i].animFps:=fps; inst[i].animAcc:=0.0 END END Animate;
+PROCEDURE SpriteX (i: CARDINAL): REAL; BEGIN IF i<MAXINST THEN RETURN inst[i].x ELSE RETURN 0.0 END END SpriteX;
+PROCEDURE SpriteY (i: CARDINAL): REAL; BEGIN IF i<MAXINST THEN RETURN inst[i].y ELSE RETURN 0.0 END END SpriteY;
 PROCEDURE Show (i: CARDINAL); BEGIN IF i<MAXINST THEN inst[i].visible:=TRUE END END Show;
 PROCEDURE Hide (i: CARDINAL); BEGIN IF i<MAXINST THEN inst[i].visible:=FALSE END END Hide;
 
@@ -414,6 +424,15 @@ BEGIN
   [enc setFragmentBuffer: ibuf offset: 0 atIndex: 0];
   [enc setFragmentBuffer: gPalBuf offset: 0 atIndex: 1];
   [enc drawPrimitives: 4 vertexStart: 0 vertexCount: 4];
+  FOR i := 0 TO MAXINST-1 DO                              (* advance sprite animations *)
+    IF inst[i].used AND (inst[i].animFps > 0.0) AND (defs[inst[i].def].nframes > 1) THEN
+      inst[i].animAcc := inst[i].animAcc + inst[i].animFps * 0.0166667;
+      WHILE inst[i].animAcc >= 1.0 DO
+        inst[i].frame := (inst[i].frame + 1) MOD defs[inst[i].def].nframes;
+        inst[i].animAcc := inst[i].animAcc - 1.0
+      END
+    END
+  END;
   FOR i := 0 TO MAXINST-1 DO
     IF inst[i].used AND inst[i].visible THEN DrawInst(enc, i) END
   END;
