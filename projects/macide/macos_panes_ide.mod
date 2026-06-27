@@ -592,7 +592,10 @@ VAR path: ARRAY [0..1023] OF CHAR;
 BEGIN Ptcl.Arg(1, path); OpenPath(path, FALSE); RETURN TRUE END VOpen;
 
 PROCEDURE VBuild (): BOOLEAN;    (* build & run the active tab: `build` — same path as the toolbar action *)
-BEGIN BuildRunSelected; RETURN TRUE END VBuild;
+BEGIN BuildRunSelected(FALSE); RETURN TRUE END VBuild;
+
+PROCEDURE VBuildOpt (): BOOLEAN; (* build & run optimized (--opt 2): `buildopt` *)
+BEGIN BuildRunSelected(TRUE); RETURN TRUE END VBuildOpt;
 
 PROCEDURE VDescribeAt (): BOOLEAN;   (* describe the symbol at (line,col) of the active tab -> help pane.
                                         This is exactly the hover payload (idx -> describe -> render). *)
@@ -618,6 +621,7 @@ BEGIN
   Ptcl.Register("resize", VResize);
   Ptcl.Register("open", VOpen);
   Ptcl.Register("build", VBuild);
+  Ptcl.Register("buildopt", VBuildOpt);
   Ptcl.Register("describeat", VDescribeAt)
 END RegisterCmds;
 
@@ -729,20 +733,22 @@ END OpenPath;
    many as you like. The job is parked in a free slot only so its output / error
    marks can be shown WHEN it eventually exits; if every slot is busy it still
    runs, just untracked. Nothing is ever gated on a previous run. *)
-PROCEDURE BuildRunSelected;
+PROCEDURE BuildRunSelected (optimized: BOOLEAN);
 VAR sel, i, slot, job: INTEGER; cmd: ARRAY [0..2047] OF CHAR;
 BEGIN
   sel := Cocoa.SelectedTab(tabs);
   IF sel < 0 THEN Cocoa.SetText(status, "Open a file first."); RETURN END;
   IF NOT SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Build failed — could not save buffer."); RETURN END;
-  Assign("./target/debug/newm2-driver run --library library '", cmd);
+  IF optimized THEN Assign("./target/debug/newm2-driver run --opt 2 --library library '", cmd)
+  ELSE Assign("./target/debug/newm2-driver run --library library '", cmd) END;
   Append(gPaths[sel], cmd); Append("' 2>&1", cmd);
   job := Proc.RunAsync(cmd);
   IF job <= 0 THEN Cocoa.SetText(status, "Build failed — could not start."); RETURN END;
   slot := -1;
   FOR i := 0 TO MaxJobs-1 DO IF (slot < 0) AND (gJobs[i] = 0) THEN slot := i END END;
   IF slot >= 0 THEN gJobs[slot] := job; gJobTab[slot] := sel END;   (* else: runs untracked — never blocked *)
-  Cocoa.SetText(status, "Building & running…  (IDE stays live — launch as many as you like)")
+  IF optimized THEN Cocoa.SetText(status, "Building & running OPTIMIZED (--opt 2)…  (IDE stays live — launch as many as you like)")
+  ELSE Cocoa.SetText(status, "Building & running…  (IDE stays live — launch as many as you like)") END
 END BuildRunSelected;
 
 (* Run-loop tick: reap any finished run and surface its output / error marks.
@@ -887,7 +893,9 @@ CLASS IDE;
     IF SaveEditorTo(gEditors[sel], gPaths[sel]) THEN Cocoa.SetText(status, "Saved.") ELSE Cocoa.SetText(status, "Save failed.") END
   END OnSave;
   PROCEDURE OnBuildRun (sender: ObjC.Id);          (* "onBuildRun:" *)
-  BEGIN BuildRunSelected END OnBuildRun;
+  BEGIN BuildRunSelected(FALSE) END OnBuildRun;
+  PROCEDURE OnBuildRunOpt (sender: ObjC.Id);       (* "onBuildRunOpt:" — build & run with --opt 2 *)
+  BEGIN BuildRunSelected(TRUE) END OnBuildRunOpt;
   PROCEDURE OnHelp (sender: ObjC.Id);              (* "onHelp:" — F1 shows/hides the help pane *)
   BEGIN
     HelpShow(NOT gHelpVisible);
@@ -1179,6 +1187,7 @@ BEGIN
   [mEdit addItem: findItem];
   mBuild := AddMenu(menuBar, "Build");
   AddItem(mBuild, ctrl, "Build & Run", "onBuildRun:", "r", 0);
+  AddItem(mBuild, ctrl, "Build & Run Optimized", "onBuildRunOpt:", "r", 1179648);  (* Cmd-Shift-R, --opt 2 *)
   mFormat := AddMenu(menuBar, "Format");                     (* source re-indenter *)
   AddItem(mFormat, ctrl, "Re-indent Source", "onFormat:", "i", 180000H);  (* ⌥⌘I *)
   mTheme := AddMenu(menuBar, "Theme");                       (* editor colour schemes *)
