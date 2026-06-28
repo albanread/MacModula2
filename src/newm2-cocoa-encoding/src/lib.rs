@@ -201,11 +201,47 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ty::Bitfield { bits: self.read_number() as u32 }
             }
+            Some(b'@') => self.parse_object(),
             Some(c) => {
                 self.bump();
                 scalar_of(c)
             }
             None => Ty::Unknown('\0'),
+        }
+    }
+
+    /// `@`=id, `@?`=block, `@"Class"`/`@"<Proto>"`=typed object — each is ONE 8-byte
+    /// pointer. Without consuming the `?`/`"..."`, a struct field `@?` splits into
+    /// `ptr` + a stray unknown leaf, and `@"NSString"` eats the class as the next
+    /// field name — corrupting any aggregate that carries a block / typed object.
+    fn parse_object(&mut self) -> Ty {
+        self.bump(); // @
+        match self.peek() {
+            Some(b'?') => {
+                self.bump();
+                if self.peek() == Some(b'<') {
+                    self.skip_balanced(b'<', b'>'); // inline block signature
+                }
+            }
+            Some(b'"') => {
+                let _class = self.read_quoted_name(); // captured later for typed returns
+            }
+            _ => {}
+        }
+        Ty::Scalar(Scalar::Ptr)
+    }
+
+    fn skip_balanced(&mut self, open: u8, close: u8) {
+        let mut depth = 0u32;
+        while let Some(c) = self.bump() {
+            if c == open {
+                depth += 1;
+            } else if c == close {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
         }
     }
 
@@ -692,5 +728,17 @@ mod tests {
         assert_eq!(r.hfa, Some((64, 4)));
         assert_eq!(r.abi, AbiReturn::Registers);
         assert_eq!(r.tier, Tier::FlatRecord);
+    }
+
+    #[test]
+    fn block_and_typed_object_are_single_pointer() {
+        // {B=@?i}: block(ptr)@0 + i32@8 -> 2 fields, 16 bytes (not 3 fields + a stray ?)
+        let r = a("{B=@?i}");
+        assert_eq!(field_offsets(&r.ty).len(), 2);
+        assert_eq!(r.size, 16);
+        // @"NSString" is one pointer; the class name is consumed, not a phantom field
+        assert_eq!(field_offsets(&a("{S=@\"NSString\"i}").ty).len(), 2);
+        // an inline block signature @?<...> stays a single leaf
+        assert_eq!(field_offsets(&a("{H=@?<v@?@\"NSError\">i}").ty).len(), 2);
     }
 }
