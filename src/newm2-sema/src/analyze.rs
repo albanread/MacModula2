@@ -2291,6 +2291,123 @@ fn builtin_size_bytes(b: Builtin) -> Option<i128> {
     })
 }
 
+// ── arm64 record-ABI predicate (mirrors newm2-llvm record_indirect_type) ──────
+//
+// A record is passed/returned **indirectly** (sret/byval, a pointer to a copy)
+// on arm64 AAPCS64 iff its size is > 16 bytes and it is *not* a homogeneous
+// floating-point aggregate (an HFA: 1..=4 members, all the same fundamental FP
+// type, with nested records and arrays flattened). The codegen classifier is the
+// authority; these mirror it so sema can reject a call shape codegen cannot lower
+// safely (an indirect call through a procedure value returning/passing such a
+// record — see the `Expr::Call` guard below).
+
+/// Round `x` up to a multiple of alignment `a` (a >= 1).
+fn align_up_i128(x: i128, a: i128) -> i128 {
+    if a <= 1 { x } else { (x + a - 1) / a * a }
+}
+
+/// ABI alignment of a type: a record aligns to its widest member; an array to
+/// its element; a scalar to its size (capped at 8 — no 16-byte GP alignment).
+fn abi_align_bytes(ctx: &Ctx, ty: TypeId) -> i128 {
+    match ctx.types.get(ty) {
+        TypeKind::Record(layout) => layout
+            .flatten_fields()
+            .iter()
+            .map(|(_, fty)| abi_align_bytes(ctx, *fty))
+            .max()
+            .unwrap_or(1),
+        TypeKind::Array { base, .. } => abi_align_bytes(ctx, *base),
+        TypeKind::Subrange { host, .. } => abi_align_bytes(ctx, *host),
+        _ => type_size_bytes(ctx, ty).unwrap_or(8).min(8),
+    }
+}
+
+/// Exact ABI byte size, *including* records (which `type_size_bytes` leaves as
+/// `None`): lay out fields with alignment/padding like the LLVM struct. `None`
+/// when a member size is unknown — callers treat that as "don't flag".
+fn abi_size_bytes(ctx: &Ctx, ty: TypeId) -> Option<i128> {
+    match ctx.types.get(ty) {
+        TypeKind::Record(layout) => {
+            let mut off: i128 = 0;
+            let mut max_align: i128 = 1;
+            for (_, fty) in layout.flatten_fields() {
+                let a = abi_align_bytes(ctx, fty);
+                let s = abi_size_bytes(ctx, fty)?;
+                off = align_up_i128(off, a) + s;
+                if a > max_align {
+                    max_align = a;
+                }
+            }
+            Some(align_up_i128(off, max_align))
+        }
+        TypeKind::Array { indices, base } => {
+            let base_sz = abi_size_bytes(ctx, *base)?;
+            let mut count: i128 = 1;
+            for idx in indices {
+                count = count.checked_mul(ordinal_count(ctx, *idx)?)?;
+            }
+            count.checked_mul(base_sz)
+        }
+        _ => type_size_bytes(ctx, ty),
+    }
+}
+
+/// AAPCS64 homogeneous-float-aggregate test (mirror of codegen's
+/// `fp_homogeneous`): `Some((fp_bit_width, member_count))` iff `ty` flattens —
+/// through nested records and arrays — to scalars all of the *same* fundamental
+/// FP type; `None` on a non-FP member or a mix of widths (`{REAL, REAL32}` =
+/// `{f64, f32}` is not an HFA; `{REAL, LONGREAL}` = `{f64, f64}` is).
+fn fp_homogeneous_sema(ctx: &Ctx, ty: TypeId) -> Option<(u32, u32)> {
+    use Builtin::*;
+    match ctx.types.get(ty) {
+        TypeKind::Record(layout) => {
+            let mut kind: Option<u32> = None;
+            let mut count: u32 = 0;
+            for (_, fty) in layout.flatten_fields() {
+                let (k, c) = fp_homogeneous_sema(ctx, fty)?;
+                if c == 0 {
+                    continue;
+                }
+                match kind {
+                    None => kind = Some(k),
+                    Some(k0) if k0 == k => {}
+                    _ => return None,
+                }
+                count = count.saturating_add(c);
+            }
+            kind.map(|k| (k, count))
+        }
+        TypeKind::Array { indices, base } => {
+            let (k, c) = fp_homogeneous_sema(ctx, *base)?;
+            let mut n: u128 = 1;
+            for idx in indices {
+                n = n.saturating_mul(ctx.types.ordinal_cardinality(*idx).unwrap_or(1).max(0) as u128);
+            }
+            let total = (c as u128).saturating_mul(n).min(u32::MAX as u128) as u32;
+            Some((k, total))
+        }
+        TypeKind::Subrange { host, .. } => fp_homogeneous_sema(ctx, *host),
+        TypeKind::Builtin(Real16) => Some((16, 1)),
+        TypeKind::Builtin(Real32) => Some((32, 1)),
+        TypeKind::Builtin(Real | LongReal) => Some((64, 1)),
+        _ => None,
+    }
+}
+
+/// True iff `ty` is a record the arm64 ABI passes/returns indirectly (> 16 bytes
+/// and not an HFA). Non-records and records of unknown size return `false` (so
+/// the call guard never produces a false positive on valid code).
+fn record_passed_indirect(ctx: &Ctx, ty: TypeId) -> bool {
+    if !matches!(ctx.types.get(ty), TypeKind::Record(_)) {
+        return false;
+    }
+    let Some(size) = abi_size_bytes(ctx, ty) else {
+        return false;
+    };
+    let is_hfa = matches!(fp_homogeneous_sema(ctx, ty), Some((_, n)) if (1..=4).contains(&n));
+    size > 16 && !is_hfa
+}
+
 /// Compute `MAX`/`MIN`/`SIZE`/`TSIZE` of a resolved type, for constant folding.
 fn type_builtin_value(ctx: &Ctx, op: &str, ty: TypeId) -> Option<i128> {
     match op {
@@ -5133,6 +5250,28 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
                 _ => None,
             };
             let callee_ty = analyse_expr(ctx, callee, scope);
+            // arm64 ABI safety guard. A call through a procedure-typed VALUE — a
+            // proc variable/parameter/field, or `CAST(addr, ProcType)` — is an
+            // indirect call; `callee_ty` is then a `TypeKind::Proc` (a direct
+            // named-procedure reference is `Builtin(Proc)`, and a method call is
+            // resolved separately, so neither is matched here). The indirect-call
+            // ABI passes/returns a >16-byte non-HFA record via sret/byval, which
+            // does NOT match the LLVM-native register return an M2 procedure
+            // definition uses — it would silently return/pass garbage. Reject it.
+            if let Some(cty) = callee_ty {
+                let proc_sig = match ctx.types.get(cty) {
+                    TypeKind::Proc { params, return_ty } => Some((params.clone(), *return_ty)),
+                    _ => None,
+                };
+                if let Some((params, return_ty)) = proc_sig {
+                    if return_ty.is_some_and(|rty| record_passed_indirect(ctx, rty)) {
+                        ctx.error(*span, "cannot call a procedure value (procedure pointer) that returns a record larger than 16 bytes by value: the arm64 indirect-call ABI would corrupt the result. Call the procedure directly by name, or return the record through a VAR parameter.");
+                    }
+                    if params.iter().any(|p| p.mode == ParamMode::Value && record_passed_indirect(ctx, p.ty)) {
+                        ctx.error(*span, "cannot call a procedure value (procedure pointer) that takes a record larger than 16 bytes by value: the arm64 indirect-call ABI would corrupt the argument. Call the procedure directly by name, or pass the record through a VAR parameter.");
+                    }
+                }
+            }
             // Virtual method call: `obj.M(args)` — `analyse_expr(callee)` tagged
             // the method selector with a Method binding; pull the method's
             // signature from the class vtable to check the arguments.

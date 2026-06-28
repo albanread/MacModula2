@@ -2178,6 +2178,19 @@ fn t91_030_guard_interface_reject() {
     check_run_error("t-91-030-guard-interface-reject.mod", &["must be an interface"]);
 }
 
+#[test]
+fn t91_035_indirect_record_return_reject() {
+    // arm64 ABI: an indirect call (through a procedure value) that returns a
+    // >16-byte non-HFA record by value is rejected by sema rather than silently
+    // corrupting the result (the sret indirect-call ABI does not match the
+    // register return an M2 definition uses). Direct calls, <=16-byte records,
+    // and HFAs are unaffected.
+    check_run_error(
+        "t-91-035-indirect-record-return-reject.mod",
+        &["returns a record larger than 16 bytes"],
+    );
+}
+
 
 
 #[test]
