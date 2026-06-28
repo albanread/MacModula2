@@ -15,6 +15,9 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 
+// Prototype: recursive encoding parser + layout tree + tier classifier.
+mod encoding;
+
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
