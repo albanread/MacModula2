@@ -18,6 +18,7 @@ pub mod iface;
 pub mod iid;
 pub mod print;
 pub mod scope;
+mod sqlite;
 pub mod symcache;
 pub mod types;
 

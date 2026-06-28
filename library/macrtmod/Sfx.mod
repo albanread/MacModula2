@@ -17,7 +17,7 @@ PROCEDURE Cls (n: ARRAY OF CHAR): ObjC.Id;
 BEGIN RETURN CAST(ObjC.Id, ObjC.GetClass(n)) END Cls;
 
 PROCEDURE Start (): BOOLEAN;
-  VAR err, r: ObjC.Id; i: CARDINAL;
+  VAR err: ObjC.Id; i: CARDINAL;
 BEGIN
   IF started THEN RETURN TRUE END;
   FOR i := 0 TO MAXSFX-1 DO buf[i] := NIL END;
@@ -28,7 +28,7 @@ BEGIN
   fmt := [[Cls("AVAudioFormat") alloc] initStandardFormatWithSampleRate: 44100.0 channels: 2];
   [engine connect: player to: [engine mainMixerNode] format: fmt];
   err := NIL;
-  r := [engine startAndReturnError: ADR(err)];
+  [engine startAndReturnError: ADR(err)];  (* discard: result type differs by DB (id / BOOL) *)
   IF err # NIL THEN RETURN FALSE END;
   [player play];
   started := TRUE;

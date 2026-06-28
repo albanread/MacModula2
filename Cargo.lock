@@ -153,8 +153,15 @@ name = "new-asm"
 version = "0.1.0"
 
 [[package]]
+name = "newm2-cocoa-encoding"
+version = "0.0.0"
+
+[[package]]
 name = "newm2-cocoa-gen"
 version = "0.0.0"
+dependencies = [
+ "newm2-cocoa-encoding",
+]
 
 [[package]]
 name = "newm2-compat-tests"
@@ -244,6 +251,7 @@ name = "newm2-sema"
 version = "0.0.0"
 dependencies = [
  "bincode",
+ "newm2-cocoa-encoding",
  "newm2-lexer",
  "newm2-loader",
  "newm2-parser",
