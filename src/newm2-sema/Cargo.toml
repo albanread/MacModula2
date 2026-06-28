@@ -8,5 +8,6 @@ license = "MIT OR Apache-2.0"
 newm2-lexer = { path = "../newm2-lexer" }
 newm2-parser = { path = "../newm2-parser" }
 newm2-loader = { path = "../newm2-loader" }
+newm2-cocoa-encoding = { path = "../newm2-cocoa-encoding" }
 serde = { version = "1", features = ["derive"] }
 bincode = "1.3"

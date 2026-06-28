@@ -15,8 +15,8 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 
-// Prototype: recursive encoding parser + layout tree + tier classifier.
-mod encoding;
+// Recursive encoding parser + layout tree + tier classifier (shared with sema).
+use newm2_cocoa_encoding as encoding;
 
 unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
@@ -221,7 +221,14 @@ fn kind_of(tok: &str, bs: &BridgeStructs) -> String {
                 }
                 None => format!("{{{n}:{f}}}"),
             },
-            _ => "{".to_string(), // anonymous / sret / unsupported -> id
+            // The old flattener rejected it (array/union field, anonymous, …). The
+            // layout-tree classifier reclaims faithful nested/array records, emitted
+            // as the raw quote-free Obj-C encoding for sema to rebuild; only true
+            // Object-tier shapes (unions/bitfields/unmodelable/oversize) stay `id`.
+            _ => match encoding::analyze(tok).tier {
+                encoding::Tier::FlatRecord | encoding::Tier::NestedRecord => tok.to_string(),
+                encoding::Tier::Object => "{".to_string(),
+            },
         };
     }
     if tok.starts_with('[') || tok.starts_with('(') {

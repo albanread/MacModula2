@@ -7,3 +7,6 @@ license = "MIT OR Apache-2.0"
 [[bin]]
 name = "newm2-cocoa-gen"
 path = "src/main.rs"
+
+[dependencies]
+newm2-cocoa-encoding = { path = "../newm2-cocoa-encoding" }

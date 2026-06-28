@@ -468,7 +468,7 @@ fn check_module_graph_impl(
                 .selectors
                 .values()
                 .map(|s| s.ret.clone())
-                .filter(|r| r.starts_with('{') && r.contains(':'))
+                .filter(|r| r.starts_with('{') && r.len() > 1)
                 .collect();
             let mut seen = std::collections::HashSet::new();
             for d in descs {
@@ -4264,7 +4264,7 @@ fn cocoa_kind_type(ctx: &mut Ctx, kind: &str) -> TypeId {
         "P" => cocoa_record_type(ctx, "NSPoint").unwrap_or(addr),
         "S" => cocoa_record_type(ctx, "NSSize").unwrap_or(addr),
         "R" => cocoa_record_type(ctx, "NSRect").unwrap_or(addr),
-        _ if kind.starts_with('{') && kind.contains(':') => synthesize_cocoa_struct(ctx, kind),
+        _ if kind.starts_with('{') && kind.len() > 1 => synthesize_cocoa_struct(ctx, kind),
         _ => addr, // "@" ":" "*" "v" "{" "?"
     }
 }
@@ -4275,6 +4275,12 @@ fn cocoa_kind_type(ctx: &mut Ctx, kind: &str) -> TypeId {
 /// type is cached and registered (register_cocoa_struct) so it is also declarable
 /// as ObjC.<Name>. Returns id for a malformed descriptor.
 fn synthesize_cocoa_struct(ctx: &mut Ctx, kind: &str) -> TypeId {
+    // Raw Obj-C encoding form `{Name=…}` (emitted by the layout-tree classifier for
+    // structs the flat descriptor can't express — nesting, fixed arrays, exact
+    // widths). The `=` is unique to this form; `|`/`:` descriptors never contain it.
+    if kind.contains('=') {
+        return synthesize_cocoa_struct_encoded(ctx, kind);
+    }
     let inner = &kind[1..kind.len() - 1];
     // Named form "Name|field:kind|field:kind…" — real field names from BridgeSupport.
     if let Some((name, rest)) = inner.split_once('|') {
@@ -4321,6 +4327,105 @@ fn finish_cocoa_struct(ctx: &mut Ctx, name: &str, fields: Vec<crate::types::Reco
     ctx.cocoa_struct_cache.insert(name.to_string(), ty);
     register_cocoa_struct(ctx, name, ty);
     ty
+}
+
+/// Build a width-correct, possibly-nested record from a raw Obj-C struct encoding
+/// `{Name=…}` (e.g. `{matrix_float4x4=[4[4f]]}`), via the shared layout-tree
+/// parser. Only record-tier encodings reach here (the generator routes
+/// unions/bitfields/oversize to `id`); anything unexpected degrades to `id`.
+fn synthesize_cocoa_struct_encoded(ctx: &mut Ctx, enc: &str) -> TypeId {
+    use newm2_cocoa_encoding::Ty;
+    let ty = newm2_cocoa_encoding::parse(enc);
+    let Ty::Struct { name, fields } = &ty else {
+        return ctx.types.builtin(Builtin::Address);
+    };
+    // Cache by the encoding string: anonymous structs all share the `?` tag, so the
+    // name is not a unique key (`{?=qiIq}` and `{?=dd}` must not collide).
+    if let Some(&t) = ctx.cocoa_struct_cache.get(enc) {
+        return t;
+    }
+    let slots = cocoa_record_slots(ctx, fields);
+    let layout = crate::types::RecordLayout { name: name.clone(), fields: slots, variant: None };
+    let tyid = ctx.types.alloc(TypeKind::Record(layout));
+    ctx.cocoa_struct_cache.insert(enc.to_string(), tyid);
+    // Only named structs are declarable as `ObjC.<Name>`; anonymous ones are
+    // reachable purely as message-send return types.
+    if let Some(n) = name {
+        register_cocoa_struct(ctx, n, tyid);
+    }
+    tyid
+}
+
+/// Lay a struct's encoding fields into M2 record slots: scalars become
+/// width-correct builtins, nested structs become nested records, and a fixed C
+/// array is expanded into consecutive element slots (byte-identical layout, size
+/// and HFA flattening — so no M2 index types are needed for the prototype).
+fn cocoa_record_slots(
+    ctx: &mut Ctx,
+    fields: &[newm2_cocoa_encoding::Field],
+) -> Vec<crate::types::RecordFieldSlot> {
+    let mut out = Vec::new();
+    for (i, f) in fields.iter().enumerate() {
+        let prefix = f.name.clone().unwrap_or_else(|| format!("f{i}"));
+        cocoa_emit_field(ctx, &prefix, &f.ty, &mut out);
+    }
+    out
+}
+
+fn cocoa_emit_field(
+    ctx: &mut Ctx,
+    name: &str,
+    ty: &newm2_cocoa_encoding::Ty,
+    out: &mut Vec<crate::types::RecordFieldSlot>,
+) {
+    use newm2_cocoa_encoding::Ty;
+    match ty {
+        Ty::Array { len, elem } => {
+            for k in 0..*len {
+                cocoa_emit_field(ctx, &format!("{name}{k}"), elem, out);
+            }
+        }
+        _ => out.push(crate::types::RecordFieldSlot {
+            name: name.to_string(),
+            ty: cocoa_field_typeid(ctx, ty),
+        }),
+    }
+}
+
+/// Map one encoding leaf to an M2 TypeId. Widths are preserved (a C `int` is
+/// INTEGER32, 4 bytes — not M2 INTEGER/i64), so offsets stay correct.
+fn cocoa_field_typeid(ctx: &mut Ctx, ty: &newm2_cocoa_encoding::Ty) -> TypeId {
+    use newm2_cocoa_encoding::{Scalar, Ty};
+    match ty {
+        Ty::Scalar(s) => {
+            let b = match s {
+                Scalar::F64 => Builtin::Real,
+                Scalar::F32 => Builtin::Real32,
+                Scalar::I8 => Builtin::Integer8,
+                Scalar::I16 => Builtin::Integer16,
+                Scalar::I32 => Builtin::Integer32,
+                Scalar::I64 => Builtin::Integer,
+                Scalar::U8 => Builtin::Cardinal8,
+                Scalar::U16 => Builtin::Cardinal16,
+                Scalar::U32 => Builtin::Cardinal32,
+                Scalar::U64 => Builtin::Cardinal,
+                Scalar::Bool => Builtin::Boolean,
+                Scalar::Ptr => Builtin::Address,
+            };
+            ctx.types.builtin(b)
+        }
+        Ty::Pointer => ctx.types.builtin(Builtin::Address),
+        Ty::Struct { name, fields } => {
+            let slots = cocoa_record_slots(ctx, fields);
+            let layout = crate::types::RecordLayout { name: name.clone(), fields: slots, variant: None };
+            ctx.types.alloc(TypeKind::Record(layout))
+        }
+        // Object-tier shapes never reach here (the generator routes them to `id`),
+        // but stay safe if they somehow do.
+        Ty::Array { .. } | Ty::Union { .. } | Ty::Bitfield { .. } | Ty::Unknown(_) => {
+            ctx.types.builtin(Builtin::Address)
+        }
+    }
 }
 
 /// Register a synthesized struct as a named type symbol in the ObjC module's

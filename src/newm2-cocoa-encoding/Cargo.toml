@@ -1,0 +1,9 @@
+[package]
+name = "newm2-cocoa-encoding"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "newm2_cocoa_encoding"
+path = "src/lib.rs"
