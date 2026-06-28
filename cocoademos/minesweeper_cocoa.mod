@@ -13,6 +13,9 @@ FROM SYSTEM IMPORT CAST;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT CG;
+IMPORT DemoHarness;
+
+VAR gGalleryPath: ARRAY [0..1023] OF CHAR; gGalleryIgnore: BOOLEAN;
 
 CONST
   GRID = 16; MINES = 40;
@@ -311,7 +314,11 @@ BEGIN
   [CAST(ObjC.Id, view) setFrame: Rct(0.0, 0.0, WinW, WinH)];
   Cocoa.AddSubview(content, CAST(Cocoa.View, view));
   [gWin makeFirstResponder: CAST(ObjC.Id, view)];
-  Cocoa.ShowWindow(win);
+  IF DemoHarness.ScriptArg(gGalleryPath) THEN
+    gGalleryIgnore := Cocoa.Snapshot(content, gGalleryPath)
+  ELSE
+    Cocoa.ShowWindow(win);
   UpdateTitle;
   Cocoa.RunApp
+  END
 END minesweeper_cocoa.

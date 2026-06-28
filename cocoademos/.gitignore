@@ -12,3 +12,6 @@
 !*.mid
 !*.wav
 !*.tcl
+# the demo gallery's screenshots + thumbnails (everything else .png stays ignored)
+!gallery/img/*.png
+!gallery/thumbs/*.png

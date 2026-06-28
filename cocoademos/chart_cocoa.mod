@@ -10,6 +10,9 @@ FROM SYSTEM IMPORT CAST;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT CG;
+IMPORT DemoHarness;
+
+VAR gGalleryPath: ARRAY [0..1023] OF CHAR; gGalleryIgnore: BOOLEAN;
 
 CONST
   WinW = 900.0; WinH = 560.0;
@@ -60,7 +63,7 @@ BEGIN
 END Panel;
 
 PROCEDURE MaxOf (VAR a: ARRAY OF REAL; n: CARDINAL): REAL;
-  VAR i: CARDINAL; m: REAL;
+VAR i: CARDINAL; m: REAL;
 BEGIN
   m := a[0];
   FOR i := 1 TO n-1 DO IF a[i] > m THEN m := a[i] END END;
@@ -75,9 +78,9 @@ CLASS Dashboard;
   BEGIN RETURN TRUE END IsFlipped;
 
   PROCEDURE DrawRect (vx, vy, vw, vh: REAL);
-    VAR cg: ObjC.Id; i: CARDINAL;
-        m, bx, by, bw, bh, barW, gap, hgt, px, py, lx, ly, cx, cy, rad, a0, a1, total: REAL;
-        rr, gg, bb: REAL; lab: ARRAY [0..3] OF CHAR;
+  VAR cg: ObjC.Id; i: CARDINAL;
+    m, bx, by, bw, bh, barW, gap, hgt, px, py, lx, ly, cx, cy, rad, a0, a1, total: REAL;
+    rr, gg, bb: REAL; lab: ARRAY [0..3] OF CHAR;
   BEGIN
     cg := [[Cls("NSGraphicsContext") currentContext] CGContext];
     IF cg = NIL THEN RETURN END;
@@ -144,7 +147,7 @@ END Dashboard;
 
 (* a legend row: a colour swatch + a label (module proc — called from DrawRect) *)
 PROCEDURE DrawLegend (cg: ObjC.Id; x, y: REAL; c: CARDINAL; text: ARRAY OF CHAR);
-  VAR r, g, b: REAL;
+VAR r, g, b: REAL;
 BEGIN
   HexRGB(c, r, g, b);
   CG.SetRGBFillColor(cg, r, g, b, 1.0);
@@ -168,6 +171,10 @@ BEGIN
   NEW(view);
   [CAST(ObjC.Id, view) setFrame: Rct(0.0, 0.0, WinW, WinH)];
   Cocoa.AddSubview(content, CAST(Cocoa.View, view));
-  Cocoa.ShowWindow(win);
+  IF DemoHarness.ScriptArg(gGalleryPath) THEN
+    gGalleryIgnore := Cocoa.Snapshot(content, gGalleryPath)
+  ELSE
+    Cocoa.ShowWindow(win);
   Cocoa.RunApp
+  END
 END chart_cocoa.

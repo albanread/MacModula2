@@ -14,6 +14,11 @@ Foundation, Core Graphics — all reachable directly from clean Modula-2 source.
 It is the Modula-2 member of a portfolio of from-scratch Rust+LLVM language
 implementations.
 
+📸 **[See the demo gallery →](cocoademos/gallery/GALLERY.md)** — Tetris, Asteroids, a
+3-D warp turret, a software synth with a live oscilloscope, Mandelbrot, the IDE, and
+more: native Cocoa apps written entirely in Modula-2 (every screenshot rendered
+headlessly by the demo itself).
+
 **Status.** Builds and runs on Apple Silicon (`arm64-apple-darwin`), both AOT
 (Mach-O) and via the ORC JIT. The Cocoa object model is complete — every `CLASS`
 is an Obj-C class, Cocoa superclasses are named with plain `INHERIT NSView`

@@ -12,6 +12,9 @@ FROM SYSTEM IMPORT CAST, ADDRESS;
 IMPORT ObjC;
 IMPORT Cocoa;
 IMPORT CG;
+IMPORT DemoHarness;
+
+VAR gGalleryPath: ARRAY [0..1023] OF CHAR; gGalleryIgnore: BOOLEAN;
 
 CONST
   GW = 78; GH = 42;                       (* torus grid *)
@@ -218,11 +221,15 @@ BEGIN
   Cocoa.AddSubview(content, CAST(Cocoa.View, view));
   gView := CAST(ObjC.Id, view);
   [gWin makeFirstResponder: CAST(ObjC.Id, view)];
-  Cocoa.ShowWindow(win);
+  IF DemoHarness.ScriptArg(gGalleryPath) THEN
+    gGalleryIgnore := Cocoa.Snapshot(content, gGalleryPath)
+  ELSE
+    Cocoa.ShowWindow(win);
   UpdateTitle;
   (* drive the generations from an NSTimer that calls Tick (a Cocoa block) *)
   gTimer := [Cls("NSTimer") scheduledTimerWithTimeInterval: 0.06
                             repeats: TRUE
                             block: ObjC.MakeBlock(CAST(ADDRESS, Tick))];
   Cocoa.RunApp
+  END
 END life_cocoa.

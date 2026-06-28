@@ -12,6 +12,7 @@ MODULE calculator_cocoa;
 FROM SYSTEM IMPORT CAST;
 IMPORT ObjC;
 IMPORT Cocoa;
+IMPORT DemoHarness;
 FROM RealMath IMPORT sqrt, sin, cos, tan, ln, exp, power;
 IMPORT RealStr;
 
@@ -283,6 +284,7 @@ END Calc;
 
 (* --- main --------------------------------------------------------------- *)
 VAR win: Cocoa.Window; content: Cocoa.View; calc: Calc;
+    gGalleryPath: ARRAY [0..1023] OF CHAR; gGalleryIgnore: BOOLEAN;
     i: CARDINAL; b: ObjC.Id; tlx, tly, cy: REAL;
 BEGIN
   InitButtons;
@@ -315,6 +317,10 @@ BEGIN
   END;
 
   UpdateDisplay;
-  Cocoa.ShowWindow(win);
+  IF DemoHarness.ScriptArg(gGalleryPath) THEN
+    gGalleryIgnore := Cocoa.Snapshot(content, gGalleryPath)
+  ELSE
+    Cocoa.ShowWindow(win);
   Cocoa.RunApp
+  END
 END calculator_cocoa.
