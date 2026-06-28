@@ -3,10 +3,11 @@ MODULE starturret_cocoa;
    ship's forward gun turret, warping through space. Everything is vector graphics
    drawn with Core Graphics, and everything is 3-D — a perspective projection
    (sx = cx + (x-camX)*f/z) turns a cloud of points into a starfield that streaks
-   past at warp speed, enemy fighters that grow as they close, and the asterisk
-   bolts they fire at you. Steer the turret with the arrow keys to line a fighter
-   up in the reticle (space fires twin hitscan lasers) and to dodge incoming
-   fire — a bolt that reaches you flashes the screen and costs a life.
+   past at warp speed, enemy fighters that loom larger as they close (and burst
+   into flying shrapnel when shot), and the asterisk bolts they fire at you. Steer
+   the turret with the arrow keys to line a fighter up in the reticle (space fires
+   twin hitscan lasers) and to dodge incoming fire — a bolt that reaches you
+   flashes the screen and costs a life.
 
      newm2-driver run --library library cocoademos/starturret_cocoa.mod
    arrows steer / aim   space fire   p pause   r restart   (close window to quit)
@@ -29,9 +30,10 @@ CONST
   Focal = 340.0;
   Zfar = 950.0; Znear = 20.0;
   WarpSpeed = 15.0; StreakZ = 30.0;
-  NStars = 220; MaxEnemy = 5; MaxProj = 14;
+  NStars = 220; MaxEnemy = 5; MaxProj = 14; MaxFrag = 64;
   PanStep = 6.0; PanLimit = 300.0;
-  EnemyZSpeed = 1.5; ProjZSpeed = 9.0;
+  EnemyBase = 31.0;                     (* fighter size at unit scale; looms via Focal/z *)
+  EnemyZSpeed = 2.3; ProjZSpeed = 9.0;
   ReticleR = 54.0; HitR2 = 1600.0;      (* (40 world units)^2 dodge radius *)
   FlashFrames = 13; FireCool = 6;
 
@@ -44,11 +46,13 @@ TYPE
   Star    = RECORD x, y, z: REAL; END;
   Enemy   = RECORD x, y, z, vx: REAL; fire: INTEGER; alive: BOOLEAN; END;
   Proj    = RECORD x, y, z, vx, vy: REAL; alive: BOOLEAN; END;
+  Frag    = RECORD sx, sy, vx, vy, ang, spin, len: REAL; life, maxlife: INTEGER; alive: BOOLEAN; END;
 
 VAR
   star: ARRAY [0..NStars-1] OF Star;
   enemy: ARRAY [0..MaxEnemy-1] OF Enemy;
   proj: ARRAY [0..MaxProj-1] OF Proj;
+  frag: ARRAY [0..MaxFrag-1] OF Frag;     (* enemy-explosion shrapnel, screen space *)
   camX, camY: REAL;
   gScore: CARDINAL; gLives: INTEGER;
   gOver, gPaused: BOOLEAN;
@@ -120,10 +124,44 @@ BEGIN
   FOR i := 0 TO NStars-1 DO NewStar(i, Znear + Frnd() * (Zfar - Znear)) END;
   FOR i := 0 TO MaxEnemy-1 DO enemy[i].alive := FALSE END;
   FOR i := 0 TO MaxProj-1 DO proj[i].alive := FALSE END;
+  FOR i := 0 TO MaxFrag-1 DO frag[i].alive := FALSE END;
   camX := 0.0; camY := 0.0;
   gScore := 0; gLives := 3; gOver := FALSE; gPaused := FALSE;
   flashTimer := 0; fireCd := 0; laserTimer := 0; enemyTimer := 60
 END NewGame;
+
+(* ---- explosion shrapnel (screen space) --------------------------------- *)
+PROCEDURE Explode (cx0, cy0, size: REAL);   (* burst a fighter into flying line shards *)
+  VAR i, n, made: CARDINAL; ang, spd: REAL;
+BEGIN
+  n := 9 + Rnd(5);                          (* 9..13 shards *)
+  made := 0;
+  FOR i := 0 TO MaxFrag-1 DO
+    IF (NOT frag[i].alive) AND (made < n) THEN
+      ang := Frnd() * 6.2832;
+      spd := 1.8 + Frnd() * 3.5 + size * 0.05;   (* a bigger (closer) fighter throws faster shrapnel *)
+      frag[i].sx := cx0; frag[i].sy := cy0;
+      frag[i].vx := cos(ang) * spd; frag[i].vy := sin(ang) * spd;
+      frag[i].ang := Frnd() * 6.2832; frag[i].spin := (Frnd() - 0.5) * 0.55;
+      frag[i].len := size * (0.3 + Frnd() * 0.5) + 4.0;
+      frag[i].maxlife := 16 + VAL(INTEGER, Rnd(16));
+      frag[i].life := frag[i].maxlife; frag[i].alive := TRUE; INC(made)
+    END
+  END
+END Explode;
+
+PROCEDURE UpdateFrags;
+  VAR i: CARDINAL;
+BEGIN
+  FOR i := 0 TO MaxFrag-1 DO
+    IF frag[i].alive THEN
+      frag[i].sx := frag[i].sx + frag[i].vx; frag[i].sy := frag[i].sy + frag[i].vy;
+      frag[i].vx := frag[i].vx * 0.95; frag[i].vy := frag[i].vy * 0.95;
+      frag[i].ang := frag[i].ang + frag[i].spin;
+      DEC(frag[i].life); IF frag[i].life <= 0 THEN frag[i].alive := FALSE END
+    END
+  END
+END UpdateFrags;
 
 (* ---- actions ----------------------------------------------------------- *)
 PROCEDURE Pan (dx, dy: REAL);
@@ -146,7 +184,11 @@ BEGIN
       IF (d2 < ReticleR*ReticleR) AND (enemy[i].z < bestz) THEN found := TRUE; best := i; bestz := enemy[i].z END
     END
   END;
-  IF found THEN enemy[best].alive := FALSE; INC(gScore, 100); Snd(S_BOOM) END
+  IF found THEN
+    Project(enemy[best].x, enemy[best].y, enemy[best].z, sx, sy, sc);
+    Explode(sx, sy, EnemyBase * sc);      (* burst the fighter apart at its on-screen size *)
+    enemy[best].alive := FALSE; INC(gScore, 100); Snd(S_BOOM)
+  END
 END Fire;
 
 PROCEDURE HitTurret;
@@ -191,6 +233,7 @@ BEGIN
       END
     END
   END;
+  UpdateFrags;
   (* spawn waves of fighters *)
   IF enemyTimer > 0 THEN DEC(enemyTimer) END;
   IF (enemyTimer <= 0) AND (CountEnemies() < MaxEnemy) THEN
@@ -235,7 +278,7 @@ PROCEDURE DrawEnemy (cg: ObjC.Id; i: CARDINAL);
   VAR sx, sy, sc, s, k: REAL; j: CARDINAL;
 BEGIN
   Project(enemy[i].x, enemy[i].y, enemy[i].z, sx, sy, sc);
-  s := 26.0 * sc; IF s < 2.0 THEN RETURN END;
+  s := EnemyBase * sc; IF s < 2.0 THEN RETURN END;
   CG.SetRGBStrokeColor(cg, 0.55, 0.95, 0.65, 1.0); CG.SetLineWidth(cg, 1.5);
   (* cockpit hexagon *)
   CG.BeginPath(cg);
@@ -263,6 +306,22 @@ BEGIN
     Line(cg, sx - cos(a)*s, sy - sin(a)*s, sx + cos(a)*s, sy + sin(a)*s)
   END
 END DrawProj;
+
+PROCEDURE DrawFrags (cg: ObjC.Id);
+  VAR i: CARDINAL; t, hl, dx, dy: REAL;
+BEGIN
+  FOR i := 0 TO MaxFrag-1 DO
+    IF frag[i].alive THEN
+      t  := FLOAT(frag[i].life) / FLOAT(frag[i].maxlife);   (* 1 (fresh) -> 0 (gone) *)
+      hl := frag[i].len * 0.5;
+      dx := cos(frag[i].ang) * hl; dy := sin(frag[i].ang) * hl;
+      (* hot white-green flash fading out via alpha *)
+      CG.SetRGBStrokeColor(cg, 0.45 + 0.5*t, 0.75 + 0.25*t, 0.45 + 0.2*t, t);
+      CG.SetLineWidth(cg, 0.8 + t * 1.6);
+      Line(cg, frag[i].sx - dx, frag[i].sy - dy, frag[i].sx + dx, frag[i].sy + dy)
+    END
+  END
+END DrawFrags;
 
 PROCEDURE DrawReticle (cg: ObjC.Id);
   VAR n: REAL;
@@ -307,6 +366,7 @@ CLASS TurretView;
     DrawStars(cg);
     FOR i := 0 TO MaxEnemy-1 DO IF enemy[i].alive THEN DrawEnemy(cg, i) END END;
     FOR i := 0 TO MaxProj-1 DO IF proj[i].alive THEN DrawProj(cg, i) END END;
+    DrawFrags(cg);
     IF laserTimer > 0 THEN                  (* twin turret lasers converging on the reticle *)
       CG.SetRGBStrokeColor(cg, 0.4, 1.0, 0.5, 1.0); CG.SetLineWidth(cg, 2.2);
       Line(cg, 70.0, 0.0, CX, CY); Line(cg, WinW - 70.0, 0.0, CX, CY)
