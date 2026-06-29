@@ -113,6 +113,29 @@ impl Sqlite {
         out
     }
 
+    /// First row's column 0, binding each string in `binds` at ?1, ?2, … in order.
+    pub fn query_one_binds(&self, sql: &str, binds: &[&str]) -> Option<String> {
+        let stmt = self.prepare(sql)?;
+        let cstrs: Vec<CString> = binds.iter().map(|b| CString::new(*b)).collect::<Result<_, _>>().ok()?;
+        let mut out = None;
+        unsafe {
+            for (i, cb) in cstrs.iter().enumerate() {
+                sqlite3_bind_text(
+                    stmt,
+                    (i + 1) as c_int,
+                    cb.as_ptr(),
+                    cb.as_bytes().len() as c_int,
+                    SQLITE_TRANSIENT as *mut c_void,
+                );
+            }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                out = column0(stmt);
+            }
+            sqlite3_finalize(stmt);
+        }
+        out
+    }
+
     /// Column 0 of every row, for a parameter-free query.
     pub fn query_all(&self, sql: &str) -> Vec<String> {
         let mut out = Vec::new();

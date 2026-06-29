@@ -95,10 +95,42 @@ impl CocoaDb {
         self.selectors.get(selector).cloned()
     }
 
+    /// Class-exact resolution: the selector as declared on `class` or its nearest
+    /// Obj-C ancestor (walking `rt_classes.superclass`), so a class-varying selector
+    /// like `frame` resolves to the *receiver's* version. None if there's no SQLite
+    /// backend or no such (class-chain, selector) — the caller then falls back to the
+    /// class-agnostic `lookup`.
+    pub fn lookup_in(&self, class: &str, selector: &str) -> Option<SelSig> {
+        let be = self.backend.as_ref()?;
+        let key = format!("{class}\u{1}{selector}");
+        if let Some(hit) = self.cache.lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let sig = be.query_one_binds(CHAIN_SQL, &[class, selector]).map(|enc| SelSig {
+            ret: reduce_ret(&enc),
+            argc: selector.matches(':').count(),
+        });
+        self.cache.lock().unwrap().insert(key, sig.clone());
+        sig
+    }
+
     pub fn is_empty(&self) -> bool {
         self.backend.is_none() && self.selectors.is_empty()
     }
 }
+
+/// Walk `class` up `rt_classes.superclass` and return the encoding of the most
+/// derived class on that chain that declares `selector` (instances preferred over
+/// class methods on a tie). A recursive CTE does the chain walk + lookup in one
+/// indexed query.
+const CHAIN_SQL: &str = "\
+WITH RECURSIVE chain(c, depth) AS ( \
+  SELECT ?1, 0 \
+  UNION ALL \
+  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc JOIN chain ON rc.name = chain.c \
+  WHERE rc.superclass IS NOT NULL AND chain.depth < 64) \
+SELECT m.encoding FROM rt_methods m JOIN chain ON m.class = chain.c \
+WHERE m.selector = ?2 ORDER BY chain.depth ASC, m.is_class ASC LIMIT 1";
 
 /// Where to find the SQLite mirror: `$MACM2_COCOA_DB`, else a `cocoa.sqlite`
 /// sitting beside the JSON.

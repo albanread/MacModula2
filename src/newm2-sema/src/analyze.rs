@@ -4249,6 +4249,27 @@ fn expr_span(expr: &ast::Expr) -> Span {
     }
 }
 
+/// The Obj-C class a receiver type resolves to — its own `cocoa_class` name, or the
+/// nearest `cocoa` superclass up the INHERIT chain — for class-exact selector
+/// resolution. `None` for non-class or non-Cocoa receivers.
+fn cocoa_class_of(ctx: &Ctx, ty: TypeId) -> Option<String> {
+    let mut cid = match ctx.types.get(ty) {
+        TypeKind::Class { symbol } => ClassSymbolId(*symbol),
+        _ => return None,
+    };
+    for _ in 0..64 {
+        let cls = ctx.classes.get(cid);
+        if let Some(n) = &cls.objc_class_name {
+            return Some(n.clone());
+        }
+        if let Some(n) = &cls.objc_super {
+            return Some(n.clone());
+        }
+        cid = cls.base?;
+    }
+    None
+}
+
 /// Map a Cocoa selector-database return *kind* to an M2 type for a message send.
 /// The named geometry structs resolve to ObjC.NSRange/NSPoint/NSSize/NSRect (nice
 /// field names); any other struct given as a flattened descriptor `{<kinds>}` is
@@ -5714,7 +5735,7 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
         // node and is read directly by IR lowering.
         ast::Expr::ObjcSend { recv, selector, args, span } => {
             let addr = ctx.types.builtin(Builtin::Address);
-            let _ = analyse_expr(ctx, recv, scope);
+            let recv_ty = analyse_expr(ctx, recv, scope);
             let mut params = vec![
                 ProcParam { mode: ParamMode::Value, ty: addr }, // receiver (id)
                 ProcParam { mode: ParamMode::Value, ty: addr }, // _cmd (SEL)
@@ -5726,7 +5747,15 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             // Result type from the selector database (extension 3); `id` by default.
             // An unknown selector (likely a typo) is flagged only under --strict, so
             // normal builds aren't noisy about selectors the partial DB doesn't cover.
-            let result = match ctx.cocoa_db.lookup(selector) {
+            // Prefer class-exact resolution from the receiver's static type (e.g.
+            // `frame` on an NSView → CGRect, where it's `id` on other classes); fall
+            // back to the class-agnostic most-common lookup, then to `id`.
+            let recv_class = recv_ty.and_then(|t| cocoa_class_of(ctx, t));
+            let sig = recv_class
+                .as_deref()
+                .and_then(|c| ctx.cocoa_db.lookup_in(c, selector))
+                .or_else(|| ctx.cocoa_db.lookup(selector));
+            let result = match sig {
                 Some(s) => cocoa_kind_type(ctx, &s.ret),
                 None => {
                     if ctx.strict && !ctx.cocoa_db.is_empty() {
