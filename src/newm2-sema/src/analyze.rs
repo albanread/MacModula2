@@ -4270,6 +4270,15 @@ fn cocoa_class_of(ctx: &Ctx, ty: TypeId) -> Option<String> {
     None
 }
 
+/// Selectors that return `instancetype` — i.e. the receiver's own class. Covers the
+/// alloc / new / init family plus self / retain / autorelease. `init` is matched
+/// precisely so `initialize` (a void class method) isn't swept in.
+fn is_instancetype_selector(sel: &str) -> bool {
+    matches!(sel, "alloc" | "allocWithZone:" | "new" | "self" | "retain" | "autorelease")
+        || sel == "init"
+        || (sel.starts_with("init") && sel.as_bytes().get(4).is_some_and(|c| c.is_ascii_uppercase()))
+}
+
 /// Map a Cocoa selector-database return *kind* to an M2 type for a message send.
 /// The named geometry structs resolve to ObjC.NSRange/NSPoint/NSSize/NSRect (nice
 /// field names); any other struct given as a flattened descriptor `{<kinds>}` is
@@ -5751,23 +5760,29 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             // `frame` on an NSView → CGRect, where it's `id` on other classes); fall
             // back to the class-agnostic most-common lookup, then to `id`.
             let recv_class = recv_ty.and_then(|t| cocoa_class_of(ctx, t));
-            let sig = recv_class
-                .as_deref()
-                .and_then(|c| ctx.cocoa_db.lookup_in(c, selector))
-                .or_else(|| ctx.cocoa_db.lookup(selector));
-            let result = match sig {
-                Some(s) => cocoa_kind_type(ctx, &s.ret),
-                None => {
-                    if ctx.strict && !ctx.cocoa_db.is_empty() {
-                        ctx.warning(
-                            *span,
-                            format!(
-                                "Objective-C selector '{selector}' is not in the selector \
-                                 database (typo, or a class the DB doesn't cover)"
-                            ),
-                        );
+            let result = if recv_class.is_some() && is_instancetype_selector(selector) {
+                // instancetype (alloc/new/init…/self): the result is the receiver's
+                // own Cocoa class, so `[[NSWindow alloc] init]` types as NSWindow.
+                recv_ty.unwrap()
+            } else {
+                let sig = recv_class
+                    .as_deref()
+                    .and_then(|c| ctx.cocoa_db.lookup_in(c, selector))
+                    .or_else(|| ctx.cocoa_db.lookup(selector));
+                match sig {
+                    Some(s) => cocoa_kind_type(ctx, &s.ret),
+                    None => {
+                        if ctx.strict && !ctx.cocoa_db.is_empty() {
+                            ctx.warning(
+                                *span,
+                                format!(
+                                    "Objective-C selector '{selector}' is not in the selector \
+                                     database (typo, or a class the DB doesn't cover)"
+                                ),
+                            );
+                        }
+                        addr
                     }
-                    addr
                 }
             };
             let sig = ctx.types.alloc(TypeKind::Proc { params, return_ty: Some(result) });
