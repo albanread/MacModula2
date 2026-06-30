@@ -70,6 +70,62 @@ fn sym_or_null(name: &str) -> *mut c_void {
     dlsym_default(name).map(|p| p as *mut c_void).unwrap_or(std::ptr::null_mut())
 }
 
+// ─── autorelease pool ───────────────────────────────────────────────
+//
+// Cocoa's deferred-release bucket for transient objects. A +0 object — an
+// `autorelease` result or a convenience constructor like `ObjC.NSString`
+// (`stringWithUTF8String:`), `[NSMutableArray array]`, `[s uppercaseString]`
+// — is registered with the current pool and released when it drains. With NO
+// pool in place such an object just leaks. M2 v1 had no pool, so every +0
+// Cocoa object leaked for the process lifetime; wrapping each program run in a
+// pool (default on) gives them a defined lifetime — valid for the run, drained
+// at its end. +1 owned objects (`NEW` → alloc/init) are unaffected: their
+// lifetime is the manual `DISPOSE`/`DESTROY` contract, never the pool.
+
+/// Whether to wrap a program run in an autorelease pool. Default ON. Cleared by
+/// the driver's `--no-autorelease-pool` (JIT) or the `NM2_NO_AUTORELEASE_POOL`
+/// environment variable (honoured by AOT executables, a separate process the
+/// driver flag can't reach).
+static AUTORELEASE_POOL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Enable/disable the run-scoped autorelease pool (default `true`).
+pub fn nm2_set_autorelease_pool(on: bool) {
+    AUTORELEASE_POOL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is the run-scoped autorelease pool enabled? The `NM2_NO_AUTORELEASE_POOL`
+/// environment variable forces it off regardless of the flag.
+pub fn autorelease_pool_enabled() -> bool {
+    AUTORELEASE_POOL.load(std::sync::atomic::Ordering::Relaxed)
+        && std::env::var_os("NM2_NO_AUTORELEASE_POOL").is_none()
+}
+
+/// `objc_autoreleasePoolPush()` — open a pool; returns a token for
+/// [`autorelease_pool_pop`], or null if the symbol can't be resolved (then pop
+/// is a no-op).
+pub fn autorelease_pool_push() -> *mut c_void {
+    let f = sym_or_null("objc_autoreleasePoolPush");
+    if f.is_null() {
+        return std::ptr::null_mut();
+    }
+    let f: extern "C" fn() -> *mut c_void = unsafe { std::mem::transmute(f) };
+    f()
+}
+
+/// `objc_autoreleasePoolPop(token)` — drain and pop the pool. A null token is a
+/// safe no-op.
+pub fn autorelease_pool_pop(token: *mut c_void) {
+    if token.is_null() {
+        return;
+    }
+    let f = sym_or_null("objc_autoreleasePoolPop");
+    if f.is_null() {
+        return;
+    }
+    let f: extern "C" fn(*mut c_void) = unsafe { std::mem::transmute(f) };
+    f(token);
+}
+
 /// UTF-16 open array `(ptr, high)` → UTF-8 C string, stopping at the first NUL.
 fn wide_to_cstring(ptr: *const u16, high: u64) -> Option<CString> {
     if ptr.is_null() {
@@ -1505,4 +1561,33 @@ pub extern "C-unwind" fn nm2_objc_pump(seconds: f64) {
     // CFRunLoopRunInMode(mode: CFStringRef, seconds: f64, returnAfterSourceHandled: bool) -> i32
     let run: extern "C" fn(*const c_void, f64, u8) -> i32 = unsafe { std::mem::transmute(run_fn) };
     let _ = run(mode, seconds, 0);
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    #[test]
+    fn autorelease_pool_round_trips() {
+        // On macOS the runtime symbols resolve and push returns a real token;
+        // pop must accept it without crashing. (On a host with no Obj-C runtime
+        // the symbol is absent and push returns null — still a safe no-op.)
+        let token = autorelease_pool_push();
+        autorelease_pool_pop(token);
+        autorelease_pool_pop(std::ptr::null_mut()); // null token = no-op
+    }
+
+    #[test]
+    fn pool_toggle_round_trips() {
+        let prev = autorelease_pool_enabled();
+        nm2_set_autorelease_pool(false);
+        assert!(!autorelease_pool_enabled(), "disabled after set(false)");
+        nm2_set_autorelease_pool(true);
+        // enabled() also requires NM2_NO_AUTORELEASE_POOL to be unset.
+        assert_eq!(
+            autorelease_pool_enabled(),
+            std::env::var_os("NM2_NO_AUTORELEASE_POOL").is_none()
+        );
+        nm2_set_autorelease_pool(prev);
+    }
 }

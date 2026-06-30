@@ -176,9 +176,16 @@ ever appears in a program.
   its pinned selector is an `init…`, the compiler prepends the `alloc`. This is the
   one construction idiom — no `alloc`/`init` two-step leaks into source.
 - `DISPOSE(p)` → `release`. Because objects are NSObject-rooted, dealloc /
-  finalization is Cocoa's. v1 retain/release is manual (storing a long-lived object
-  reference into a field calls `retain`; `DISPOSE` releases); an ARC /
-  autorelease-pool ownership model is a later design (open question).
+  finalization is Cocoa's. Retain/release of **+1 owned** objects is still manual
+  (storing a long-lived object reference into a field calls `retain`; `DISPOSE`
+  releases) — a full ARC-style scope-release is later design. **+0 autoreleased
+  objects** (convenience constructors, `ObjC.NSString`, autoreleased returns) are
+  now handled: each program run is wrapped in an **autorelease pool** (default on;
+  off via `--no-autorelease-pool` for a JIT run or `NM2_NO_AUTORELEASE_POOL` for
+  an AOT executable), so they have a defined lifetime and drain at run end instead
+  of leaking with no pool in place. (`newm2_runtime::objc::autorelease_pool_push/
+  pop` around `run_modules` and `nm2_aot_run`.) A per-scope `@autoreleasepool`
+  block, to bound peak memory inside long loops, remains future work.
 
 ## Surface — the programs are Modula-2
 
@@ -321,9 +328,12 @@ Locked, in favour of fidelity over divergence:
 
 - **Obj-C exceptions through M2 frames** — documented-UB v1 (the bridge is already
   `extern "C-unwind"`); a `@try` boundary shim is a later runtime seam.
-- **Threading / ARC** — manual retain/release v1; interlocked refcount and
-  autorelease pools deferred. The surface (`NEW`/`DISPOSE`, field-store `retain`)
-  is ARC-ready: turning on ARC-like ownership later changes lowering, not source.
+- **Threading / ARC** — manual retain/release for +1 objects; interlocked
+  refcount deferred. A run-scoped **autorelease pool is now in place** (default on)
+  so +0 objects no longer leak for the process lifetime; per-scope pools and full
+  ARC scope-release remain deferred. The surface (`NEW`/`DISPOSE`, field-store
+  `retain`) is ARC-ready: turning on ARC-like ownership later changes lowering, not
+  source.
 - **`ABSTRACT`/protocols** — an M2 `ABSTRACT CLASS` maps to a class with missing
   IMPs; a future `PROTOCOL` models Obj-C `@protocol` for delegate typing.
 - **`CLASS PROCEDURE` (static methods)** — confirm the spelling for class-method

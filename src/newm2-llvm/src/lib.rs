@@ -913,6 +913,16 @@ pub fn run_modules(
     // before the modules that depend on them, and the entry module's body (its
     // `BEGIN … END`) runs last. A body is a `void` function; a Rust panic from
     // a runtime helper unwinds across the C-unwind boundary and is caught here.
+    // Wrap the run in an autorelease pool (default on) so +0 /
+    // convenience-constructor Cocoa objects drain at the end of the run rather
+    // than leaking with no pool in place. macOS only (no objc on Windows).
+    #[cfg(not(windows))]
+    let pool = if newm2_runtime::objc::autorelease_pool_enabled() {
+        newm2_runtime::objc::autorelease_pool_push()
+    } else {
+        std::ptr::null_mut()
+    };
+
     let mut initialized = 0usize;
     let mut first_error: Option<String> = None;
     let mut halt_code: Option<i32> = None;
@@ -949,10 +959,23 @@ pub fn run_modules(
         }
     }
 
+    // Drain the run's autorelease pool (no-op if disabled / null token).
+    #[cfg(not(windows))]
+    newm2_runtime::objc::autorelease_pool_pop(pool);
+
     match first_error {
         Some(e) => Err(e),
         None => Ok(halt_code.unwrap_or(0)),
     }
+}
+
+/// Enable/disable the run-scoped Objective-C autorelease pool that wraps each
+/// JIT `run_modules` (default on). Off → +0 Cocoa objects leak; useful for
+/// isolating allocation behaviour. The driver wires `--no-autorelease-pool`
+/// here. (No-op on Windows, where there is no Objective-C runtime.)
+#[cfg(not(windows))]
+pub fn set_autorelease_pool(on: bool) {
+    newm2_runtime::objc::nm2_set_autorelease_pool(on);
 }
 
 /// Outcome of running a JIT'd `void` function body.

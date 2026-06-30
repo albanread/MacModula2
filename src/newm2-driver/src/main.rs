@@ -73,6 +73,7 @@ const GLOBAL_FLAGS: &[&str] = &[
     "--sanitize",
     "--no-cache",
     "--cache",
+    "--no-autorelease-pool",
     "--manifest",
     "--no-manifest",
     "--ref-allow-impl",
@@ -359,6 +360,14 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let rest: Vec<String> = args.collect();
+
+    // Global pool gate (default on): disable the run-scoped autorelease pool for
+    // an in-process JIT run. (AOT executables read NM2_NO_AUTORELEASE_POOL at
+    // run time, since the build-time flag can't reach a separate process.)
+    #[cfg(not(windows))]
+    if rest.iter().any(|a| a == "--no-autorelease-pool") {
+        newm2_llvm::set_autorelease_pool(false);
+    }
 
     if !COMMANDS.contains(&command.as_str()) {
         eprintln!("newm2: unknown command '{command}'");
