@@ -299,6 +299,9 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
         v.push(("ObjC.Selector".to_string(), "nm2_objc_sel"));
         v.push(("ObjC.MsgSendPtr".to_string(), "nm2_objc_msgsend_ptr"));
         v.push(("ObjC.NSString".to_string(), "nm2_objc_nsstring"));
+        v.push(("ObjC.PushPool".to_string(), "nm2_objc_pool_push"));
+        v.push(("ObjC.PopPool".to_string(), "nm2_objc_pool_pop"));
+        v.push(("ObjC.Autorelease".to_string(), "nm2_objc_autorelease"));
         v.push(("ObjC.Pump".to_string(), "nm2_objc_pump"));
         v.push(("ObjC.RunApp".to_string(), "nm2_cocoa_run_app"));
         v.push(("ObjC.SnapshotView".to_string(), "nm2_cocoa_snapshot_view"));
@@ -1260,6 +1263,9 @@ fn for_each_runtime_binding(
         bind("ObjC.Selector", newm2_runtime::objc::nm2_objc_sel as *const ());
         bind("ObjC.MsgSendPtr", newm2_runtime::objc::nm2_objc_msgsend_ptr as *const ());
         bind("ObjC.NSString", newm2_runtime::objc::nm2_objc_nsstring as *const ());
+        bind("ObjC.PushPool", newm2_runtime::objc::nm2_objc_pool_push as *const ());
+        bind("ObjC.PopPool", newm2_runtime::objc::nm2_objc_pool_pop as *const ());
+        bind("ObjC.Autorelease", newm2_runtime::objc::nm2_objc_autorelease as *const ());
         bind("ObjC.Pump", newm2_runtime::objc::nm2_objc_pump as *const ());
         bind("ObjC.RunApp", newm2_runtime::objc::nm2_cocoa_run_app as *const ());
         bind("ObjC.SnapshotView", newm2_runtime::objc::nm2_cocoa_snapshot_view as *const ());

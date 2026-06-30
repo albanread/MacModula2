@@ -126,6 +126,49 @@ pub fn autorelease_pool_pop(token: *mut c_void) {
     f(token);
 }
 
+// ─── manual autorelease API (exposed to M2 as ObjC.PushPool/PopPool/Autorelease) ───
+//
+// The programmer-controlled counterpart to the implicit run-scoped pool. A
+// manual pool brackets a scope — e.g. one render-loop iteration — so its +0
+// temporaries drain at PopPool, bounding peak memory the run-scoped pool can't.
+// These map cleanly onto Modula-2's manual idiom: PushPool/PopPool pair like
+// Open/Close, and Autorelease is the dual of DISPOSE (release now) — release at
+// the next drain.
+
+/// `ObjC.PushPool()` — open an autorelease pool; returns its token. Pair with
+/// [`nm2_objc_pool_pop`] in LIFO order.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_pool_push() -> *mut c_void {
+    autorelease_pool_push()
+}
+
+/// `ObjC.PopPool(token)` — drain and pop the pool from [`nm2_objc_pool_push`];
+/// releases every object autoreleased since the matching push. Null token is a
+/// no-op.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_pool_pop(token: *mut c_void) {
+    autorelease_pool_pop(token);
+}
+
+/// `ObjC.Autorelease(obj)` — hand a +1 object to the current autorelease pool so
+/// it is released at the next drain instead of an explicit `DISPOSE`. The dual
+/// of `DISPOSE` (release now). Returns `obj`; a nil pointer passes through.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_autorelease(obj: *mut c_void) -> *mut c_void {
+    if obj.is_null() {
+        return obj;
+    }
+    let reg_sel = sym_or_null("sel_registerName");
+    let msg_send = sym_or_null("objc_msgSend");
+    if reg_sel.is_null() || msg_send.is_null() {
+        return obj;
+    }
+    let reg_sel: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg_sel) };
+    let send0: extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(msg_send) };
+    send0(obj, reg_sel(c"autorelease".as_ptr()))
+}
+
 /// UTF-16 open array `(ptr, high)` → UTF-8 C string, stopping at the first NUL.
 fn wide_to_cstring(ptr: *const u16, high: u64) -> Option<CString> {
     if ptr.is_null() {
@@ -1575,6 +1618,20 @@ mod pool_tests {
         let token = autorelease_pool_push();
         autorelease_pool_pop(token);
         autorelease_pool_pop(std::ptr::null_mut()); // null token = no-op
+    }
+
+    #[test]
+    fn manual_pool_wrappers_round_trip() {
+        // The M2-callable surface (ObjC.PushPool / PopPool / Autorelease): push
+        // returns a token (a real one on macOS, null where there's no Obj-C
+        // runtime), Autorelease(nil) passes through, pop drains without crashing.
+        let token = nm2_objc_pool_push();
+        assert_eq!(
+            nm2_objc_autorelease(std::ptr::null_mut()),
+            std::ptr::null_mut(),
+            "Autorelease(nil) is a passthrough"
+        );
+        nm2_objc_pool_pop(token); // must not crash
     }
 
     #[test]

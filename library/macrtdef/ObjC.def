@@ -57,6 +57,31 @@ PROCEDURE NSString (s: ARRAY OF CHAR): Id;
 (* Copy an NSString's text into a (wide) M2 ARRAY OF CHAR; returns the length. *)
 PROCEDURE GetString (nsstr: Id; VAR dest: ARRAY OF CHAR): INTEGER;
 
+(* Manual autorelease pools — the programmer-controlled counterpart to the
+   implicit per-run pool. A +0 object (a convenience constructor like NSString,
+   or any autoreleased return) is released when the enclosing pool drains. Each
+   run is wrapped in a pool already; these bracket an inner scope — typically a
+   loop body — so its temporaries drain each iteration, bounding peak memory.
+
+   PushPool/PopPool pair in LIFO order, like Open/Close:
+
+     VAR pool: ObjC.Pool;
+     ...
+     pool := ObjC.PushPool();
+       (* ... +0 temporaries ... *)
+     ObjC.PopPool(pool)            (* releases them all *)
+
+   Caveat: an exception between Push and Pop skips the Pop — guard a protected
+   block with an EXCEPT arm that calls PopPool then RAISE. *)
+TYPE Pool = ADDRESS;              (* an opaque autorelease-pool token *)
+PROCEDURE PushPool (): Pool;
+PROCEDURE PopPool (p: Pool);
+
+(* Hand a +1 object to the current pool: released at the next PopPool instead of
+   an explicit DISPOSE. The dual of DISPOSE — DISPOSE releases now, Autorelease
+   releases at the next drain. Returns its argument. *)
+PROCEDURE Autorelease (obj: Id): Id;
+
 (* Syntax-color an NSTextView's content using the NewM2 lexer. *)
 PROCEDURE Highlight (textview: Id);
 

@@ -184,8 +184,31 @@ ever appears in a program.
   off via `--no-autorelease-pool` for a JIT run or `NM2_NO_AUTORELEASE_POOL` for
   an AOT executable), so they have a defined lifetime and drain at run end instead
   of leaking with no pool in place. (`newm2_runtime::objc::autorelease_pool_push/
-  pop` around `run_modules` and `nm2_aot_run`.) A per-scope `@autoreleasepool`
-  block, to bound peak memory inside long loops, remains future work.
+  pop` around `run_modules` and `nm2_aot_run`.)
+- For finer control there is a **manual pool API** in `ObjC`, the
+  programmer-controlled counterpart to the implicit run pool — it brackets an
+  *inner* scope (typically a loop body) so its temporaries drain each iteration,
+  bounding peak memory the single run-scoped pool can't:
+
+  ```
+  TYPE Pool;                      (* opaque token *)
+  PROCEDURE PushPool (): Pool;    (* open;  pair LIFO with PopPool, like Open/Close *)
+  PROCEDURE PopPool (p: Pool);    (* drain — release everything autoreleased since push *)
+  PROCEDURE Autorelease (obj: Id): Id;   (* dual of DISPOSE: release at next drain, not now *)
+  ```
+
+  ```
+  FOR i := 1 TO frames DO
+    pool := ObjC.PushPool();
+      DrawFrame(i)          (* many +0 temporaries *)
+    ObjC.PopPool(pool)      (* released here, not at run end *)
+  END
+  ```
+
+  These nest inside the implicit run pool (LIFO). Caveat: an exception between
+  push and pop skips the pop — guard a protected block with an `EXCEPT` arm that
+  calls `PopPool` then `RAISE`. A language-level pool *block* with guaranteed
+  cleanup, and a full ARC-style scope-release for +1 objects, remain future work.
 
 ## Surface — the programs are Modula-2
 

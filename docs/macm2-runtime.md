@@ -37,6 +37,12 @@ exact analogue of calling through a COM vtable slot.
 - `Send0/SendI/SendP/SendF/SendB/SendFrame/SendRect/Send0I/SendPI/SendC` — the
   per-signature `objc_msgSend` casts.
 - `NSString(s)`, `GetString(nsstr, dest)` — M2 ↔ `NSString`.
+- `PushPool(): Pool`, `PopPool(p)`, `Autorelease(obj): Id` — manual autorelease
+  pools. Each run is wrapped in a pool already (so +0 / convenience-constructor
+  objects don't leak); these bracket an *inner* scope — a loop body — so its
+  temporaries drain per iteration. `PushPool`/`PopPool` pair LIFO like
+  `Open`/`Close`; `Autorelease` is the dual of `DISPOSE` (release at the next
+  drain, not now).
 - `AllocateClass/AddMethod/RegisterClass` — define a class at runtime; an M2
   `PROCEDURE` is a valid IMP (`(id self, SEL _cmd, …)`).
 - `OpenPanel/SavePanel/OpenFolderPanel`, `SnapshotView`, `Pump`, `RunApp`,
