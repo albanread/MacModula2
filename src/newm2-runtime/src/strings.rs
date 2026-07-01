@@ -140,8 +140,13 @@ pub unsafe extern "C-unwind" fn nm2_copy_wstring_narrow(src: *const u16, dst: *m
     }
     let cap = if cap == 0 { u64::MAX } else { cap };
     let mut i: u64 = 0;
-    let max = cap.saturating_sub(1);
-    while i < max {
+    // Mirror nm2_copy_wstring exactly: loop the FULL capacity, not cap-1. The
+    // old `max = cap - 1` reserved the last slot for a NUL unconditionally,
+    // truncating the last character on every exact-fit string (an off-by-one
+    // that also diverged from this function's own doc/ISO contract: an
+    // ARRAY OF CHAR assignment that fills the destination exactly is left
+    // unterminated, same as the wide sibling).
+    while i < cap {
         let c = unsafe { *src.add(i as usize) };
         if c == 0 {
             break;
@@ -149,6 +154,7 @@ pub unsafe extern "C-unwind" fn nm2_copy_wstring_narrow(src: *const u16, dst: *m
         unsafe { *dst.add(i as usize) = (c & 0xFF) as u8 };
         i += 1;
     }
+    // Terminate only when there is room (the source did not fill `dst`).
     if i < cap {
         unsafe { *dst.add(i as usize) = 0 };
     }
@@ -190,5 +196,49 @@ mod tests {
         let mut dst = vec![0u8; 64];
         unsafe { nm2_copy_string(b"hello\0".as_ptr(), dst.as_mut_ptr(), 0) };
         assert_eq!(&dst[..6], b"hello\0");
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    #[test]
+    fn wide_copy_leaves_exact_fit_unterminated() {
+        // The WIDE sibling's own documented contract (control case).
+        let src = wide("abcd");
+        let mut dst = vec![0xFFu16; 4];
+        unsafe { nm2_copy_wstring(src.as_ptr(), dst.as_mut_ptr(), 4) };
+        assert_eq!(dst, [b'a' as u16, b'b' as u16, b'c' as u16, b'd' as u16]);
+    }
+
+    #[test]
+    fn narrow_copy_exact_fit_is_not_truncated() {
+        // Regression: nm2_copy_wstring_narrow used to reserve the last slot
+        // for a NUL unconditionally (`max = cap - 1`), silently dropping the
+        // last character of any string that exactly filled its destination —
+        // diverging from the wide sibling's own documented ISO contract
+        // (exact fit -> unterminated, not the last char lost).
+        let src = wide("abcd");
+        let mut dst = vec![0xFFu8; 4];
+        unsafe { nm2_copy_wstring_narrow(src.as_ptr(), dst.as_mut_ptr(), 4) };
+        assert_eq!(dst, *b"abcd", "the 'd' must survive an exact-fit copy");
+    }
+
+    #[test]
+    fn narrow_copy_truncates_when_dst_is_smaller() {
+        // Source longer than the destination: fills it completely (no room
+        // left for a terminator either) — same rule as the exact-fit case.
+        let src = wide("abcdef");
+        let mut dst = vec![0xFFu8; 4];
+        unsafe { nm2_copy_wstring_narrow(src.as_ptr(), dst.as_mut_ptr(), 4) };
+        assert_eq!(&dst[..], b"abcd");
+    }
+
+    #[test]
+    fn narrow_copy_nul_terminates_when_shorter_than_cap() {
+        let src = wide("ab");
+        let mut dst = vec![0xFFu8; 8];
+        unsafe { nm2_copy_wstring_narrow(src.as_ptr(), dst.as_mut_ptr(), 8) };
+        assert_eq!(&dst[..3], b"ab\0");
     }
 }

@@ -55,10 +55,31 @@ pub extern "C-unwind" fn nm2_math_ldexp(x: f64, n: i64) -> f64 {
     if x == 0.0 || !x.is_finite() {
         return x;
     }
-    // Clamp n to i32 before powi — beyond ±1023 the result is either
-    // 0 or ±inf anyway, and powi takes i32.
-    let n_clamped = n.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-    x * (2.0f64).powi(n_clamped)
+    // `x * 2^n` computed as a single `2^n` value then multiplied overflowed
+    // (or flushed to 0) whenever |n| alone was large even though the TRUE
+    // product x*2^n was a perfectly ordinary finite (possibly subnormal)
+    // f64 — e.g. ldexp(1e-300, 1024): 2^1024 alone is +inf, but the real
+    // product is ~1.8e8. Scale in bounded chunks instead, each individually
+    // within f64's normal exponent range, so no intermediate step can
+    // overflow/underflow when the final result wouldn't.
+    //
+    // A double's exponent spans at most [-1074, 1023] (subnormal floor to
+    // normal ceiling), so any n outside roughly that same span makes the
+    // result unconditionally 0 or ±inf regardless of x — clamp there first
+    // so an adversarial |n| can't turn this into an unbounded loop.
+    let n = n.clamp(-2200, 2200);
+    const STEP: i32 = 1000; // safely inside f64's normal exponent range
+    let mut r = x;
+    let mut remaining = n;
+    while remaining > STEP as i64 {
+        r *= (2.0f64).powi(STEP);
+        remaining -= STEP as i64;
+    }
+    while remaining < -(STEP as i64) {
+        r *= (2.0f64).powi(-STEP);
+        remaining += STEP as i64;
+    }
+    r * (2.0f64).powi(remaining as i32)
 }
 
 /// `modf(x)` — split `x` into integer and fractional parts. Both share
@@ -184,4 +205,44 @@ math2!(nm2_math_log, log); // log(x, base) = log_base(x)
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_math_fmod(x: f64, y: f64) -> f64 {
     x % y
+}
+
+#[cfg(test)]
+mod ldexp_tests {
+    use super::*;
+
+    #[test]
+    fn matches_plain_multiply_for_ordinary_values() {
+        assert_eq!(nm2_math_ldexp(1.5, 4), 1.5 * 16.0);
+        assert_eq!(nm2_math_ldexp(3.0, -2), 3.0 * 0.25);
+        assert_eq!(nm2_math_ldexp(0.0, 100), 0.0);
+    }
+
+    #[test]
+    fn tiny_x_large_n_stays_finite_when_the_true_product_is() {
+        // Regression: 2^1024 alone is +inf, but 1e-300 * 2^1024 is an
+        // ordinary finite value (~1.8e8) — the old single-step powi(1024)
+        // computed +inf * 1e-300 = +inf, a wrong non-finite result for a
+        // perfectly representable input.
+        let r = nm2_math_ldexp(1e-300, 1024);
+        assert!(r.is_finite(), "expected a finite result, got {r}");
+        let expected = 1e-300 * 2f64.powi(1024 - 997) * 2f64.powi(997); // split reference calc, avoids the same overflow in the test
+        assert!((r - expected).abs() / expected < 1e-9, "r={r} expected≈{expected}");
+    }
+
+    #[test]
+    fn huge_n_saturates_to_zero_or_infinity_without_hanging() {
+        // Genuinely out-of-range exponents must still resolve (not loop
+        // forever) to the mathematically correct saturated result.
+        assert_eq!(nm2_math_ldexp(1.0, i64::MAX), f64::INFINITY);
+        assert_eq!(nm2_math_ldexp(1.0, i64::MIN + 1), 0.0);
+        assert_eq!(nm2_math_ldexp(-1.0, i64::MAX), f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn non_finite_and_zero_pass_through() {
+        assert!(nm2_math_ldexp(f64::NAN, 5).is_nan());
+        assert_eq!(nm2_math_ldexp(f64::INFINITY, -5), f64::INFINITY);
+        assert_eq!(nm2_math_ldexp(0.0, 5), 0.0);
+    }
 }
