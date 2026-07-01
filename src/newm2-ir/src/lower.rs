@@ -768,7 +768,32 @@ fn collect_refs_expr(e: &ast::Expr, out: &mut HashSet<String>) {
                 }
             }
         }
-        _ => {}
+        // Previously fell into the catch-all below and were never descended
+        // into: a variable referenced ONLY inside an ObjC message send's
+        // receiver/args (`[recv setValue: capturedVar]`) or a Postfix
+        // expression (`CAST(ADDRESS, capturedVar)^`) was silently missed by
+        // capture analysis. A nested procedure reading/writing that name then
+        // found no local/capture binding for it, reading a fresh/garbage
+        // value instead of the enclosing variable (or losing an assignment to
+        // it entirely).
+        ast::Expr::ObjcSend { recv, args, .. } => {
+            collect_refs_expr(recv, out);
+            for a in args {
+                collect_refs_expr(a, out);
+            }
+        }
+        ast::Expr::Postfix { base, selectors, .. } => {
+            collect_refs_expr(base, out);
+            for sel in selectors {
+                if let ast::Selector::Index(ixs, _) = sel {
+                    for ix in ixs {
+                        collect_refs_expr(ix, out);
+                    }
+                }
+            }
+        }
+        ast::Expr::Integer(..) | ast::Expr::Real(..) | ast::Expr::Char(..)
+        | ast::Expr::String(..) | ast::Expr::Nil(..) => {}
     }
 }
 
@@ -2227,9 +2252,23 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     self.call_runtime("nm2_reraise", vec![], None, vec![]);
                     self.terminate(Terminator::Unreachable);
                 }
-                Some(e) => {
-                    let val = self.eval_expr(e);
-                    self.terminate(Terminator::Raise(val));
+                Some(_) => {
+                    // No parser production ever constructs `Raise(Some(_))`
+                    // today (this dialect raises through `EXCEPTIONS.RAISE`,
+                    // an ordinary procedure call, not this statement) — so
+                    // this was untested, silently-broken scaffolding:
+                    // `Terminator::Raise(val)` carries a value codegen never
+                    // reads (it just traps), discarding whatever `e`
+                    // evaluated to. Fail loudly instead of silently emitting
+                    // a terminator whose payload is thrown away, so if a
+                    // future front end ever does produce this node, it's
+                    // caught immediately rather than shipping a RAISE that
+                    // drops its exception value.
+                    panic!(
+                        "internal: Stmt::Raise(Some(expr)) has no real lowering yet \
+                         (Terminator::Raise's value is not consumed anywhere) — \
+                         wire it to a real nm2_raise runtime call before use"
+                    );
                 }
             },
 
@@ -3470,8 +3509,23 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             // ARRAY OF CHAR slot must be *copied* (its pointer's bits are not the
             // characters); everything else is a plain store of the value.
             let slot_ty = elem_ty.or_else(|| field_tys.get(field as usize).copied());
-            if let Some(st) = slot_ty
-                && let Some(count) = self.array_char_count(st)
+            // A string r-value into a fixed ARRAY OF (A)CHAR slot must be
+            // *copied* (its pointer's bits are not the characters) — but this
+            // only ever checked the WIDE (Char/Uchar) case. A narrow ACHAR
+            // slot (`ARRAY [..] OF ACHAR`) fell to the plain Store below,
+            // writing the string literal's raw pointer bits into the
+            // record/array as if it were an 8-byte value — the exact
+            // string-literal/pointer-vs-value corruption bug this codebase
+            // has hit before, just in the aggregate-constructor path instead
+            // of the (already-fixed) Assign-statement path.
+            let char_copy = slot_ty.and_then(|st| {
+                if let Some(n) = self.array_char_count(st) {
+                    Some((n, true))
+                } else {
+                    self.narrow_char_array_count_ty(st).map(|n| (n, false))
+                }
+            });
+            if let Some((count, wide)) = char_copy
                 && self.is_string_rvalue(value)
             {
                 let src = self.eval_expr(value);
@@ -3484,7 +3538,8 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                     IrParam { name: "dst".into(), ty: addr, is_var: false },
                     IrParam { name: "cap".into(), ty: card, is_var: false },
                 ];
-                self.call_runtime("NM2Str.WCopy", params, None, vec![src, dst, cap]);
+                let rt = if wide { "NM2Str.WCopy" } else { "NM2Str.WNCopy" };
+                self.call_runtime(rt, params, None, vec![src, dst, cap]);
             } else {
                 let v = self.eval_expr(value);
                 self.push(Inst::Store { ptr: dst, val: v });
@@ -4344,13 +4399,27 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // `[value isKindOfClass: getClass(T)]` (the Cocoa analogue of the COM QI
         // probe) — never the native field-0 RTTI walk, which would read the isa.
         if cfg!(target_os = "macos") {
-            // `ISMEMBER(value, T)` — the standard form. (TYPE,TYPE) was folded above.
-            let (obj, target) = if !is_ty0 && is_ty1 {
-                (obj0, cid1)
+            // `ISMEMBER(p1,p2)` tests class(p1) <= class(p2) (p1 is-a p2). Which
+            // runtime primitive computes that depends on which side has a live
+            // instance to introspect:
+            //  - (VALUE p1, TYPE p2): class(p1) <= p2 is exactly `[obj0
+            //    isKindOfClass: p2]` — nm2_objc_is_kind_of.
+            //  - (TYPE p1, VALUE p2): p1 <= class(p2)'s DYNAMIC class. p1 has no
+            //    instance to send isKindOfClass: to (and sending it to obj1
+            //    would test the WRONG, opposite direction, class(p2) <= p1) —
+            //    ask the CLASS OBJECT instead, via nm2_objc_class_is_ancestor_of
+            //    ([objc_getClass(p1) isSubclassOfClass: object_getClass(obj1)]).
+            //    This was the bug: previously always used nm2_objc_is_kind_of
+            //    with (obj1, cid0), silently computing class(p2)<=p1 instead of
+            //    p1<=class(p2) — e.g. ISMEMBER(Dog, aDynamicallyPuppy) wrongly
+            //    returned TRUE (Puppy<=Dog) instead of the correct FALSE
+            //    (Dog<=Puppy).
+            let (obj, target, rt) = if !is_ty0 && is_ty1 {
+                (obj0, cid1, "nm2_objc_is_kind_of")
             } else if is_ty0 && !is_ty1 {
-                (obj1, cid0)
+                (obj1, cid0, "nm2_objc_class_is_ancestor_of")
             } else {
-                (obj0.or(obj1), cid1) // value/value: test against the second's static type
+                (obj0.or(obj1), cid1, "nm2_objc_is_kind_of") // value/value: test against the second's static type
             };
             if let Some(obj) = obj {
                 let addr = self.ctx.sema.types.builtin(Builtin::Address);
@@ -4366,7 +4435,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 let h = (name.chars().count() as i128 - 1).max(0);
                 self.push(Inst::Const { dst: high, val: ConstVal::Int(h) });
                 return self.call_runtime(
-                    "nm2_objc_is_kind_of",
+                    rt,
                     vec![
                         IrParam { name: "obj".into(), ty: addr, is_var: false },
                         IrParam { name: "name".into(), ty: addr, is_var: false },
@@ -5442,9 +5511,9 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
 
     /// Element count of a fixed single-dimension `ARRAY OF` narrow `ACHAR`
     /// (8-bit) type, else `None`. The mirror of [`array_char_count`] for the
-    /// narrow string model.
-    fn narrow_char_array_count(&self, d: &ast::Designator) -> Option<i128> {
-        let ty = self.ctx.sema.designator_type(self.ctx.mid, d.span)?;
+    /// narrow string model, taking the slot's `TypeId` directly — usable
+    /// anywhere the type is already in hand, not just from a `Designator`.
+    fn narrow_char_array_count_ty(&self, ty: newm2_sema::types::TypeId) -> Option<i128> {
         match self.ctx.sema.types.get(ty) {
             TypeKind::Array { indices, base } if indices.len() == 1 => {
                 match self.ctx.sema.types.get(*base) {
@@ -5454,6 +5523,14 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             }
             _ => None,
         }
+    }
+
+    /// Element count of a fixed single-dimension `ARRAY OF` narrow `ACHAR`
+    /// (8-bit) type, else `None`. The mirror of [`array_char_count`] for the
+    /// narrow string model.
+    fn narrow_char_array_count(&self, d: &ast::Designator) -> Option<i128> {
+        let ty = self.ctx.sema.designator_type(self.ctx.mid, d.span)?;
+        self.narrow_char_array_count_ty(ty)
     }
 
     /// When `d` names a whole OPEN `ARRAY OF CHAR` (no selectors), return its

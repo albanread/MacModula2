@@ -481,6 +481,57 @@ pub extern "C-unwind" fn nm2_objc_is_kind_of(obj: *mut c_void, name: *const u16,
     }
 }
 
+/// macOS M2 object model: `ISMEMBER(T, value)` — is the NAMED class `T`
+/// itself a subclass-of-or-equal-to `value`'s *dynamic* class? The mirror
+/// image of [`nm2_objc_is_kind_of`]'s `ISMEMBER(value, T)`: there `value` is a
+/// live instance we can ask `isKindOfClass:`, but here `T` has no instance —
+/// it is purely a compile-time class name — so `isKindOfClass:` (which always
+/// tests "instance's class <= namedClass", never the reverse) cannot answer
+/// this directly; sending it would test the WRONG direction ("value <= T"
+/// instead of "T <= value"). Instead this asks the CLASS OBJECT itself, via
+/// the NSObject class method every Cocoa class responds to: `[objc_getClass(T)
+/// isSubclassOfClass: object_getClass(value)]` — using `value`'s actual
+/// runtime class (not its static type), so `T` is correctly tested against
+/// what `value` dynamically IS, even when `value`'s static type is an
+/// ancestor of its real class.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn nm2_objc_class_is_ancestor_of(obj: *mut c_void, name: *const u16, high: u64) -> i64 {
+    if obj.is_null() {
+        return 0;
+    }
+    bootstrap();
+    let Some(c) = wide_to_cstring(name, high) else {
+        return 0;
+    };
+    let get_class = sym_or_null("objc_getClass");
+    let obj_get_class = sym_or_null("object_getClass");
+    let reg_sel = sym_or_null("sel_registerName");
+    let msg_send = sym_or_null("objc_msgSend");
+    if get_class.is_null() || obj_get_class.is_null() || reg_sel.is_null() || msg_send.is_null() {
+        return 0;
+    }
+    let get_class: extern "C" fn(*const i8) -> *mut c_void =
+        unsafe { std::mem::transmute(get_class) };
+    let obj_get_class: extern "C" fn(*mut c_void) -> *mut c_void =
+        unsafe { std::mem::transmute(obj_get_class) };
+    let reg_sel: extern "C" fn(*const i8) -> *mut c_void = unsafe { std::mem::transmute(reg_sel) };
+    let send: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool =
+        unsafe { std::mem::transmute(msg_send) };
+    let named_cls = get_class(c.as_ptr());
+    if named_cls.is_null() {
+        return 0;
+    }
+    let dyn_cls = obj_get_class(obj);
+    if dyn_cls.is_null() {
+        return 0;
+    }
+    if send(named_cls, reg_sel(c"isSubclassOfClass:".as_ptr()), dyn_cls) {
+        1
+    } else {
+        0
+    }
+}
+
 /// macOS M2 object model: `DISPOSE(p)` on a class-typed pointer — `[p release]`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_objc_release(obj: *mut c_void) {
