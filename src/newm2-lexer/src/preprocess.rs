@@ -354,14 +354,21 @@ impl<'a> Preproc<'a> {
         let Some(rest) = trimmed.strip_prefix('/') else {
             return;
         };
+        // VERSION:/VALIDVERSION:/VALIDVER: are all recognized aliases (the
+        // `or_else` chain matches any of the three), but this used to
+        // define the names ONLY for the literal `VERSION:` spelling: the
+        // inner check re-tested the ORIGINAL `rest` against "VERSION:" only,
+        // so a VALIDVERSION:/VALIDVER: pragma matched the outer `if let` (its
+        // names WERE captured into `names`) yet silently never called
+        // define_bool — a no-op with no diagnostic, so a later
+        // `%IF Name %THEN ... %END` guarded by it took the FALSE branch even
+        // though the source declared the version active.
         if let Some(names) = rest
             .strip_prefix("VERSION:")
             .or_else(|| rest.strip_prefix("VALIDVERSION:"))
             .or_else(|| rest.strip_prefix("VALIDVER:"))
         {
-            if rest.starts_with("VERSION:") {
-                self.apply_version_names(names);
-            }
+            self.apply_version_names(names);
         }
     }
 
@@ -453,7 +460,19 @@ impl<'a> Preproc<'a> {
         // `%` inside grouping doesn't confuse us — though directives don't
         // nest inside their own expressions.
         let start = self.pos;
-        let mut buf = String::new();
+        // Raw bytes, not a String: `%` (0x25) can never be part of a UTF-8
+        // continuation/lead byte, so scanning for it byte-by-byte is safe —
+        // but a NON-ASCII byte must not be individually cast to `char` (that
+        // reinterprets it as Latin-1, then re-encodes as a DIFFERENT, wrong
+        // multi-byte UTF-8 sequence when pushed onto a String). Decode once,
+        // properly, at the end instead.
+        // Raw bytes, not a String: `%` (0x25) can never be part of a UTF-8
+        // continuation/lead byte, so scanning for it byte-by-byte is safe —
+        // but a NON-ASCII byte must not be individually cast to `char` (that
+        // reinterprets it as Latin-1, then re-encodes as a DIFFERENT, wrong
+        // multi-byte UTF-8 sequence when pushed onto a String). Decode once,
+        // properly, at the end instead.
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             match self.peek() {
                 None => {
@@ -475,7 +494,7 @@ impl<'a> Preproc<'a> {
                         for _ in 0..(probe - self.pos.offset) {
                             self.erase_byte();
                         }
-                        return self.eval_expr(&buf, start);
+                        return self.eval_expr(&String::from_utf8_lossy(&buf), start);
                     } else {
                         // Translate into a buffer token. We treat
                         // %AND/%OR/%NOT as &&/||/!.
@@ -492,14 +511,14 @@ impl<'a> Preproc<'a> {
                                 });
                             }
                         };
-                        buf.push_str(replacement);
+                        buf.extend_from_slice(replacement.as_bytes());
                         for _ in 0..(probe - self.pos.offset) {
                             self.erase_byte();
                         }
                     }
                 }
                 Some(c) => {
-                    buf.push(c as char);
+                    buf.push(c);
                     self.erase_byte();
                 }
             }
@@ -853,6 +872,34 @@ mod tests {
         let s = "<*/VERSION:FeatureX*>\n%IF FeatureX %THEN keep %END";
         let out = preprocess(s, &Env::empty()).unwrap();
         assert!(out.contains("keep"));
+    }
+
+    #[test]
+    fn validversion_and_validver_aliases_also_enable_later_if() {
+        // Regression: VALIDVERSION:/VALIDVER: matched the alias-matching
+        // outer `if let` but a second, narrower inner check re-tested only
+        // for the literal "VERSION:" spelling, so the name was captured and
+        // then silently never defined — a no-op with no diagnostic.
+        let a = "<*/VALIDVERSION:FeatureX*>\n%IF FeatureX %THEN keep %END";
+        assert!(preprocess(a, &Env::empty()).unwrap().contains("keep"), "VALIDVERSION: must define its name");
+
+        let b = "<*/VALIDVER:FeatureY*>\n%IF FeatureY %THEN keep %END";
+        assert!(preprocess(b, &Env::empty()).unwrap().contains("keep"), "VALIDVER: must define its name");
+    }
+
+    #[test]
+    fn non_ascii_directive_string_compares_correctly() {
+        // Regression: read_expr_then rebuilt the directive-expression text
+        // via `buf.push(c as char)` for a raw u8 — for any byte >= 0x80 (a
+        // UTF-8 continuation/lead byte) this reinterprets it as Latin-1 and
+        // re-encodes a DIFFERENT, wrong multi-byte sequence, so a non-ASCII
+        // string literal inside a %IF never compared equal to the same text
+        // read normally elsewhere.
+        let mut env = Env::empty();
+        env.define_value("Flavor", "café");
+        let s = "%IF Flavor = \"café\" %THEN keep %END";
+        let out = preprocess(s, &env).unwrap();
+        assert!(out.contains("keep"), "non-ASCII string comparison must succeed: {out:?}");
     }
 
     #[test]
