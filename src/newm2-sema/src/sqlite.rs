@@ -42,6 +42,12 @@ unsafe extern "C" {
     fn sqlite3_step(stmt: *mut c_void) -> c_int;
     fn sqlite3_column_text(stmt: *mut c_void, col: c_int) -> *const u8;
     fn sqlite3_finalize(stmt: *mut c_void) -> c_int;
+    /// Iterates a connection's currently-PREPARED-BUT-NOT-YET-FINALIZED
+    /// statements; `prev=null` returns the first one, or null if there are
+    /// none. Test-only: lets a test directly observe a leaked statement
+    /// instead of inferring it indirectly.
+    #[cfg(test)]
+    fn sqlite3_next_stmt(db: *mut c_void, prev: *mut c_void) -> *mut c_void;
 }
 
 /// An open, read-only SQLite connection. Opened with FULLMUTEX so the handle is
@@ -115,8 +121,15 @@ impl Sqlite {
 
     /// First row's column 0, binding each string in `binds` at ?1, ?2, … in order.
     pub fn query_one_binds(&self, sql: &str, binds: &[&str]) -> Option<String> {
-        let stmt = self.prepare(sql)?;
+        // Convert the binds BEFORE preparing the statement: if any bind
+        // string has an embedded NUL, CString::new fails and the `?` used to
+        // return here directly — but by then `stmt` had already been
+        // successfully prepared (below) and this early return skipped its
+        // sqlite3_finalize, leaking it. Every other exit path in this file
+        // finalizes its statement; validate first so there's nothing to leak
+        // if conversion fails.
         let cstrs: Vec<CString> = binds.iter().map(|b| CString::new(*b)).collect::<Result<_, _>>().ok()?;
+        let stmt = self.prepare(sql)?;
         let mut out = None;
         unsafe {
             for (i, cb) in cstrs.iter().enumerate() {
@@ -151,6 +164,13 @@ impl Sqlite {
         }
         out
     }
+
+    /// `true` if this connection has any prepared-but-not-yet-finalized
+    /// statement outstanding. Test-only leak detector.
+    #[cfg(test)]
+    fn has_outstanding_statement(&self) -> bool {
+        !unsafe { sqlite3_next_stmt(self.db, ptr::null_mut()) }.is_null()
+    }
 }
 
 unsafe fn column0(stmt: *mut c_void) -> Option<String> {
@@ -159,4 +179,75 @@ unsafe fn column0(stmt: *mut c_void) -> Option<String> {
         return None;
     }
     Some(unsafe { CStr::from_ptr(p as *const c_char) }.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A throwaway on-disk database (SQLite needs a real file for
+    /// SQLITE_OPEN_READONLY — an in-memory `:memory:` db can't be opened
+    /// read-only, since it starts with no schema to read).
+    struct ScratchDb(std::path::PathBuf);
+    impl ScratchDb {
+        fn new() -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("newm2-sqlite-test-{}-{n}.sqlite", std::process::id()));
+            // Create + populate via the sqlite3 CLI-free route: open
+            // read-write just long enough to create a trivial table, matching
+            // how a real caller would never do this (cocoa.sqlite is
+            // pre-built) — test setup only.
+            let raw = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            let mut db: *mut c_void = ptr::null_mut();
+            unsafe {
+                sqlite3_open_v2(raw.as_ptr(), &mut db, 0x00000002 | 0x00000004, ptr::null()); // READWRITE|CREATE
+                let sql = c"CREATE TABLE t(name TEXT); INSERT INTO t VALUES('ok');";
+                unsafe extern "C" {
+                    fn sqlite3_exec(
+                        db: *mut c_void,
+                        sql: *const c_char,
+                        cb: *mut c_void,
+                        arg: *mut c_void,
+                        errmsg: *mut *mut c_char,
+                    ) -> c_int;
+                }
+                sqlite3_exec(db, sql.as_ptr(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+                sqlite3_close(db);
+            }
+            ScratchDb(path)
+        }
+    }
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn query_one_binds_round_trips() {
+        let db = ScratchDb::new();
+        let conn = Sqlite::open(&db.0).expect("open");
+        let got = conn.query_one_binds("SELECT name FROM t WHERE name = ?1", &["ok"]);
+        assert_eq!(got.as_deref(), Some("ok"));
+        assert!(!conn.has_outstanding_statement(), "the successful path must finalize its statement");
+    }
+
+    #[test]
+    fn query_one_binds_with_embedded_nul_does_not_leak_the_prepared_statement() {
+        // Regression: an embedded NUL makes CString::new fail; the old code
+        // prepared the statement FIRST and only converted binds afterward,
+        // so this early-return path skipped sqlite3_finalize entirely.
+        let db = ScratchDb::new();
+        let conn = Sqlite::open(&db.0).expect("open");
+        let bad = "has\0a-nul";
+        let got = conn.query_one_binds("SELECT name FROM t WHERE name = ?1", &[bad]);
+        assert!(got.is_none(), "an embedded NUL must fail the bind, not silently match");
+        assert!(
+            !conn.has_outstanding_statement(),
+            "the prepared statement must not leak when bind conversion fails"
+        );
+    }
 }

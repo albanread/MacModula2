@@ -204,7 +204,35 @@ mod imp_unix {
 
     static IN_HANDLER: AtomicBool = AtomicBool::new(false);
 
+    /// Bound on how long the handler below is allowed to run before the
+    /// watchdog force-terminates the process. `backtrace()`/`dladdr()`
+    /// (called below) are NOT on the POSIX async-signal-safe list — despite
+    /// this module's own doc comment claiming otherwise — and can self-
+    /// deadlock if the fault occurred while the faulting thread already held
+    /// the allocator arena lock (backtrace() can lazily allocate its unwind
+    /// cache) or the dynamic linker's image lock (dladdr()). A crash
+    /// originating from heap corruption is exactly the case most likely to
+    /// hit this. Rather than rewrite the stack walk to avoid libc entirely
+    /// (a bigger, riskier change to code whose whole job is being reliable
+    /// during a crash), bound the risk: if the handler doesn't finish within
+    /// this many seconds, the watchdog kills the process instead of hanging
+    /// forever with no crash report at all.
+    const HANDLER_TIMEOUT_SECS: u32 = 5;
+
+    /// SIGALRM handler for the watchdog above. Async-signal-safe: `_exit`
+    /// terminates immediately with no library/atexit cleanup that could
+    /// itself hang.
+    unsafe extern "C" fn watchdog_handler(_sig: i32) {
+        unsafe { libc::_exit(134) }; // 128 + SIGABRT, the conventional "died from a signal" code
+    }
+
     unsafe extern "C" fn handler(sig: i32, info: *mut libc::siginfo_t, _ctx: *mut c_void) {
+        // alarm() is itself async-signal-safe (a bare syscall, no allocation)
+        // — arm the watchdog before doing anything else, including before
+        // the re-entrancy check, so a hang on ANY path through this handler
+        // is bounded.
+        unsafe { libc::alarm(HANDLER_TIMEOUT_SECS) };
+
         // Re-entrancy (a fault while dumping): go straight to default.
         if IN_HANDLER.swap(true, Ordering::SeqCst) {
             unsafe {
@@ -313,6 +341,13 @@ mod imp_unix {
             ] {
                 libc::sigaction(s, &sa, core::ptr::null_mut());
             }
+
+            // The watchdog for `handler`'s own HANDLER_TIMEOUT_SECS alarm.
+            let mut alarm_sa: libc::sigaction = core::mem::zeroed();
+            alarm_sa.sa_sigaction = watchdog_handler as libc::sighandler_t;
+            alarm_sa.sa_flags = 0;
+            libc::sigemptyset(&mut alarm_sa.sa_mask);
+            libc::sigaction(libc::SIGALRM, &alarm_sa, core::ptr::null_mut());
         });
     }
 
@@ -324,6 +359,89 @@ mod imp_unix {
     #[unsafe(no_mangle)]
     pub extern "C-unwind" fn nm2_finalize_jit_symbols() {
         super::finalize_jit_symbols();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::process::ExitStatusExt;
+        use std::time::{Duration, Instant};
+
+        /// A real crash still gets handled and the process terminates
+        /// promptly — regression check that arming the new watchdog alarm at
+        /// handler entry doesn't slow down or break the ordinary (non-hung)
+        /// path. Subprocess-based: a real SIGSEGV is fatal to the process.
+        #[test]
+        fn crash_handler_terminates_promptly_on_a_real_segfault() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let t0 = Instant::now();
+            let status = std::process::Command::new(exe)
+                .args(["--exact", "crash::imp_unix::tests::__segfault_child", "--nocapture"])
+                .env("NM2_CRASH_SEGFAULT_CHILD", "1")
+                .status()
+                .expect("failed to spawn child test process");
+            let elapsed = t0.elapsed();
+            assert!(!status.success(), "child should have crashed");
+            assert_eq!(status.signal(), Some(libc::SIGSEGV), "expected SIGSEGV, got {status:?}");
+            assert!(
+                elapsed < Duration::from_secs(HANDLER_TIMEOUT_SECS as u64),
+                "a real crash must be reported well within the watchdog window, took {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn __segfault_child() {
+            if std::env::var_os("NM2_CRASH_SEGFAULT_CHILD").is_none() {
+                return;
+            }
+            nm2_install_crash_handler();
+            unsafe {
+                let p: *mut i32 = std::ptr::null_mut();
+                std::ptr::write_volatile(p, 1); // deliberate SIGSEGV
+            }
+            unreachable!("segfault did not fire");
+        }
+
+        /// Validates the actual mechanism the fix relies on — arm(N) + a
+        /// SIGALRM handler calling `_exit` really does force-terminate a
+        /// process that doesn't complete in time — independent of the
+        /// (very hard to safely simulate) exact malloc/dyld self-deadlock
+        /// scenario this guards against in the real handler.
+        #[test]
+        fn armed_alarm_force_terminates_a_stuck_process() {
+            let exe = std::env::current_exe().expect("current_exe");
+            let t0 = Instant::now();
+            let status = std::process::Command::new(exe)
+                .args(["--exact", "crash::imp_unix::tests::__stuck_child", "--nocapture"])
+                .env("NM2_CRASH_STUCK_CHILD", "1")
+                .status()
+                .expect("failed to spawn child test process");
+            let elapsed = t0.elapsed();
+            assert!(status.code() == Some(134), "expected the watchdog's exit code 134, got {status:?}");
+            assert!(
+                elapsed < Duration::from_secs(10),
+                "the watchdog must fire well before a real hang would, took {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn __stuck_child() {
+            if std::env::var_os("NM2_CRASH_STUCK_CHILD").is_none() {
+                return;
+            }
+            unsafe {
+                let mut sa: libc::sigaction = core::mem::zeroed();
+                sa.sa_sigaction = watchdog_handler as libc::sighandler_t;
+                sa.sa_flags = 0;
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(libc::SIGALRM, &sa, core::ptr::null_mut());
+                libc::alarm(1); // short, for a fast test — real use is HANDLER_TIMEOUT_SECS
+            }
+            // Simulate a handler that never returns (the self-deadlock case).
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
     }
 }
 

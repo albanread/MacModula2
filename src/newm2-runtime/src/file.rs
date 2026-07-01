@@ -8,8 +8,10 @@
 //! Errors are reported by handle = 0 (Open) or by a non-zero status
 //! code through `*VAR res` parameters on read/write.
 
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::sync::{LazyLock, Mutex};
 
 /// Open-flag bits the M2 side passes in. Stay in sync with the
 /// `FileFlags` set in the rtdef.
@@ -20,19 +22,30 @@ pub mod flags {
     pub const NEW:   u64 = 1 << 3;  // create / truncate
 }
 
+/// Handles currently backed by a live boxed `File` — a bare `u64` on the M2
+/// side carries no lifetime, so a caller invoking `NM2.File.Close` twice with
+/// the same handle (or reading/writing/seeking after Close) would otherwise
+/// `Box::from_raw`/dereference an already-freed pointer: undefined behaviour
+/// (double free / use-after-free), not merely a logic error. Every handle is
+/// registered on open and removed on close; anything else treats an
+/// unregistered handle as invalid instead of trusting the raw pointer.
+static LIVE_HANDLES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Box-leak a File and return its address as a 64-bit handle.
 fn handle_of(f: File) -> u64 {
-    Box::into_raw(Box::new(f)) as u64
+    let h = Box::into_raw(Box::new(f)) as u64;
+    LIVE_HANDLES.lock().unwrap().insert(h);
+    h
 }
 
-/// Reconstruct a `&mut File` from a handle. Returns `None` for 0
-/// (the "no handle" sentinel).
+/// Reconstruct a `&mut File` from a handle. Returns `None` for 0 (the "no
+/// handle" sentinel) or a handle that isn't currently live (already closed,
+/// or never valid) instead of dereferencing a dangling pointer.
 unsafe fn handle_to<'a>(h: u64) -> Option<&'a mut File> {
-    if h == 0 {
-        None
-    } else {
-        Some(unsafe { &mut *(h as *mut File) })
+    if h == 0 || !LIVE_HANDLES.lock().unwrap().contains(&h) {
+        return None;
     }
+    Some(unsafe { &mut *(h as *mut File) })
 }
 
 /// `NM2.File.Open(name_ptr, flags) -> handle (0 on error)`
@@ -87,13 +100,20 @@ pub unsafe extern "C-unwind" fn nm2_file_open(
 
 /// `NM2.File.Close(handle)`
 ///
-/// Releases the underlying file. A zero handle is a no-op.
+/// Releases the underlying file. A zero handle is a no-op, and so is a
+/// handle that isn't currently live (already closed, or never valid) —
+/// `Box::from_raw`-ing the same pointer twice is undefined behaviour, so this
+/// checks (and atomically claims) the handle's liveness first instead of
+/// trusting the caller never repeats a Close.
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn nm2_file_close(h: u64) {
     if h == 0 {
         return;
     }
-    let _ = unsafe { Box::from_raw(h as *mut File) };
+    let was_live = LIVE_HANDLES.lock().unwrap().remove(&h);
+    if was_live {
+        let _ = unsafe { Box::from_raw(h as *mut File) };
+    }
 }
 
 /// `NM2.File.Read(handle, addr, max) -> bytes_read`
@@ -320,6 +340,43 @@ mod tests {
         assert_eq!(got, data.len() as u64);
         assert_eq!(&buf[..data.len()], data);
         unsafe { nm2_file_close(h2) };
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn double_close_is_a_safe_no_op_not_a_double_free() {
+        // Regression: nm2_file_close used to unconditionally Box::from_raw
+        // the handle with no bookkeeping of which handles were still live —
+        // closing the same handle twice was a double-free (UB), not merely a
+        // logic error. Under a debug/sanitized allocator this reliably
+        // aborts if the fix regresses; here we also confirm the handle is
+        // rejected as invalid (not silently reused) on the second close.
+        let tmp = std::env::temp_dir().join("nm2_file_test_double_close.txt");
+        let path = wide(tmp.to_str().unwrap());
+        let h = unsafe { nm2_file_open(path.as_ptr(), flags::WRITE | flags::NEW) };
+        assert_ne!(h, 0);
+        unsafe { nm2_file_close(h) };
+        unsafe { nm2_file_close(h) }; // must be a safe no-op, not UB
+        unsafe { nm2_file_close(h) }; // and again, for good measure
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn use_after_close_is_rejected_instead_of_dereferencing_a_freed_handle() {
+        let tmp = std::env::temp_dir().join("nm2_file_test_use_after_close.txt");
+        let path = wide(tmp.to_str().unwrap());
+        let h = unsafe { nm2_file_open(path.as_ptr(), flags::WRITE | flags::NEW) };
+        assert_ne!(h, 0);
+        unsafe { nm2_file_close(h) };
+
+        // Reading/writing a closed handle must be rejected (0 bytes), not
+        // dereference the freed Box.
+        let mut buf = [0u8; 8];
+        let got = unsafe { nm2_file_read(h, buf.as_mut_ptr(), buf.len() as u64) };
+        assert_eq!(got, 0, "a closed handle must not be readable");
+        let n = unsafe { nm2_file_write(h, b"x".as_ptr(), 1) };
+        assert_eq!(n, 0, "a closed handle must not be writable");
+
         let _ = std::fs::remove_file(&tmp);
     }
 }

@@ -420,6 +420,11 @@ const STATE_PARKED:         u8 = 2;
 pub(crate) struct Mutator {
     pub(crate) thread_id:              ThreadId,
     pub(crate) stack_top:              usize,
+    /// The top of the range to scan for THIS park (`stack_top` normally, or a
+    /// currently-running coroutine's own stack top — see `effective_stack_top`
+    /// below). Updated by this thread itself right before it parks, so no
+    /// cross-thread thread-local access is ever needed.
+    pub(crate) active_stack_top:       AtomicUsize,
     pub(crate) state:                  AtomicU8,
     pub(crate) parked_sp:              AtomicUsize,
     /// Callee-saved register spill captured at park time.
@@ -532,14 +537,39 @@ fn ensure_mutator() -> Arc<Mutator> {
     if let Some(m) = MUTATOR_HANDLE.with(|tls| tls.handle.borrow().clone()) {
         return m;
     }
-    let stack_top = BOOTSTRAP_STACK_BASE.load(Ordering::Acquire);
+    // A thread that calls into the GC without first explicitly calling
+    // nm2_register_thread(stack_top) — any secondary thread the M2 program
+    // itself spawns, for instance. Registering it with the BOOTSTRAP
+    // thread's stack_top was wrong: that's a different thread's stack
+    // entirely, at a different address range. run_collect_cycle's scan skips
+    // whenever `sp >= top` (gc.rs), so this thread's real stack — and
+    // anything reachable only from a pointer live on it — was silently never
+    // scanned; a GC could free an object this thread was still using.
+    // Query the CURRENT thread's own real stack bounds instead.
+    let stack_top = current_thread_stack_top().unwrap_or_else(|| {
+        BOOTSTRAP_STACK_BASE.load(Ordering::Acquire)
+    });
     register_thread_inner(stack_top)
+}
+
+/// The current thread's own stack top (the high address; the stack grows
+/// down from here), via the same macOS pthread API `nm2_init_gc`'s caller
+/// effectively supplies for the bootstrap thread. `None` only if the
+/// underlying pthread call itself fails (unheard of in practice) — the
+/// caller falls back to the bootstrap thread's stack_top, matching the prior
+/// (wrong but at least not-a-hard-crash) behavior in that vanishingly rare case.
+fn current_thread_stack_top() -> Option<usize> {
+    unsafe {
+        let addr = libc::pthread_get_stackaddr_np(libc::pthread_self());
+        if addr.is_null() { None } else { Some(addr as usize) }
+    }
 }
 
 fn register_thread_inner(stack_top: usize) -> Arc<Mutator> {
     let m = Arc::new(Mutator {
         thread_id: std::thread::current().id(),
         stack_top,
+        active_stack_top: AtomicUsize::new(stack_top),
         state: AtomicU8::new(STATE_RUNNING),
         parked_sp: AtomicUsize::new(0),
         spill: Mutex::new([0usize; 16]),
@@ -589,12 +619,23 @@ static GC_PRESSURE_THRESHOLD:    AtomicU64 = AtomicU64::new(DEFAULT_PRESSURE_THR
 /// captures RSP, marks state as Parked, waits on `SAFEPOINT_CONDVAR` until
 /// the collector clears the flag.
 #[inline(never)]
+/// The top of the range to conservatively scan for this thread right now:
+/// a currently-running coroutine's OWN stack top if we're executing inside
+/// one (coroutine stacks are separate heap/mmap allocations, nowhere near the
+/// OS thread's own stack — scanning up to `os_stack_top` from a coroutine's
+/// stack pointer would walk a huge, likely-unmapped range instead of the
+/// coroutine's own live locals), else the OS thread's own stack top.
+fn effective_stack_top(os_stack_top: usize) -> usize {
+    crate::coroutine::current_stack_range().map(|(_, top)| top).unwrap_or(os_stack_top)
+}
+
 fn park_self() {
     let m = ensure_mutator();
     let mut spill_buf = [0usize; 16];
     let sp = capture_sp(&mut spill_buf);
     if let Ok(mut buf) = m.spill.lock() { *buf = spill_buf; }
     m.parked_sp.store(sp, Ordering::Release);
+    m.active_stack_top.store(effective_stack_top(m.stack_top), Ordering::Release);
     m.state.store(STATE_PARKED, Ordering::SeqCst);
     m.park_count.fetch_add(1, Ordering::Relaxed);
     let mut guard = SAFEPOINT_LOCK.lock().unwrap();
@@ -938,6 +979,7 @@ fn collect_stw(initiator: &Arc<Mutator>, sp: usize, spill: &[usize; 16]) {
     // Park self first to avoid deadlocking a concurrent collector.
     if let Ok(mut buf) = initiator.spill.lock() { *buf = *spill; }
     initiator.parked_sp.store(sp, Ordering::Release);
+    initiator.active_stack_top.store(effective_stack_top(initiator.stack_top), Ordering::Release);
     initiator.state.store(STATE_PARKED, Ordering::SeqCst);
 
     // Request safepoint and wait for every other mutator to park.
@@ -970,6 +1012,20 @@ fn collect_stw(initiator: &Arc<Mutator>, sp: usize, spill: &[usize; 16]) {
         (s, pending)
     };
 
+    // Run finalizers BEFORE resuming any other mutator. cluster_sweep already
+    // linked every dead block — including finalizer-bearing ones — onto its
+    // cluster's free list, so the instant another mutator resumes it can
+    // nm2_new_rec a fresh object into that exact address; if finalizers ran
+    // after resume (as before), that race let a live object be allocated into
+    // memory the old object's finalizer then read/wrote as if it were still
+    // the dead object, corrupting the live one. Finalizer bodies here don't
+    // need other mutators running (they act on the dead object's own payload,
+    // e.g. releasing an external handle), so this only costs a slightly
+    // longer stop-the-world pause, never correctness.
+    for (fin, payload) in pending_finalizers {
+        unsafe { fin(payload) };
+    }
+
     // Resume all mutators.
     SAFEPOINT_REQUESTED.store(0, Ordering::SeqCst);
     initiator.state.store(STATE_RUNNING, Ordering::SeqCst);
@@ -977,11 +1033,6 @@ fn collect_stw(initiator: &Arc<Mutator>, sp: usize, spill: &[usize; 16]) {
     {
         let _g = SAFEPOINT_LOCK.lock().unwrap();
         SAFEPOINT_CONDVAR.notify_all();
-    }
-
-    // Run finalizers outside the safepoint window.
-    for (fin, payload) in pending_finalizers {
-        unsafe { fin(payload) };
     }
 
     let elapsed = t0.elapsed().as_nanos() as u64;
@@ -1033,10 +1084,14 @@ fn run_collect_cycle(heap: &mut Heap, mutators: &[Arc<Mutator>]) -> CollectSumma
 
     let mut summary = CollectSummary::default();
 
-    // Conservative scan: each parked mutator's stack + spill buffer.
+    // Conservative scan: each parked mutator's stack + spill buffer. Uses
+    // active_stack_top (set by the mutator itself just before parking), not
+    // stack_top directly — it's the OS thread's own top normally, but a
+    // currently-running coroutine's own stack top if that's what this thread
+    // was actually executing on when it parked.
     for m in mutators {
         let sp  = m.parked_sp.load(Ordering::Acquire);
-        let top = m.stack_top;
+        let top = m.active_stack_top.load(Ordering::Acquire);
         if sp == 0 || top == 0 || sp >= top { continue; }
         let word = std::mem::size_of::<usize>();
         let mut cursor = sp;
@@ -1406,6 +1461,15 @@ fn walk_free_list(cluster: &Cluster) -> (u64, u64) {
 mod tests {
     use super::*;
 
+    /// The GC's mutator registry / heap / cluster set are process-global
+    /// singletons, but `cargo test` runs test functions concurrently on
+    /// separate threads by default. Any test that actually exercises
+    /// allocation/collection (not just a self-contained atomic flag) must hold
+    /// this for its duration, or two such tests can race on the same global
+    /// heap and crash the test binary (observed: SIGBUS) — not a bug in the
+    /// GC itself, just an artifact of tests sharing one process-wide heap.
+    static GC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Minimal TypeDesc for test allocations.
     /// `ptroffs` is just the sentinel [-1].
     #[repr(C)]
@@ -1430,6 +1494,7 @@ mod tests {
 
     #[test]
     fn alloc_one_block() {
+        let _guard = GC_TEST_LOCK.lock().unwrap();
         // nm2_init_gc registers the test thread.
         let stack_dummy = 0usize;
         unsafe { nm2_init_gc((&stack_dummy as *const usize) as *const u8) };
@@ -1442,6 +1507,10 @@ mod tests {
 
     #[test]
     fn safepoint_noop_when_no_gc_requested() {
+        // Shares the global SAFEPOINT_REQUESTED flag with collect_stw's own
+        // park/resume protocol — must not run concurrently with a test that's
+        // mid-collection, or this can clear the flag out from under it.
+        let _guard = GC_TEST_LOCK.lock().unwrap();
         release_gc_stop(); // ensure flag is clear
         nm2_safepoint();
         // no hang = pass
@@ -1449,6 +1518,7 @@ mod tests {
 
     #[test]
     fn request_release_roundtrip() {
+        let _guard = GC_TEST_LOCK.lock().unwrap();
         request_gc_stop();
         assert_ne!(SAFEPOINT_REQUESTED.load(Ordering::Relaxed), 0);
         release_gc_stop();
@@ -1470,11 +1540,146 @@ mod tests {
 
     #[test]
     fn counters_increment_on_alloc() {
+        let _guard = GC_TEST_LOCK.lock().unwrap();
         let before = HEAP_COUNTERS.alloc_blocks_lifetime.load(Ordering::Relaxed);
         let stack_dummy = 0usize;
         unsafe { nm2_init_gc((&stack_dummy as *const usize) as *const u8) };
         unsafe { nm2_new_rec(&TEST_TD.header as *const TypeDesc) };
         let after = HEAP_COUNTERS.alloc_blocks_lifetime.load(Ordering::Relaxed);
         assert!(after > before);
+    }
+
+    /// A resumed mutator must never be able to reallocate a swept block while
+    /// its finalizer is still mid-flight: `collect_stw` must run every pending
+    /// finalizer BEFORE resuming any other mutator, not after (the bug this
+    /// guards: `cluster_sweep` already links a finalizer-bearing dead block onto
+    /// its free list, so the instant another mutator resumes it can `nm2_new_rec`
+    /// straight into that address).
+    ///
+    /// A second mutator thread spins on the real safepoint protocol
+    /// (`nm2_safepoint`/`park_self`); the moment its own `park_count` advances —
+    /// i.e. the exact instant `collect_stw` resumes it — it checks whether the
+    /// slow finalizer (which sleeps to widen the race window) has already
+    /// completed, then immediately tries to allocate the same-sized block.
+    #[test]
+    fn finalizer_completes_before_mutators_resume() {
+        let _guard = GC_TEST_LOCK.lock().unwrap();
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        static FINALIZER_STARTED: AtomicBool = AtomicBool::new(false);
+        static FINALIZER_DONE: AtomicBool = AtomicBool::new(false);
+        static VIOLATION: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn slow_finalizer(_payload: *mut u8) {
+            FINALIZER_STARTED.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(30)); // widen the race window
+            FINALIZER_DONE.store(true, Ordering::SeqCst);
+        }
+
+        #[repr(C)]
+        struct FinTypeDesc {
+            header: TypeDesc,
+            ptroffs_sentinel: isize,
+        }
+        static FIN_TD: FinTypeDesc = FinTypeDesc {
+            header: TypeDesc {
+                size: 32,
+                module: std::ptr::null(),
+                finalizer: Some(slow_finalizer),
+                base: std::ptr::null(),
+                vtable: std::ptr::null(),
+                vtable_len: 0,
+                name: std::ptr::null(),
+                ptroffs: [],
+            },
+            ptroffs_sentinel: -1,
+        };
+
+        // Conservative GC scans this thread's whole [sp, stack_top) range, so a
+        // stale copy of the allocated pointer left over in an unused stack slot
+        // from an earlier call would keep it "reachable" forever. Overwrite that
+        // range with non-pointer-looking bytes after the allocation falls out of
+        // scope, before triggering the collection, exactly as any conservative-GC
+        // test must.
+        #[inline(never)]
+        fn clobber_stack() {
+            let buf = [0xABu8; 8192];
+            std::hint::black_box(&buf);
+        }
+
+        let stack_dummy = 0usize;
+        unsafe { nm2_init_gc((&stack_dummy as *const usize) as *const u8) };
+        // Allocate, then let it fall out of scope with no root retaining it.
+        unsafe { nm2_new_rec(&FIN_TD.header as *const TypeDesc) };
+        clobber_stack();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let handle = std::thread::spawn(move || {
+            let sd = 0usize;
+            unsafe { nm2_init_gc((&sd as *const usize) as *const u8) };
+            let m = ensure_mutator();
+            let mut seen_park = m.park_count.load(Ordering::Relaxed);
+            while !stop2.load(Ordering::Relaxed) {
+                nm2_safepoint();
+                let now = m.park_count.load(Ordering::Relaxed);
+                if now > seen_park {
+                    seen_park = now;
+                    // The exact moment collect_stw resumed us.
+                    if FINALIZER_STARTED.load(Ordering::SeqCst)
+                        && !FINALIZER_DONE.load(Ordering::SeqCst)
+                    {
+                        VIOLATION.store(true, Ordering::SeqCst);
+                    }
+                    unsafe { nm2_new_rec(&FIN_TD.header as *const TypeDesc) };
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        });
+
+        // Let the second thread register and start spinning on the safepoint.
+        std::thread::sleep(Duration::from_millis(20));
+        collect();
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+
+        assert!(FINALIZER_DONE.load(Ordering::SeqCst), "finalizer never ran");
+        assert!(
+            !VIOLATION.load(Ordering::SeqCst),
+            "a mutator resumed and reallocated before the finalizer had completed"
+        );
+    }
+
+    /// A secondary thread that never calls `nm2_register_thread` explicitly
+    /// must still get its OWN stack bounds when it first touches the GC
+    /// (via `ensure_mutator`), not the bootstrap thread's. Registering it
+    /// with the wrong (bootstrap) stack_top made `sp >= top` true for
+    /// virtually every real access on that thread's real stack, so
+    /// `run_collect_cycle` silently skipped scanning it entirely — any
+    /// object reachable only from that thread's stack could be collected
+    /// out from under it.
+    #[test]
+    fn secondary_thread_registers_its_own_stack_not_the_bootstrap_threads() {
+        let _guard = GC_TEST_LOCK.lock().unwrap();
+        let stack_dummy = 0usize;
+        unsafe { nm2_init_gc((&stack_dummy as *const usize) as *const u8) };
+        let bootstrap_top = BOOTSTRAP_STACK_BASE.load(Ordering::Acquire);
+
+        let handle = std::thread::spawn(move || {
+            // Deliberately do NOT call nm2_init_gc/nm2_register_thread here —
+            // this is exactly the "a thread calls into the GC without
+            // explicit registration" scenario.
+            let m = ensure_mutator();
+            m.stack_top
+        });
+        let secondary_top = handle.join().unwrap();
+
+        assert_ne!(
+            secondary_top, bootstrap_top,
+            "a secondary thread must get its own stack bounds, not the bootstrap thread's"
+        );
+        assert_ne!(secondary_top, 0, "must resolve a real stack top, not fail silently to 0");
     }
 }
