@@ -2191,6 +2191,96 @@ fn t91_035_indirect_record_return_reject() {
     );
 }
 
+#[test]
+fn t91_036_method_record_return_reject() {
+    // Same arm64 ABI hazard as t-91-035, but for a virtual METHOD call: every
+    // method dispatch is an indirect call (vtable slot / objc_msgSend) just like a
+    // procedure value, so it must be rejected for the same >16-byte non-HFA
+    // record-return shape. Previously unguarded — silently corrupted at runtime.
+    check_run_error(
+        "t-91-036-method-record-return-reject.mod",
+        &["returns a record larger than 16 bytes"],
+    );
+}
+
+#[test]
+fn t91_037_var_initializer_reject() {
+    // `VAR x: T = expr;` had no AST field to carry the initializer and no
+    // sema/codegen consumer — it silently parsed and discarded, compiling as
+    // if uninitialized with no diagnostic. Now a parse error.
+    check_run_error(
+        "t-91-037-var-initializer-reject.mod",
+        &["VAR initializers"],
+    );
+}
+
+#[test]
+fn t91_038_typed_const_reject() {
+    // `CONST x: type = value;` had no AST field for the declared type; sema
+    // always derives the type from the value's own shape, so a disagreeing
+    // declared type was silently accepted and silently ignored. Now a parse
+    // error rather than a silently wrong constant type.
+    check_run_error(
+        "t-91-038-typed-const-reject.mod",
+        &["typed CONST declarations"],
+    );
+}
+
+#[test]
+fn t91_039_except_fallthrough_reject() {
+    // Definite-return analysis only checked the protected body, never
+    // whether an EXCEPT handler itself falls through without RETURN — a
+    // handler is a real control-flow path (a runtime exception mid-body
+    // reaches it). `BEGIN RETURN 1 EXCEPT END` was wrongly accepted as
+    // always-returning; now rejected.
+    check_run_error(
+        "t-91-039-except-fallthrough-reject.mod",
+        &["can reach its end without executing a RETURN"],
+    );
+}
+
+#[test]
+fn t91_040_with_const_bypass_reject() {
+    // WITH's read-only check missed a CONST-parameter (or GUARD-arm-bound)
+    // record designator: `WITH r DO field := x END` inside `PROCEDURE
+    // P(CONST r: T)` was silently accepted, unlike the equivalent `r.field :=
+    // x` written directly (already correctly rejected).
+    check_run_error(
+        "t-91-040-with-const-bypass-reject.mod",
+        &["cannot assign to a"],
+    );
+}
+
+#[test]
+fn t91_041_capture_via_postfix() {
+    // collect_refs_expr (capture analysis for nested procedures) only matched
+    // Designator/Call/Binary/Unary/Set; a variable referenced only inside a
+    // Postfix expression (or an ObjcSend) fell into the catch-all and was
+    // never captured — the nested procedure read garbage instead of the
+    // enclosing variable. Verified this exact test prints garbage without the
+    // fix and 42 with it.
+    check("t-91-041-capture-via-postfix.mod", "42\n");
+}
+
+#[test]
+fn t91_042_achar_aggregate_copy() {
+    // lower_aggregate_constructor's string-into-fixed-char-array hazard check
+    // only recognized wide Char/Uchar array elements; a narrow ACHAR slot fell
+    // to a plain Store, writing a string literal's raw pointer bits into the
+    // record instead of copying its characters. Verified this exact test
+    // prints a garbage byte without the fix and 49 ('1') with it.
+    check("t-91-042-achar-aggregate-copy.mod", "49\n");
+}
+
+#[test]
+fn t91_043_ismember_type_value_direction() {
+    // ISMEMBER(TYPE p1, VALUE p2) on macOS called isKindOfClass(p2, p1) —
+    // computing class(p2) <= p1, the reverse of the documented p1 <=
+    // class(p2). Verified this exact test prints "YYY" (always true) without
+    // the fix and the correct "NY" with it (nm2_objc_class_is_ancestor_of).
+    check("t-91-043-ismember-type-value-direction.mod", "NY\n");
+}
+
 
 
 #[test]
@@ -2211,5 +2301,4 @@ fn t91_033_iface_iid_rejects() {
         &["interface IID", "must declare an IID"],
     );
 }
-
 
