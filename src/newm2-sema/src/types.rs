@@ -175,11 +175,20 @@ impl Builtin {
             Adrcard => "ADRCARD",
             Achar => "ACHAR",
             Uchar => "UCHAR",
-            SysAddress => "ADDRESS",
+            // SYSTEM-namespaced twins of a pervasive type get a distinct name:
+            // `Builtin::name()` must be injective, since `builtin_by_name` is
+            // its exact inverse (used to re-intern a builtin from the `.m2i`
+            // interface cache). It previously wasn't — SysWord collided with
+            // Word under the bare name "WORD" despite being a DIFFERENT size
+            // (Word is 2 bytes, SysWord is 8), so re-interning a `TYPE X =
+            // SYSTEM.WORD;` from a cache-hit could nondeterministically pick
+            // either variant's TypeId (HashMap iteration order), silently
+            // changing SIZE(X) and every offset/ABI decision downstream.
+            SysAddress => "SYSTEM.ADDRESS",
             SysLoc => "LOC",
-            SysByte => "BYTE",
-            SysWord => "WORD",
-            SysBitset => "BITSET",
+            SysByte => "SYSTEM.BYTE",
+            SysWord => "SYSTEM.WORD",
+            SysBitset => "SYSTEM.BITSET",
         }
     }
 
@@ -382,6 +391,10 @@ impl TypeArena {
 
     /// Look up a pre-interned builtin by its source name (e.g. "INTEGER32").
     /// Used when re-interning a cached interface, where types arrive as names.
+    /// Correct only because `Builtin::name()` is injective (each variant has a
+    /// distinct name, including the SYSTEM-namespaced twins) — otherwise this
+    /// `find` over a `HashMap`'s unspecified iteration order could return
+    /// either of two colliding variants nondeterministically.
     pub fn builtin_by_name(&self, name: &str) -> Option<TypeId> {
         self.builtins.iter().find(|(b, _)| b.name() == name).map(|(_, &id)| id)
     }
@@ -473,6 +486,46 @@ mod tests {
         assert!(Builtin::Char.is_ordinal());
         assert!(Builtin::Boolean.is_ordinal());
         assert!(!Builtin::Real.is_ordinal());
+    }
+
+    #[test]
+    fn builtin_name_is_injective() {
+        // Builtin::name() must be 1:1 — it doubles as the .m2i interface-cache
+        // serialization key (builtin_by_name is its exact inverse). A
+        // collision here (Word/SysWord both said "WORD" despite Word being 2
+        // bytes and SysWord 8) let re-interning a cached interface
+        // nondeterministically pick either variant's TypeId, silently
+        // changing SIZE()/offsets/ABI classification for anything using it.
+        let all = [
+            Builtin::Boolean, Builtin::Char, Builtin::Integer, Builtin::Cardinal,
+            Builtin::Real, Builtin::LongInt, Builtin::LongCard, Builtin::LongReal,
+            Builtin::Real32, Builtin::Real16, Builtin::Bitset, Builtin::Proc, Builtin::Nil,
+            Builtin::Complex, Builtin::LongComplex,
+            Builtin::Integer8, Builtin::Integer16, Builtin::Integer32, Builtin::Integer64,
+            Builtin::Cardinal8, Builtin::Cardinal16, Builtin::Cardinal32, Builtin::Cardinal64,
+            Builtin::Byte, Builtin::Word, Builtin::Dword, Builtin::Qword,
+            Builtin::Address, Builtin::Adrint, Builtin::Adrcard, Builtin::Achar, Builtin::Uchar,
+            Builtin::SysAddress, Builtin::SysLoc, Builtin::SysByte, Builtin::SysWord,
+            Builtin::SysBitset,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for b in all {
+            assert!(seen.insert(b.name()), "Builtin::name() collision on {:?} -> {:?}", b, b.name());
+        }
+    }
+
+    #[test]
+    fn builtin_by_name_resolves_word_and_sysword_distinctly_and_correctly_sized() {
+        // The exact regression: re-interning "WORD" vs "SYSTEM.WORD" from a
+        // cached interface must deterministically return the matching
+        // variant, with its correct (different) size — not either one at
+        // random.
+        let a = TypeArena::new();
+        let word = a.builtin_by_name("WORD").expect("WORD must resolve");
+        let sysword = a.builtin_by_name("SYSTEM.WORD").expect("SYSTEM.WORD must resolve");
+        assert_ne!(word, sysword, "Word and SysWord must be distinct TypeIds");
+        assert_eq!(a.get(word), &TypeKind::Builtin(Builtin::Word));
+        assert_eq!(a.get(sysword), &TypeKind::Builtin(Builtin::SysWord));
     }
 
     #[test]
