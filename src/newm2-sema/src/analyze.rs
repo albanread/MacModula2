@@ -5413,6 +5413,18 @@ fn analyse_expr(ctx: &mut Ctx, expr: &ast::Expr, scope: ScopeId) -> Option<TypeI
             if callee_sig.is_none() {
                 if let ast::Expr::Designator(d) = callee.as_ref() {
                     if let Some(msig) = method_sig_from_designator(ctx, d) {
+                        // Same arm64 ABI safety guard as the procedure-VALUE case
+                        // above: every virtual method call and Obj-C class-method
+                        // call is lowered as an INDIRECT call (a vtable-slot load,
+                        // or objc_msgSend) — never a direct named-procedure call —
+                        // so it has exactly the same >16-byte-non-HFA-record sret
+                        // hazard a procedure value has. Reject it here too.
+                        if msig.return_ty.is_some_and(|rty| record_passed_indirect(ctx, rty)) {
+                            ctx.error(*span, "cannot call a method that returns a record larger than 16 bytes by value: the arm64 indirect-call ABI would corrupt the result. Return the record through a VAR parameter instead.");
+                        }
+                        if msig.params.iter().any(|p| p.mode == ParamMode::Value && record_passed_indirect(ctx, p.ty)) {
+                            ctx.error(*span, "cannot call a method that takes a record larger than 16 bytes by value: the arm64 indirect-call ABI would corrupt the argument. Pass the record through a VAR parameter instead.");
+                        }
                         analyse_call_args(ctx, args, &msig, *span, scope);
                         if let Some(return_ty) = msig.return_ty {
                             ctx.note_expr_type(*span, return_ty);
@@ -5892,8 +5904,11 @@ fn analyse_proc_body(
     // Definite-return analysis: a function procedure (one with a result type)
     // must not be able to reach the end of its body without executing a
     // RETURN. If normal control flow can fall off the end, the returned value
-    // is undefined — a static error in ISO 10514-1 and PIM 4.
-    if sig.return_ty.is_some() && seq_completes(&body.body.stmts) {
+    // is undefined — a static error in ISO 10514-1 and PIM 4. Must consult
+    // body.body's own EXCEPT/FINALLY too (block_completes), not just its
+    // stmts — a top-level `BEGIN RETURN x EXCEPT END` falls through exactly
+    // like any other unguarded EXCEPT handler.
+    if sig.return_ty.is_some() && block_completes(&body.body) {
         ctx.error(
             p.span,
             &format!(
@@ -5913,6 +5928,31 @@ fn analyse_proc_body(
 /// constructs known to divert control are treated as non-completing.
 fn seq_completes(stmts: &[ast::Stmt]) -> bool {
     stmts.iter().all(stmt_completes)
+}
+
+/// Does a BEGIN…EXCEPT…FINALLY…END block admit a path that falls off its end
+/// without RETURNing? An EXCEPT handler is a REAL control-flow path — if the
+/// protected body raises, execution continues in whichever arm matches, and
+/// if THAT arm falls off its end (no RETURN), the enclosing function
+/// completes without a result exactly as surely as falling off the plain body
+/// would. Previously only the body was checked here (both at this generic
+/// nested-Block site and at the top-level proc-body definite-return check),
+/// so `BEGIN RETURN x EXCEPT END` (no RETURN in the handler) was wrongly
+/// treated as always-returning — no diagnostic, yet a runtime exception
+/// mid-body reaches the handler, falls through, and the function returns
+/// whatever garbage was already in its (uninitialized) result slot.
+///
+/// FINALLY always runs afterward regardless of how body/handler finished; if
+/// IT never falls through (always RETURNs/raises itself), that overrides
+/// everything before it — the block can never complete.
+fn block_completes(b: &ast::Block) -> bool {
+    let body_falls = seq_completes(&b.stmts);
+    let handler_falls = !b.except.is_empty() && b.except.iter().any(|arm| seq_completes(&arm.body));
+    let completes_before_finally = body_falls || handler_falls;
+    match &b.finally {
+        Some(fin) => seq_completes(fin) && completes_before_finally,
+        None => completes_before_finally,
+    }
 }
 
 fn stmt_completes(stmt: &ast::Stmt) -> bool {
@@ -5949,9 +5989,8 @@ fn stmt_completes(stmt: &ast::Stmt) -> bool {
         // LOOP runs forever.
         Loop(body, _) => loop_has_exit(body),
         With(_, body, _) => seq_completes(body),
-        // Nested BEGIN…END block: completes iff its normal body does (EXCEPT/
-        // FINALLY handlers are not treated as return paths here).
-        Block(b) => seq_completes(&b.stmts),
+        // Nested BEGIN…EXCEPT…FINALLY…END block — see block_completes().
+        Block(b) => block_completes(b),
     }
 }
 
@@ -6446,7 +6485,15 @@ fn analyse_stmt(
             let record_ty = analyse_designator(ctx, designator, scope)
                 .map(|ty| record_type_of(ctx, ty));
             // `WITH constRec DO …` makes the record's fields read-only.
-            let readonly = is_readonly_target(ctx, designator, scope);
+            // is_readonly_target alone misses a CONST-parameter (or
+            // GUARD-arm-bound, which is registered the same way) designator —
+            // `WITH r DO field := x END` inside `PROCEDURE P(CONST r: T)` was
+            // silently accepted with no diagnostic, unlike the equivalent
+            // `r.field := x` written directly (correctly rejected). At
+            // runtime the write only ever lands in the callee's local
+            // by-value copy of the CONST record, silently discarding it.
+            let readonly = is_readonly_target(ctx, designator, scope)
+                || is_const_param_target(ctx, designator, scope);
             match record_ty {
                 Some(Some(rec)) => {
                     ctx.with_stack.push((rec, readonly));
