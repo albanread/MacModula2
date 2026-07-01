@@ -52,7 +52,20 @@ pub fn parse_file_with_env(path: &Path, env: &Env) -> Result<ast::Module, LoadEr
 /// so the loader never re-reads a def to compute its hash separately.
 fn parse_def_with_hash(path: &Path, env: &Env) -> Result<(ast::Module, ContentHash), LoadError> {
     let bytes = read_file(path)?;
-    let hash = hash_source(&bytes);
+    // Hash the PREPROCESSED text, not the raw bytes: this hash feeds the
+    // on-disk .m2i interface cache key (symcache::cache_key), and a DEF's
+    // effective declarations depend on `env` via %IF/%ELSIF/%ELSE (--define,
+    // --adw-win64-unicode, ...). Hashing the raw bytes made two compiles of
+    // the identical unmodified file under DIFFERENT Envs collide on the same
+    // cache key, so the second compile silently re-interned the first
+    // compile's (differently-preprocessed) interface — e.g. a stale WORD vs
+    // LONGINT for the same `TYPE X` behind a `%IF` — with no diagnostic.
+    let s = String::from_utf8_lossy(&bytes);
+    let preprocessed = preprocess(&s, env).map_err(|e| LoadError {
+        message: format!("preprocess: {e}"),
+        path: Some(path.to_path_buf()),
+    })?;
+    let hash = hash_source(preprocessed.as_bytes());
     let ast = parse_bytes_with_env(&bytes, path, env)?;
     Ok((ast, hash))
 }

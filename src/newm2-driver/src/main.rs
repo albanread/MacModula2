@@ -315,7 +315,14 @@ fn cache_config(options: &DriverOptions) -> Option<newm2_sema::CacheConfig> {
     }
     Some(newm2_sema::CacheConfig {
         dir: std::env::temp_dir().join("newm2-iface-cache"),
-        codegen_flags: String::new(),
+        // `windows`/`win_source` pick which DEF files get resolved (a real vs
+        // generated Windows API pack) — fold them into the cache key so a
+        // rebuild with a different setting can't re-intern a stale interface
+        // computed under the other one. (`--adw-win64-unicode` and `--define`
+        // are already covered: they flow into `env`, which now shapes the
+        // preprocessed-content hash each DEF is cached under — see
+        // parse_def_with_hash in newm2-loader.)
+        codegen_flags: format!("windows={}:win_source={:?}", options.windows, options.win_source),
         memory_mode: newm2_loader::MemoryMode::Gc,
         read: true,
         write: true,

@@ -210,6 +210,14 @@ fn index_needs_rebuild(newm2_root: &Path, index_path: &Path) -> Result<bool, Loa
     let Ok(index_mtime) = index_meta.modified() else {
         return Ok(true);
     };
+    // `_types.def` names actually indexed by build_win32_finder (flat scan,
+    // same as here) — collected alongside the mtime scan so a DELETED def is
+    // detectable too: "any current file newer than the index" can never see
+    // a deletion, since there's nothing left in the fresh listing to compare
+    // against. Without this, a stale index kept resolving a removed module's
+    // name to a path that no longer exists.
+    let mut current_names: Vec<String> = Vec::new();
+    let mut any_newer_or_added = false;
     for entry in fs::read_dir(newm2_root).map_err(|e| LoadError {
         message: format!("read failed: {e}"),
         path: Some(newm2_root.to_path_buf()),
@@ -218,14 +226,44 @@ fn index_needs_rebuild(newm2_root: &Path, index_path: &Path) -> Result<bool, Loa
             .map_err(|e| LoadError { message: format!("read failed: {e}"), path: None })?
             .path();
         if path.extension().and_then(|e| e.to_str()) == Some("def") {
-            if let Ok(m) = fs::metadata(&path).and_then(|md| md.modified()) {
-                if m > index_mtime {
-                    return Ok(true);
-                }
+            // `>=`, not `>`: some filesystems have only second-granularity
+            // mtimes, so a def written in the same second as (or just after,
+            // depending on rounding) the index file must not be missed.
+            if let Ok(m) = fs::metadata(&path).and_then(|md| md.modified())
+                && m >= index_mtime
+            {
+                any_newer_or_added = true;
             }
         }
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("_types.def"))
+        {
+            current_names.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
     }
-    Ok(false)
+    if any_newer_or_added {
+        return Ok(true);
+    }
+    // Compare against what the index actually recorded — catches deletions
+    // (a name the index has but the current directory no longer does).
+    let Ok(bytes) = fs::read(index_path) else {
+        return Ok(true);
+    };
+    let Ok(finder) = bincode::deserialize::<Win32Finder>(&bytes) else {
+        return Ok(true);
+    };
+    let mut indexed_names: Vec<String> = finder
+        .defs
+        .iter()
+        .map(|(_, rel)| {
+            Path::new(rel).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| rel.clone())
+        })
+        .collect();
+    current_names.sort();
+    indexed_names.sort();
+    Ok(current_names != indexed_names)
 }
 
 /// `DEFINITION MODULE <name>;`
@@ -272,4 +310,73 @@ fn take_ident(s: &str) -> Option<String> {
         }
     }
     (end > 0).then(|| s[..end].to_string())
+}
+
+#[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct ScratchDir(PathBuf);
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir()
+                .join(format!("newm2-win32-finder-test-{tag}-{}-{n}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            ScratchDir(dir)
+        }
+    }
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn deleting_an_indexed_def_forces_a_rebuild() {
+        // Regression: index_needs_rebuild only ever looked for a CURRENT
+        // file newer than the index — a DELETED file has nothing left in the
+        // fresh listing to compare against, so it was invisible, and the
+        // stale index kept resolving the removed module's name to a path
+        // that no longer existed.
+        let scratch = ScratchDir::new("delete");
+        let root = &scratch.0;
+        let index_path = root.join("index.bin");
+        fs::write(root.join("Foo_types.def"), "DEFINITION MODULE Foo;\nEND Foo.\n").unwrap();
+
+        let finder = ensure_win32_finder(root, &index_path).unwrap();
+        assert!(finder.find("Foo").is_some(), "Foo should resolve before deletion");
+
+        fs::remove_file(root.join("Foo_types.def")).unwrap();
+        // Give the filesystem a moment of headroom is unnecessary here: we
+        // detect via the file SET, not just mtime, so no timing dependency.
+        let finder2 = ensure_win32_finder(root, &index_path).unwrap();
+        assert!(finder2.find("Foo").is_none(), "a deleted module must not still resolve");
+    }
+
+    #[test]
+    fn unchanged_directory_does_not_force_a_rebuild() {
+        let scratch = ScratchDir::new("stable");
+        let root = &scratch.0;
+        let index_path = root.join("index.bin");
+        fs::write(root.join("Foo_types.def"), "DEFINITION MODULE Foo;\nEND Foo.\n").unwrap();
+
+        let _ = ensure_win32_finder(root, &index_path).unwrap();
+        assert!(!index_needs_rebuild(root, &index_path).unwrap(), "nothing changed; should not rebuild");
+    }
+
+    #[test]
+    fn adding_a_def_forces_a_rebuild() {
+        let scratch = ScratchDir::new("add");
+        let root = &scratch.0;
+        let index_path = root.join("index.bin");
+        fs::write(root.join("Foo_types.def"), "DEFINITION MODULE Foo;\nEND Foo.\n").unwrap();
+        let _ = ensure_win32_finder(root, &index_path).unwrap();
+
+        fs::write(root.join("Bar_types.def"), "DEFINITION MODULE Bar;\nEND Bar.\n").unwrap();
+        let finder2 = ensure_win32_finder(root, &index_path).unwrap();
+        assert!(finder2.find("Bar").is_some(), "the newly-added module must resolve");
+    }
 }

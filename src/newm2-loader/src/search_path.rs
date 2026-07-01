@@ -32,15 +32,25 @@ impl SearchPath {
     /// Find a module's DEF file by walking the search path. Returns
     /// the first match.
     pub fn find_def(&self, module: &str) -> Option<PathBuf> {
-        // A hand-written `<Module>.def` takes precedence; a generated
-        // `<Module>_types.def` (our own Win32 API defs under `library/NewM2`,
-        // and the reduced windows_api snapshot) is the fallback.
+        // A hand-written `<Module>.def` takes precedence GLOBALLY over a
+        // generated `<Module>_types.def` (our own Win32 API defs under
+        // `library/NewM2`, and the reduced windows_api snapshot) — not just
+        // within whichever directory happens to be checked first. Two full
+        // passes, not one interleaved pass per directory: the old
+        // per-directory interleaving let an EARLIER directory's generated
+        // `_types.def` win over a LATER directory's hand-written `.def`,
+        // contradicting this very doc comment (and silently using the
+        // generated/reduced shape instead of the authoritative one).
         for dir in &self.entries {
-            for filename in [format!("{module}.def"), format!("{module}_types.def")] {
-                let p = dir.join(&filename);
-                if p.is_file() {
-                    return Some(p);
-                }
+            let p = dir.join(format!("{module}.def"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        for dir in &self.entries {
+            let p = dir.join(format!("{module}_types.def"));
+            if p.is_file() {
+                return Some(p);
             }
         }
         None
@@ -70,5 +80,85 @@ impl SearchPath {
             basename.to_str()?
         ));
         if alt.is_file() { Some(alt) } else { None }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A scratch directory removed on drop — avoids a tempfile dependency
+    /// just for this one test module.
+    struct ScratchDir(PathBuf);
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir()
+                .join(format!("newm2-search-path-test-{tag}-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            ScratchDir(dir)
+        }
+        fn subdir(&self, name: &str) -> PathBuf {
+            let p = self.0.join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        }
+    }
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn hand_written_def_wins_globally_over_a_generated_one_in_an_earlier_dir() {
+        // Regression: dirA (earlier on the path) has only a generated
+        // Foo_types.def; dirB (later) has the hand-written Foo.def. The
+        // doc-commented intent ("a hand-written .def takes precedence") must
+        // hold globally, not just within whichever directory is checked
+        // first.
+        let scratch = ScratchDir::new("precedence");
+        let dir_a = scratch.subdir("a");
+        let dir_b = scratch.subdir("b");
+        std::fs::write(dir_a.join("Foo_types.def"), "(* generated *)").unwrap();
+        std::fs::write(dir_b.join("Foo.def"), "(* hand-written *)").unwrap();
+
+        let mut sp = SearchPath::new();
+        sp.push(&dir_a);
+        sp.push(&dir_b);
+
+        let found = sp.find_def("Foo").expect("Foo should resolve");
+        assert_eq!(found, dir_b.join("Foo.def"), "the hand-written def must win, from either directory");
+    }
+
+    #[test]
+    fn generated_def_is_still_used_as_a_fallback_when_no_hand_written_one_exists() {
+        let scratch = ScratchDir::new("fallback");
+        let dir_a = scratch.subdir("a");
+        std::fs::write(dir_a.join("Foo_types.def"), "(* generated *)").unwrap();
+
+        let mut sp = SearchPath::new();
+        sp.push(&dir_a);
+
+        assert_eq!(sp.find_def("Foo"), Some(dir_a.join("Foo_types.def")));
+    }
+
+    #[test]
+    fn earlier_directorys_hand_written_def_still_wins_over_a_later_one() {
+        // Precedence among directories, for the SAME filename, is still
+        // "earlier wins" — only the .def-vs-_types.def priority became global.
+        let scratch = ScratchDir::new("dir-order");
+        let dir_a = scratch.subdir("a");
+        let dir_b = scratch.subdir("b");
+        std::fs::write(dir_a.join("Foo.def"), "(* a *)").unwrap();
+        std::fs::write(dir_b.join("Foo.def"), "(* b *)").unwrap();
+
+        let mut sp = SearchPath::new();
+        sp.push(&dir_a);
+        sp.push(&dir_b);
+
+        assert_eq!(sp.find_def("Foo"), Some(dir_a.join("Foo.def")));
     }
 }
