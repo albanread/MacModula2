@@ -812,10 +812,20 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(_) => {
                 let (name, name_span) = self.expect_ident()?;
                 let exported = self.eat_kind(&TokenKind::Star);
-                // ADW typed constant: `name : type = value;`. The type
-                // is informational at parse time.
-                if self.eat_kind(&TokenKind::Colon) {
-                    let _ty = self.parse_type_expr()?;
+                // ADW typed constant: `name : type = value;`. `ConstDecl` has no
+                // field to carry the declared type, and sema always derives the
+                // constant's type purely from `value`'s own shape — so a
+                // declared type that disagreed with the literal (e.g. `x: REAL
+                // = 1`) was silently accepted and silently ignored, typing `x`
+                // as INTEGER instead of REAL with no diagnostic. Reject it
+                // outright rather than silently discard a real declared type.
+                if self.at_kind(&TokenKind::Colon) {
+                    let span = self.peek().span;
+                    return self.err_at(
+                        span,
+                        "typed CONST declarations ('name: type = value') are not supported: \
+                         drop the type — it is inferred from the value",
+                    );
                 }
                 self.expect_kind(TokenKind::Equal, "'='")?;
                 let value = self.parse_expr()?;
@@ -940,9 +950,20 @@ impl<'a> Parser<'a> {
                 };
                 self.expect_kind(TokenKind::Colon, "':'")?;
                 let ty = self.parse_type_expr()?;
-                // Optional initializer `= expr` (ADW extension).
-                if self.eat_kind(&TokenKind::Equal) {
-                    let _ = self.parse_expr()?;
+                // `VAR x: T = expr;` (an ADW extension) has no AST field to carry
+                // the initializer and no sema/codegen path consumes it, so it was
+                // silently parsed and discarded — accepted with no diagnostic, but
+                // compiled as if uninitialized. Reject it outright rather than
+                // silently dropping a real declared initializer; VAR also allows
+                // `a, b, c: T`, so even the semantics of "whose initializer is it"
+                // aren't settled were this to be implemented.
+                if self.at_kind(&TokenKind::Equal) {
+                    let span = self.peek().span;
+                    return self.err_at(
+                        span,
+                        "VAR initializers ('= expr') are not supported: declare the variable, \
+                         then assign to it in the body",
+                    );
                 }
                 let end = self.expect_kind(TokenKind::Semicolon, "';'")?;
                 Ok(Some(VarDecl {
