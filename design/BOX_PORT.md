@@ -363,3 +363,14 @@ fault escape there are unproved.
   exception (the Mac's behaviour too).
 - !Code: no completion or rename for Modula-2 (no language server);
   Comment out has no line comment to use.
+
+## LLVM shared with /init (30 Oct 2026, later)
+
+`box/build.sh` no longer puts LLVM in the library: LLVM's calls stay
+undefined and /init links the NCL set once for both LLVM languages, with
+one dlopen and dlsym for MCJIT (A7232ToolChain `rosgd/runtime/llvm/llvm_dl.c`).
+`llvm-stamp.txt` beside the library names the LLVM it was compiled
+against; /init's link refuses a mismatch.  Set `FB_LLVM_INSIDE=1` or
+`M2_LLVM_INSIDE=1` to build the old way.  On A7232ToolChain branch `langs`
+(all four languages): the Arm /init's text went from 110.1 to 78.6 MB.
+See A7232ToolChain `rosgd/docs/llvm-in-the-box.md`.
