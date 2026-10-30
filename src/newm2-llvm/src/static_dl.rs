@@ -83,11 +83,16 @@ fn lookup(name: &[u8]) -> *mut c_void {
             }
         };
     }
-    table!(
+    // (the table's value is the answer: NewCL-BOX's copy dropped it, so
+    // memcpy and the rest were never found)
+    let p = table!(
         memcpy, memmove, memset, memcmp, bcmp, malloc, free, abort, fmod, fmodf, pow, powf,
         exp, exp2, log, log2, log10, sin, cos, tan, sqrt, floor, ceil, round, trunc, rint,
         nearbyint, fma, fmin, fmax, __divti3, __udivti3, __modti3, __umodti3,
     );
+    if !p.is_null() {
+        return p;
+    }
     match name {
         b"__register_frame" => register_eh_frame_section as *const () as *mut c_void,
         b"__deregister_frame" => deregister_eh_frame_section as *const () as *mut c_void,

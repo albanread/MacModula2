@@ -46,12 +46,25 @@ END termSkipLook;
 
 PROCEDURE termTextRead(x: IOLink.DeviceTablePtr; a: SYSTEM.ADDRESS;
                        max: CARDINAL; VAR n: CARDINAL);
+  TYPE BufPtr = POINTER TO ARRAY [0..MAX(CARDINAL) - 1] OF CHAR;
+  VAR p: BufPtr; ch: CHAR; r: INTEGER;
 BEGIN
-  NM2IO.ReadText(a, max, n);
-  IF n = 0 THEN
-    x^.result := IOConsts.endOfInput;
-  ELSE
+  (* Up to the line mark (ISO TextRead), which is left to be read: an empty
+     read before it is endOfLine *)
+  p := SYSTEM.CAST(BufPtr, a);
+  n := 0; r := 1;
+  LOOP
+    IF n >= max THEN EXIT END;
+    NM2IO.PeekChar(ch, r);
+    IF r # 1 THEN EXIT END;
+    p^[n] := ch;
+    NM2IO.ConsumeChar();
+    INC(n);
+  END;
+  IF n > 0 THEN
     x^.result := IOConsts.allRight;
+  ELSE
+    x^.result := VAL(IOConsts.ReadResults, r);
   END;
 END termTextRead;
 
