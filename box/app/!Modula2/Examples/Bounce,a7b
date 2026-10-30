@@ -1,0 +1,51 @@
+MODULE Bounce;
+(* Bounce: a small animation.  A ball bounces inside a box; its position is
+   printed at the top of the screen with VDU 31 (text at a column and row)
+   and VDU 17 (text colour).  Any key stops it: OS_Byte 129 with a time of
+   0 (INKEY(0)) looks at the keyboard without waiting.
+   Run it from the command line (F12):  *Modula2 <Modula2$Dir>.Examples.Bounce *)
+IMPORT SWI;
+FROM STextIO IMPORT WriteString;
+FROM SWholeIO IMPORT WriteInt;
+
+CONST Left = 200; Right = 1000; Bottom = 200; Top = 700; Rad = 24;
+VAR r: SWI.Regs;
+    x, y, dx, dy, frame: INTEGER;
+
+PROCEDURE Vdu(c: CARDINAL); BEGIN r[0] := c; SWI.Call(0, r) END Vdu;
+PROCEDURE Plot(k, px, py: INTEGER);
+BEGIN r[0] := k; r[1] := VAL(CARDINAL32, px); r[2] := VAL(CARDINAL32, py); SWI.CallName("OS_Plot", r) END Plot;
+PROCEDURE Colour(bgr: CARDINAL32);           (* &BBGGRR00, as ColourTrans has it *)
+BEGIN r[0] := bgr; r[1] := 0; r[2] := 0; r[3] := 0; r[4] := 0; SWI.CallName("ColourTrans_SetGCOL", r) END Colour;
+PROCEDURE At(col, row: CARDINAL); BEGIN Vdu(31); Vdu(col); Vdu(row) END At;
+PROCEDURE Ink(n: CARDINAL); BEGIN Vdu(17); Vdu(n) END Ink;
+
+PROCEDURE Ball(bgr: CARDINAL32);
+BEGIN Colour(bgr); Plot(4, x, y); Plot(157, x + Rad, y) END Ball;
+
+PROCEDURE KeyPressed(): BOOLEAN;             (* INKEY(0) *)
+BEGIN r[0] := 129; r[1] := 0; r[2] := 0; SWI.CallName("OS_Byte", r); RETURN r[2] = 0 END KeyPressed;
+
+PROCEDURE Wait(cs: CARDINAL32);
+VAR t: CARDINAL32;
+BEGIN
+  SWI.CallName("OS_ReadMonotonicTime", r); t := r[0] + cs;
+  REPEAT SWI.CallName("OS_ReadMonotonicTime", r) UNTIL r[0] >= t
+END Wait;
+
+BEGIN
+  x := 400; y := 500; dx := 14; dy := 9; frame := 0;
+  Colour(20000000H); Plot(4, Left - Rad, Bottom - Rad); Plot(101, Right + Rad, Top + Rad);
+  REPEAT
+    Ball(20000000H);                          (* rub out the old ball *)
+    IF (x + dx < Left + Rad) OR (x + dx > Right - Rad) THEN dx := -dx END;
+    IF (y + dy < Bottom + Rad) OR (y + dy > Top - Rad) THEN dy := -dy END;
+    x := x + dx; y := y + dy;
+    Ball(40D0F000H);
+    INC(frame);
+    At(2, 2); Ink(3); WriteString("frame "); WriteInt(frame, 4);
+    Ink(7); WriteString("  x "); WriteInt(x, 4); WriteString("  y "); WriteInt(y, 4);
+    Wait(2)
+  UNTIL KeyPressed() OR (frame >= 1500);
+  At(0, 6); WriteString("Done")
+END Bounce.

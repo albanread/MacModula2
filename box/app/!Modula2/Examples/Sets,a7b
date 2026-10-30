@@ -1,0 +1,57 @@
+MODULE Sets;
+(* Sets and enumerations: the days of the week as an enumeration, sets of
+   days, and set operations (+ union, * intersection, - difference, IN,
+   INCL and EXCL).  Also a set of characters, used to count vowels. *)
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteCard;
+
+TYPE Day = (Mon, Tue, Wed, Thu, Fri, Sat, Sun);
+     Days = SET OF Day;
+     Chars = SET OF [0..127];
+
+PROCEDURE WriteDay(d: Day);
+BEGIN
+  CASE d OF
+    Mon: WriteString("Mon") | Tue: WriteString("Tue") | Wed: WriteString("Wed")
+  | Thu: WriteString("Thu") | Fri: WriteString("Fri") | Sat: WriteString("Sat")
+  | Sun: WriteString("Sun")
+  END
+END WriteDay;
+
+PROCEDURE WriteDays(title: ARRAY OF CHAR; s: Days);
+VAR d: Day;
+BEGIN
+  WriteString(title); WriteString(": {");
+  FOR d := Mon TO Sun DO IF d IN s THEN WriteString(" "); WriteDay(d) END END;
+  WriteString(" }"); WriteLn
+END WriteDays;
+
+PROCEDURE Vowels(s: ARRAY OF CHAR): CARDINAL;
+CONST V = Chars{ORD("a"), ORD("e"), ORD("i"), ORD("o"), ORD("u")};
+VAR i, n: CARDINAL;
+BEGIN
+  n := 0;
+  FOR i := 0 TO HIGH(s) DO
+    IF (s[i] # 0C) AND (ORD(s[i]) < 128) AND (ORD(CAP(s[i])) + 32 IN V) THEN INC(n) END
+  END;
+  RETURN n
+END Vowels;
+
+VAR weekend, work, swim, gym: Days; d: Day;
+BEGIN
+  weekend := Days{Sat, Sun};
+  work := Days{Mon..Sun} - weekend;
+  swim := Days{Mon, Wed, Sat};
+  gym := Days{Tue, Wed, Sun};
+  WriteDays("weekend", weekend);
+  WriteDays("work days", work);
+  WriteDays("swim or gym", swim + gym);
+  WriteDays("swim and gym", swim * gym);
+  WriteDays("swim on a work day", swim * work);
+  INCL(gym, Fri); EXCL(gym, Sun);
+  WriteDays("gym, changed", gym);
+  d := Thu;
+  WriteString("after "); WriteDay(d); WriteString(" comes "); WriteDay(VAL(Day, (ORD(d) + 1) MOD 7)); WriteLn;
+  WriteString("days in a week: "); WriteCard(ORD(MAX(Day)) + 1, 1); WriteLn;
+  WriteString("vowels in 'Modula-2 on RISC OS': "); WriteCard(Vowels("Modula-2 on RISC OS"), 1); WriteLn
+END Sets.

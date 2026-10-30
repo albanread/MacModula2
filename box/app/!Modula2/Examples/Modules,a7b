@@ -1,0 +1,32 @@
+MODULE Modules;
+(* Modules: a program built from a module of its own.  Queues (def.Queues
+   and mod.Queues beside this file) gives an opaque type, Queue, and raises
+   an exception when an empty queue is taken from; here the exception is
+   caught in an EXCEPT part and the message read with EXCEPTIONS. *)
+IMPORT Queues, EXCEPTIONS;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteInt, WriteCard;
+
+VAR q: Queues.Queue; i: INTEGER;
+
+PROCEDURE Drain(q: Queues.Queue);
+(* takes one more than there is, to show the exception *)
+VAR msg: ARRAY [0..79] OF CHAR;
+BEGIN
+  LOOP WriteInt(Queues.Take(q), 4) END
+EXCEPT
+  WriteLn;
+  IF Queues.IsEmptyError() THEN
+    EXCEPTIONS.GetMessage(msg);
+    WriteString("Caught: "); WriteString(msg); WriteLn
+  END;
+  RETURN
+END Drain;
+
+BEGIN
+  q := Queues.New();
+  FOR i := 1 TO 10 DO Queues.Put(q, i * i) END;
+  WriteString("The queue holds "); WriteCard(Queues.Length(q), 1); WriteString(" squares:"); WriteLn;
+  Drain(q);
+  WriteString("Now it holds "); WriteCard(Queues.Length(q), 1); WriteLn
+END Modules.
