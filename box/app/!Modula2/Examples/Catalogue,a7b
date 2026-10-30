@@ -1,0 +1,85 @@
+MODULE Catalogue;
+(* Catalogue: files by the OS_File and OS_GBPB SWIs.  A block of memory is
+   saved as a typed file (OS_File 10), its catalogue information read
+   (OS_File 17), loaded back (OS_File 16), and a directory listed a few
+   entries at a time (OS_GBPB 10).  The file goes in <Wimp$ScrapDir>. *)
+IMPORT SWI;
+FROM SYSTEM IMPORT ADR;
+FROM STextIO IMPORT WriteString, WriteChar, WriteLn;
+FROM SWholeIO IMPORT WriteCard;
+
+CONST Name = "<Wimp$ScrapDir>.M2Catalogue";
+VAR r: SWI.Regs;
+    data: ARRAY [0..255] OF ACHAR;
+    back: ARRAY [0..255] OF ACHAR;
+    dir: ARRAY [0..1023] OF CARDINAL8;
+    n, i: CARDINAL;
+
+PROCEDURE Put(s: ARRAY OF CHAR);               (* appends text to data *)
+VAR k: CARDINAL;
+BEGIN
+  k := 0;
+  WHILE (k <= HIGH(s)) AND (s[k] # 0C) DO data[n] := VAL(ACHAR, ORD(s[k])); INC(n); INC(k) END
+END Put;
+
+PROCEDURE Hex(v: CARDINAL32);                  (* three hex digits *)
+CONST Digits = "0123456789ABCDEF";
+VAR d: ARRAY [0..15] OF CHAR;
+BEGIN
+  d := Digits;
+  WriteChar(d[v DIV 256 MOD 16]); WriteChar(d[v DIV 16 MOD 16]); WriteChar(d[v MOD 16])
+END Hex;
+
+(* A word of the directory buffer, little-endian *)
+PROCEDURE Word(at: CARDINAL): CARDINAL32;
+BEGIN
+  RETURN VAL(CARDINAL32, ORD(dir[at])) + VAL(CARDINAL32, ORD(dir[at+1])) * 100H +
+         VAL(CARDINAL32, ORD(dir[at+2])) * 10000H + VAL(CARDINAL32, ORD(dir[at+3])) * 1000000H
+END Word;
+
+(* OS_GBPB 10: for each entry its load and exec addresses, length,
+   attributes and object type, then its name; each entry on a word boundary *)
+PROCEDURE List(path: ARRAY OF CHAR);
+VAR offset, count, k, at, col: CARDINAL32;
+BEGIN
+  offset := 0;
+  REPEAT
+    r[0] := 10; r[1] := SWI.Str(path); r[2] := SWI.Addr(ADR(dir)); r[3] := 8;
+    r[4] := offset; r[5] := SIZE(dir); r[6] := 0;
+    SWI.CallName("OS_GBPB", r);
+    count := r[3]; offset := r[4];
+    at := 0;
+    FOR k := 1 TO count DO
+      col := 0; i := at + 20;
+      WHILE dir[i] # 0 DO WriteChar(CHR(dir[i])); INC(i); INC(col) END;
+      WHILE col < 20 DO WriteChar(" "); INC(col) END;
+      IF Word(at + 16) = 2 THEN WriteString("directory")
+      ELSE WriteCard(Word(at + 8), 6); WriteString(" bytes, type &"); Hex(Word(at) DIV 100H MOD 1000H)
+      END;
+      WriteLn;
+      at := (i + 4) DIV 4 * 4
+    END
+  UNTIL offset = 0FFFFFFFFH
+END List;
+
+BEGIN
+  n := 0;
+  Put("Saved by OS_File 10 from Modula-2."); data[n] := VAL(ACHAR, 10); INC(n);
+  (* OS_File 10: save memory as a file of a type (&FFF, Text) *)
+  r[0] := 10; r[1] := SWI.Str(Name); r[2] := 0FFFH; r[4] := SWI.Addr(ADR(data)); r[5] := r[4] + n;
+  SWI.CallName("OS_File", r);
+  WriteString("Saved "); WriteCard(n, 1); WriteString(" bytes"); WriteLn;
+  (* OS_File 17: what the filing system knows of it *)
+  r[0] := 17; r[1] := SWI.Str(Name); SWI.CallName("OS_File", r);
+  WriteString("OS_File 17: object type "); WriteCard(r[0], 1);
+  WriteString(", length "); WriteCard(r[4], 1);
+  WriteString(", file type &"); Hex(r[2] DIV 100H MOD 1000H); WriteLn;
+  (* OS_File 16: load it back *)
+  r[0] := 16; r[1] := SWI.Str(Name); r[2] := SWI.Addr(ADR(back)); r[3] := 0;
+  SWI.CallName("OS_File", r);
+  WriteString("Loaded back: ");
+  FOR i := 0 TO r[4] - 1 DO IF ORD(back[i]) >= 32 THEN WriteChar(CHR(ORD(back[i]))) END END;
+  WriteLn;
+  WriteString("The examples beside this one:"); WriteLn;
+  List("<Modula2$Dir>.Examples")
+END Catalogue.

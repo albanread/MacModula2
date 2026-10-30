@@ -1,0 +1,52 @@
+MODULE Generators;
+(* Generators: coroutines (ISO COROUTINES) used as generators.  Each
+   generator runs as a coroutine of its own and hands back one value at a
+   time with TRANSFER; the main program asks for values as it wants them.
+   Two run side by side here: the primes, and the Fibonacci numbers. *)
+FROM SYSTEM IMPORT ADR;
+FROM COROUTINES IMPORT COROUTINE, NEWCOROUTINE, TRANSFER;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteInt;
+
+CONST Room = 32768;
+VAR main, primes, fibs: COROUTINE;
+    primeValue, fibValue: INTEGER;
+    primeRoom, fibRoom: ARRAY [0..Room-1] OF CARDINAL8;
+
+PROCEDURE Primes;                              (* for ever: the next prime *)
+VAR n, d: INTEGER; prime: BOOLEAN;
+BEGIN
+  n := 2;
+  LOOP
+    prime := TRUE; d := 2;
+    WHILE prime AND (d * d <= n) DO prime := n MOD d # 0; INC(d) END;
+    IF prime THEN primeValue := n; TRANSFER(primes, main) END;
+    INC(n)
+  END
+END Primes;
+
+PROCEDURE Fibs;
+VAR a, b, t: INTEGER;
+BEGIN
+  a := 0; b := 1;
+  LOOP fibValue := b; TRANSFER(fibs, main); t := a + b; a := b; b := t END
+END Fibs;
+
+PROCEDURE NextPrime(): INTEGER;
+BEGIN TRANSFER(main, primes); RETURN primeValue END NextPrime;
+
+PROCEDURE NextFib(): INTEGER;
+BEGIN TRANSFER(main, fibs); RETURN fibValue END NextFib;
+
+VAR i, p: INTEGER;
+BEGIN
+  NEWCOROUTINE(Primes, ADR(primeRoom), SIZE(primeRoom), primes);
+  NEWCOROUTINE(Fibs, ADR(fibRoom), SIZE(fibRoom), fibs);
+  WriteString("   n   prime  fibonacci"); WriteLn;
+  FOR i := 1 TO 15 DO
+    WriteInt(i, 4); WriteInt(NextPrime(), 8); WriteInt(NextFib(), 11); WriteLn
+  END;
+  WriteString("More primes, asked for until one is 100 or more:");
+  LOOP p := NextPrime(); IF p >= 100 THEN EXIT END; WriteInt(p, 4) END;
+  WriteLn
+END Generators.

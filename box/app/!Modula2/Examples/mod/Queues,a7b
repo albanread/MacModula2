@@ -1,0 +1,42 @@
+IMPLEMENTATION MODULE Queues;
+(* The queue is a linked list with a head and a tail; only this module
+   knows. *)
+IMPORT EXCEPTIONS;
+
+TYPE Link = POINTER TO Node;
+     Node = RECORD value: INTEGER; next: Link END;
+     Queue = POINTER TO RECORD head, tail: Link; length: CARDINAL END;
+
+VAR empty: EXCEPTIONS.ExceptionSource;
+
+PROCEDURE New (): Queue;
+VAR q: Queue;
+BEGIN NEW(q); q^.head := NIL; q^.tail := NIL; q^.length := 0; RETURN q END New;
+
+PROCEDURE Put (q: Queue; n: INTEGER);
+VAR l: Link;
+BEGIN
+  NEW(l); l^.value := n; l^.next := NIL;
+  IF q^.tail = NIL THEN q^.head := l ELSE q^.tail^.next := l END;
+  q^.tail := l; INC(q^.length)
+END Put;
+
+PROCEDURE Take (q: Queue): INTEGER;
+VAR l: Link; n: INTEGER;
+BEGIN
+  IF q^.head = NIL THEN EXCEPTIONS.RAISE(empty, 1, "Queues.Take: the queue is empty") END;
+  l := q^.head; n := l^.value; q^.head := l^.next;
+  IF q^.head = NIL THEN q^.tail := NIL END;
+  DEC(q^.length); DISPOSE(l);
+  RETURN n
+END Take;
+
+PROCEDURE Length (q: Queue): CARDINAL;
+BEGIN RETURN q^.length END Length;
+
+PROCEDURE IsEmptyError (): BOOLEAN;
+BEGIN RETURN EXCEPTIONS.IsCurrentSource(empty) END IsEmptyError;
+
+BEGIN
+  EXCEPTIONS.AllocateSource(empty)
+END Queues.

@@ -1,0 +1,85 @@
+MODULE Machine;
+(* Machine: what the SWIs say about the machine -- the time and date, the
+   OS version, memory, system variables and the screen mode. *)
+IMPORT SWI;
+FROM SYSTEM IMPORT ADR, ADDRESS;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteCard;
+
+VAR r: SWI.Regs; s: ARRAY [0..255] OF CHAR;
+    buf: ARRAY [0..255] OF ACHAR;             (* bytes, for SWIs to write into *)
+    time5: ARRAY [0..7] OF CARDINAL8;         (* RISC OS's five-byte time *)
+
+(* OS_Word 14 reason 3: the time now, as centiseconds since 1900 *)
+PROCEDURE Now;
+BEGIN time5[0] := 3; r[0] := 14; r[1] := SWI.Addr(ADR(time5)); SWI.CallName("OS_Word", r) END Now;
+
+PROCEDURE WriteDate;                           (* in the territory's own format *)
+BEGIN
+  Now;
+  r[0] := 0FFFFFFFFH; r[1] := SWI.Addr(ADR(time5)); r[2] := SWI.Addr(ADR(buf)); r[3] := 255;
+  SWI.CallName("Territory_ConvertStandardDateAndTime", r);
+  SWI.GetStr(SWI.Addr(ADR(buf)), s); WriteString(s)
+END WriteDate;
+
+PROCEDURE WriteTime;                           (* in a format of our own *)
+BEGIN
+  Now;
+  r[0] := SWI.Addr(ADR(time5)); r[1] := SWI.Addr(ADR(buf)); r[2] := 255;
+  r[3] := SWI.Str("%24:%MI:%SE on %WE");
+  SWI.CallName("OS_ConvertDateAndTime", r);
+  SWI.GetStr(SWI.Addr(ADR(buf)), s); WriteString(s)
+END WriteTime;
+
+PROCEDURE WriteVersion;                        (* OS_Byte 0 gives it as an error *)
+VAR e: ADDRESS;
+BEGIN
+  r[0] := 0; r[1] := 0;
+  e := SWI.XCallName("OS_Byte", r);
+  IF e # NIL THEN SWI.ErrorText(e, s); WriteString(s) END
+END WriteVersion;
+
+PROCEDURE WriteMemory;
+BEGIN
+  SWI.CallName("OS_ReadMemMapInfo", r);
+  WriteCard(r[0] * r[1] DIV (1024 * 1024), 1); WriteString(" MB of RAM in ");
+  WriteCard(r[1], 1); WriteString(" pages of "); WriteCard(r[0], 1); WriteString(" bytes")
+END WriteMemory;
+
+PROCEDURE WriteVar(name: ARRAY OF CHAR);       (* a system variable, or (unset) *)
+BEGIN
+  WriteString("  "); WriteString(name); WriteString(" = ");
+  r[0] := SWI.Str(name); r[1] := SWI.Addr(ADR(buf)); r[2] := 255; r[3] := 0; r[4] := 3;
+  IF SWI.XCallName("OS_ReadVarVal", r) # NIL THEN WriteString("(unset)")
+  ELSE buf[r[2]] := 0C; SWI.GetStr(SWI.Addr(ADR(buf)), s); WriteString(s)
+  END;
+  WriteLn
+END WriteVar;
+
+PROCEDURE ModeVar(n: CARDINAL32): CARDINAL32;
+BEGIN r[0] := 0FFFFFFFFH; r[1] := n; SWI.CallName("OS_ReadModeVariable", r); RETURN r[2] END ModeVar;
+
+PROCEDURE Pow2(n: CARDINAL32): CARDINAL32;
+VAR p: CARDINAL32;
+BEGIN p := 1; WHILE n > 0 DO p := p * 2; DEC(n) END; RETURN p END Pow2;
+
+PROCEDURE WriteScreen;
+BEGIN
+  WriteCard(ModeVar(11) + 1, 1); WriteString(" by "); WriteCard(ModeVar(12) + 1, 1);
+  WriteString(" pixels, "); WriteCard(Pow2(ModeVar(9)), 1); WriteString(" bits a pixel, ");
+  WriteCard((ModeVar(11) + 1) * Pow2(ModeVar(4)), 1); WriteString(" by ");
+  WriteCard((ModeVar(12) + 1) * Pow2(ModeVar(5)), 1); WriteString(" OS units")
+END WriteScreen;
+
+BEGIN
+  WriteString("Date:    "); WriteDate; WriteLn;
+  WriteString("Time:    "); WriteTime; WriteLn;
+  WriteString("OS:      "); WriteVersion; WriteLn;
+  WriteString("Memory:  "); WriteMemory; WriteLn;
+  WriteString("Screen:  "); WriteScreen; WriteLn;
+  SWI.CallName("OS_ReadMonotonicTime", r);
+  WriteString("Up for:  "); WriteCard(r[0] DIV 100, 1); WriteString(" s"); WriteLn;
+  WriteString("Variables:"); WriteLn;
+  WriteVar("Sys$Time"); WriteVar("Sys$Year"); WriteVar("Modula2$Dir");
+  WriteVar("Wimp$State"); WriteVar("NoSuch$Variable")
+END Machine.

@@ -1,0 +1,100 @@
+MODULE Figures;
+(* Figures: a CLASS hierarchy that draws itself with OS_Plot.  Figure is
+   the base class; Box, Disc and Triangle override Draw and Area, and a
+   list of Figures is drawn and measured without knowing which is which.
+   Graphics go to the screen, not a window: run it from the command line
+   (press F12 in the desktop):  *Modula2 <Modula2$Dir>.Examples.Figures *)
+IMPORT SWI;
+FROM STextIO IMPORT WriteString, WriteLn, ReadChar;
+FROM SWholeIO IMPORT WriteInt;
+
+VAR r: SWI.Regs;
+
+PROCEDURE Vdu(c: CARDINAL);                 (* OS_WriteC is SWI 0 *)
+BEGIN r[0] := c; SWI.Call(0, r) END Vdu;
+
+PROCEDURE Plot(k, x, y: INTEGER);
+BEGIN
+  r[0] := k; r[1] := VAL(CARDINAL32, x); r[2] := VAL(CARDINAL32, y);
+  SWI.CallName("OS_Plot", r)
+END Plot;
+
+(* A colour as &RRGGBB; ColourTrans wants &BBGGRR00 *)
+PROCEDURE Colour(rgb: CARDINAL32);
+BEGIN
+  r[0] := (rgb MOD 100H) * 1000000H + (rgb DIV 100H MOD 100H) * 10000H + (rgb DIV 10000H) * 100H;
+  r[1] := 0; r[2] := 0; r[3] := 0; r[4] := 0;
+  SWI.CallName("ColourTrans_SetGCOL", r)
+END Colour;
+
+PROCEDURE Label(x, y: INTEGER; s: ARRAY OF CHAR);   (* VDU 5: text at the graphics cursor *)
+BEGIN
+  Plot(4, x, y); Vdu(5); r[0] := SWI.Str(s); SWI.CallName("OS_Write0", r); Vdu(4)
+END Label;
+
+CLASS Figure;
+  VAR x, y: INTEGER; colour: CARDINAL32;
+  (* c is an INTEGER: a CARDINAL32 parameter of a method cannot be given
+     a constant here (a compiler bug) *)
+  PROCEDURE Place(px, py, c: INTEGER);
+  BEGIN x := px; y := py; colour := VAL(CARDINAL32, c) END Place;
+  PROCEDURE Draw; BEGIN END Draw;
+  PROCEDURE Area(): INTEGER; BEGIN RETURN 0 END Area;
+  PROCEDURE Name(VAR s: ARRAY OF CHAR); BEGIN s := "figure" END Name;
+END Figure;
+
+CLASS Box;
+  INHERIT Figure;
+  VAR w, h: INTEGER;
+  PROCEDURE Size(pw, ph: INTEGER); BEGIN w := pw; h := ph END Size;
+  OVERRIDE PROCEDURE Draw;
+  BEGIN Colour(colour); Plot(4, x, y); Plot(101, x + w, y + h) END Draw;
+  OVERRIDE PROCEDURE Area(): INTEGER; BEGIN RETURN w * h END Area;
+  OVERRIDE PROCEDURE Name(VAR s: ARRAY OF CHAR); BEGIN s := "box" END Name;
+END Box;
+
+CLASS Disc;
+  INHERIT Figure;
+  VAR radius: INTEGER;
+  PROCEDURE Radius(pr: INTEGER); BEGIN radius := pr END Radius;
+  OVERRIDE PROCEDURE Draw;
+  BEGIN
+    Colour(colour); Plot(4, x, y); Plot(157, x + radius, y);
+    Colour(0FFFFFFH); Plot(4, x, y); Plot(149, x + radius + 8, y)
+  END Draw;
+  OVERRIDE PROCEDURE Area(): INTEGER; BEGIN RETURN 355 * radius * radius DIV 113 END Area;
+  OVERRIDE PROCEDURE Name(VAR s: ARRAY OF CHAR); BEGIN s := "disc" END Name;
+END Disc;
+
+CLASS Triangle;
+  INHERIT Figure;
+  VAR base, height: INTEGER;
+  PROCEDURE Size(b, h: INTEGER); BEGIN base := b; height := h END Size;
+  OVERRIDE PROCEDURE Draw;
+  BEGIN
+    Colour(colour); Plot(4, x, y); Plot(4, x + base, y); Plot(85, x + base DIV 2, y + height)
+  END Draw;
+  OVERRIDE PROCEDURE Area(): INTEGER; BEGIN RETURN base * height DIV 2 END Area;
+  OVERRIDE PROCEDURE Name(VAR s: ARRAY OF CHAR); BEGIN s := "triangle" END Name;
+END Triangle;
+
+VAR figs: ARRAY [0..3] OF Figure;
+    b: Box; d: Disc; t: Triangle; b2: Box;
+    i, total: INTEGER; name: ARRAY [0..15] OF CHAR; ch: CHAR;
+BEGIN
+  NEW(b); b.Place(100, 100, 3060C0H); b.Size(400, 300); figs[0] := b;
+  NEW(d); d.Place(800, 250, 0F0C020H); d.Radius(150); figs[1] := d;
+  NEW(t); t.Place(1100, 100, 40C060H); t.Size(400, 350); figs[2] := t;
+  NEW(b2); b2.Place(250, 500, 0E04060H); b2.Size(200, 200); figs[3] := b2;
+  Colour(102040H); Plot(4, 0, 0); Plot(101, 1600, 900);
+  total := 0;
+  FOR i := 0 TO 3 DO
+    figs[i].Draw; total := total + figs[i].Area()
+  END;
+  Colour(0FFFFFFH); Label(100, 850, "Figures from Modula-2 classes");
+  FOR i := 0 TO 3 DO
+    figs[i].Name(name); WriteString(name); WriteString(" area "); WriteInt(figs[i].Area(), 1); WriteLn
+  END;
+  WriteString("total area "); WriteInt(total, 1); WriteLn;
+  WriteString("Press Return"); ReadChar(ch)
+END Figures.

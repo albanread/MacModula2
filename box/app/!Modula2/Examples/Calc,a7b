@@ -1,0 +1,67 @@
+MODULE Calc;
+(* Calc: a calculator form on the desktop, by the Declaritive module.  Two
+   fields, a button for each operation, the answer below; Return in a field
+   adds.  Real numbers, read and written by RealStr. *)
+IMPORT Declaritive;
+FROM Declaritive IMPORT Event, Is;
+FROM RealStr IMPORT StrToReal, RealToFixed;
+FROM ConvTypes IMPORT ConvResults, strAllRight;
+
+VAR w: Declaritive.Window; e: Event; done: BOOLEAN;
+
+PROCEDURE Answer(s: ARRAY OF CHAR);
+BEGIN Declaritive.Set(w, "answer", "text", s) END Answer;
+
+PROCEDURE Field(id: ARRAY OF CHAR; VAR x: REAL): BOOLEAN;
+VAR t: Declaritive.Text; res: ConvResults;
+BEGIN
+  Declaritive.Get(w, id, "value", t);
+  StrToReal(t, x, res);
+  RETURN res = strAllRight
+END Field;
+
+PROCEDURE Calculate(op: CHAR);
+VAR a, b, x: REAL; t: ARRAY [0..63] OF CHAR;
+BEGIN
+  IF NOT Field("a", a) THEN Answer("The first field is not a number"); RETURN END;
+  IF NOT Field("b", b) THEN Answer("The second field is not a number"); RETURN END;
+  CASE op OF
+    "+": x := a + b
+  | "-": x := a - b
+  | "*": x := a * b
+  | "/": IF b = 0.0 THEN Answer("Cannot divide by zero"); RETURN END; x := a / b
+  END;
+  RealToFixed(x, 4, t);                       (* four places after the point *)
+  Answer(t)
+END Calculate;
+
+BEGIN
+  Declaritive.Init("Calculator");
+  Declaritive.Add("{'type':'window','id':'calc','title':'Modula-2 Calculator','body':{'type':'form','children':[");
+  Declaritive.Add("{'type':'input','id':'a','label':'First number','value':'1.5'},");
+  Declaritive.Add("{'type':'input','id':'b','label':'Second number','value':'4'},");
+  Declaritive.Add("{'type':'row','label':'Operation','children':[");
+  Declaritive.Add("{'type':'button','id':'add','text':' + '},{'type':'button','id':'sub','text':' - '},");
+  Declaritive.Add("{'type':'button','id':'mul','text':' * '},{'type':'button','id':'div','text':' / '}]},");
+  Declaritive.Add("{'type':'text','id':'answer','label':'Answer','text':'Press an operation'},");
+  Declaritive.Add("{'type':'row','span':true,'children':[{'type':'spacer'},{'type':'button','id':'quit','text':'Quit'}]}]}}");
+  w := Declaritive.Create();
+  done := FALSE;
+  WHILE NOT done DO
+    IF Declaritive.Poll(e) THEN
+      CASE e.kind OF
+        Declaritive.Click:
+          IF Is(e.id, "add") THEN Calculate("+")
+          ELSIF Is(e.id, "sub") THEN Calculate("-")
+          ELSIF Is(e.id, "mul") THEN Calculate("*")
+          ELSIF Is(e.id, "div") THEN Calculate("/")
+          ELSIF Is(e.id, "quit") THEN done := TRUE
+          END
+      | Declaritive.Submit: Calculate("+")
+      | Declaritive.Close, Declaritive.Quit: done := TRUE
+      ELSE
+      END
+    END
+  END;
+  Declaritive.CloseDown
+END Calc.

@@ -1,0 +1,16 @@
+DEFINITION MODULE Queues;
+(* Queues: a queue of whole numbers as an opaque type.  A program that
+   imports this module can make queues and use them, but cannot see or
+   change what is inside one: the type is declared here only by name and
+   made in the implementation module (mod.Queues). *)
+
+TYPE Queue;                         (* opaque: its insides are mod.Queues' *)
+
+PROCEDURE New (): Queue;
+PROCEDURE Put (q: Queue; n: INTEGER);
+(* Take raises Empty (the exception source below) on an empty queue *)
+PROCEDURE Take (q: Queue): INTEGER;
+PROCEDURE Length (q: Queue): CARDINAL;
+PROCEDURE IsEmptyError (): BOOLEAN; (* in an EXCEPT part: was it Take's? *)
+
+END Queues.

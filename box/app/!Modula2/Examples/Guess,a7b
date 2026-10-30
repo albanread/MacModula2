@@ -1,0 +1,53 @@
+MODULE Guess;
+(* Guess: a number guessing game.  Guesses are read a line at a time by
+   SWholeIO; the answer to "another game?" is one key, read by OS_Byte 129
+   (BASIC's INKEY) with a time limit of ten seconds. *)
+IMPORT SWI, SIOResult, STextIO;
+FROM STextIO IMPORT WriteString, WriteLn, SkipLine;
+FROM SWholeIO IMPORT ReadInt, WriteInt;
+FROM IOConsts IMPORT allRight;
+
+VAR r: SWI.Regs; seed: CARDINAL32;
+
+PROCEDURE Random(n: CARDINAL32): CARDINAL32;
+BEGIN seed := seed * 1103515245 + 12345; RETURN (seed DIV 65536) MOD n END Random;
+
+(* INKEY(t): a key within t centiseconds, or -1 *)
+PROCEDURE Inkey(t: CARDINAL32): INTEGER;
+BEGIN
+  r[0] := 129; r[1] := t MOD 256; r[2] := t DIV 256; SWI.CallName("OS_Byte", r);
+  IF r[2] = 0 THEN RETURN VAL(INTEGER, r[1]) ELSE RETURN -1 END
+END Inkey;
+
+PROCEDURE Round;
+VAR secret, guess, tries: INTEGER;
+BEGIN
+  secret := VAL(INTEGER, Random(100)) + 1; tries := 0;
+  WriteString("I am thinking of a number from 1 to 100."); WriteLn;
+  LOOP
+    WriteString("Your guess? ");
+    ReadInt(guess);
+    IF SIOResult.ReadResult() # allRight THEN
+      SkipLine; WriteString("That is not a number."); WriteLn
+    ELSE
+      SkipLine; INC(tries);
+      IF guess < secret THEN WriteString("Too low."); WriteLn
+      ELSIF guess > secret THEN WriteString("Too high."); WriteLn
+      ELSE WriteString("Right, in "); WriteInt(tries, 1); WriteString(" tries."); WriteLn; EXIT
+      END
+    END
+  END
+END Round;
+
+VAR k: INTEGER;
+BEGIN
+  SWI.CallName("OS_ReadMonotonicTime", r); seed := r[0];
+  LOOP
+    Round;
+    WriteString("Another game (y/n)? ");
+    k := Inkey(1000);
+    WriteLn;
+    IF (k # ORD("y")) AND (k # ORD("Y")) THEN EXIT END
+  END;
+  WriteString("Goodbye."); WriteLn
+END Guess.
