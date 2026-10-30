@@ -12,6 +12,8 @@ path = "src/lib.rs"
 [features]
 # box/hostcheck.sh: x86-64 objects from an Arm Mac
 x86-check = ["newm2-llvm/x86-check"]
+# box/build.sh's default: LLVM left out of libm2-box.a, for /init to link once
+llvm-outside = ["newm2-llvm/no-llvm-linking"]
 
 [[bin]]
 name = "m2-hostcheck"

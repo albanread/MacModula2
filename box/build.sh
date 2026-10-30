@@ -10,10 +10,17 @@
 # BOX/caches (LLVM_PREFIX names another).  C, where a crate has any, is
 # compiled by zig 0.15 (ZIG, default ~/zig015/zig).
 #
-# Then a partial link of the Rust archive with LLVM's archives, and
-# llvm-objcopy makes every symbol but box/exports.txt local, so that nothing
-# of Rust's, the compiler's or LLVM's meets one of /init's.  libc++ and
-# libunwind are left to /init's link (zig's, -lc++), which has them already.
+# Then a partial link of the Rust archive, and llvm-objcopy makes every
+# symbol but box/exports.txt local, so that nothing of Rust's or the
+# compiler's meets one of /init's.  LLVM is not in the library (the crate's
+# llvm-outside feature: llvm-sys links nothing): its calls stay undefined,
+# and /init links LLVM's archives once for every library that uses them
+# (rosgd's LLVM_NCL), with one dlopen and dlsym for MCJIT (rosgd
+# runtime/llvm/llvm_dl.c, whose table is static_dl.rs's).  llvm-prefix.txt
+# and llvm-stamp.txt beside the library name the LLVM it was compiled
+# against, which /init's link checks.  M2_LLVM_INSIDE=1 links LLVM into
+# the library, each symbol local, as before.  libc++ and libunwind are left
+# to /init's link (zig's, -lc++), which has them already.
 #
 # Output: $M2_OUT (default BOX/caches/modula2/out-<arch>): libm2-box.a and
 # m2_box.h.  The standard library goes to $M2_OUT/lib (the ROM's
@@ -70,18 +77,32 @@ export ZIG_GLOBAL_CACHE_DIR=$tgt/zig-cache
 cd "$here"
 cmd=build
 [ "$mode" = check ] && cmd=check
+inside=${M2_LLVM_INSIDE:-0}
+features=
+[ "$inside" = 1 ] || features="--features llvm-outside"
 env LLVM_SYS_221_PREFIX="$LLVM_PREFIX" \
     "CC_$cc_env=$w/cc" "CXX_$cc_env=$w/cc" "AR_$cc_env=$w/ar" \
     "CARGO_TARGET_${cargo_env}_LINKER=$w/cc" \
     CARGO_TARGET_DIR="$tgt" \
-    cargo $cmd --release --target $rust_target -p newm2-box
+    cargo $cmd --release --target $rust_target -p newm2-box $features
 [ "$mode" = check ] && exit 0
 
 rlib=$tgt/$rust_target/release/libnewm2_box.a
-echo "link: the Rust archive with LLVM's ($(du -k "$rlib" | cut -f1) KB)"
-llvm_libs=$(ls "$LLVM_PREFIX"/lib/libLLVM*.a)
-"$LLD" -r -o "$out/obj/m2_all.o" --whole-archive "$rlib" --no-whole-archive \
-    --start-group $llvm_libs --end-group
+rm -f "$out/llvm-prefix.txt" "$out/llvm-stamp.txt"
+if [ "$inside" = 1 ]; then
+    echo "link: the Rust archive with LLVM's ($(du -k "$rlib" | cut -f1) KB)"
+    llvm_libs=$(ls "$LLVM_PREFIX"/lib/libLLVM*.a)
+    "$LLD" -r -o "$out/obj/m2_all.o" --whole-archive "$rlib" --no-whole-archive \
+        --start-group $llvm_libs --end-group
+else
+    echo "link: the Rust archive, LLVM left to /init ($(du -k "$rlib" | cut -f1) KB)"
+    if "${AR}" t "$rlib" | grep -q '\.cpp\.o$'; then
+        echo "build.sh: $rlib still holds LLVM's objects" >&2; exit 1
+    fi
+    "$LLD" -r -o "$out/obj/m2_all.o" --whole-archive "$rlib" --no-whole-archive
+    (cd "$LLVM_PREFIX" && pwd -P) > "$out/llvm-prefix.txt"
+    cat "$LLVM_PREFIX/.stamp" > "$out/llvm-stamp.txt"
+fi
 "$OBJCOPY" --keep-global-symbols=box/exports.txt "$out/obj/m2_all.o" "$out/obj/m2_box.o"
 rm -f "$out/libm2-box.a"
 "$AR" rcs "$out/libm2-box.a" "$out/obj/m2_box.o"

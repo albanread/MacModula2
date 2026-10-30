@@ -12,6 +12,9 @@ gc = ["newm2-runtime/gc"]
 rosbox = ["newm2-runtime/rosbox"]
 # The host check of the BOX's Intel code on an Arm Mac: LLVM's X86 backend too
 x86-check = ["inkwell/target-x86"]
+# The BOX: LLVM is not linked into this crate's users; /init links it once
+# for every library that uses it (box/build.sh)
+no-llvm-linking = ["llvm-sys/no-llvm-linking"]
 
 [dependencies]
 new-asm   = { path = "../../new-asm" }
