@@ -90,7 +90,7 @@ cp box/m2_box.h "$out/"
 # The standard library, as the ROM carries it (/usr/lib/modula2)
 rm -rf "$out/lib"
 mkdir -p "$out/lib"
-for d in isodef isomod pimdef pimmod rtdef utildef utilmod shareddef sharedmod boxdef boxmod; do
+for d in isodef isomod pimdef pimmod rtdef utildef utilmod ulibdef ulibmod shareddef sharedmod boxdef boxmod; do
     [ -d "library/$d" ] && cp -R "library/$d" "$out/lib/"
 done
 echo "== $out/libm2-box.a: $(du -k "$out/libm2-box.a" | cut -f1) KB; library $(find "$out/lib" -type f | wc -l | tr -d ' ') files"

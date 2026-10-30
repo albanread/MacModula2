@@ -1,0 +1,67 @@
+MODULE bench;
+(* The BOX language comparison (docs/cli-tasks/bench-fasterbasic.bas) in
+   Modula-2: fib(30) and a sieve of the primes below 2,000,000.
+   OS_ReadMonotonicTime counts centiseconds, so each test repeats until half
+   a second has gone; the best of three, in milliseconds. *)
+IMPORT SWI;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteInt;
+FROM SRealIO IMPORT WriteFixed;
+
+CONST N = 2000000;
+VAR sv: ARRAY [0..N] OF BOOLEAN;
+
+PROCEDURE Fib(n: INTEGER): INTEGER;
+BEGIN
+  IF n < 2 THEN RETURN n ELSE RETURN Fib(n - 1) + Fib(n - 2) END
+END Fib;
+
+PROCEDURE Sieve(): INTEGER;
+VAR i, j, c: INTEGER;
+BEGIN
+  FOR i := 2 TO N DO sv[i] := FALSE END;
+  c := 0;
+  FOR i := 2 TO N DO
+    IF NOT sv[i] THEN
+      INC(c);
+      IF i <= 1414 THEN
+        j := i * i;
+        WHILE j <= N DO sv[j] := TRUE; INC(j, i) END
+      END
+    END
+  END;
+  RETURN c
+END Sieve;
+
+PROCEDURE Work(w: INTEGER): INTEGER;
+BEGIN
+  IF w = 1 THEN RETURN Fib(30) ELSE RETURN Sieve() END
+END Work;
+
+PROCEDURE Now(): INTEGER;
+VAR r: SWI.Regs;
+BEGIN
+  SWI.Call(42H, r);   (* OS_ReadMonotonicTime *)
+  RETURN VAL(INTEGER, r[0])
+END Now;
+
+PROCEDURE Best(name: ARRAY OF CHAR; w: INTEGER);
+VAR b, ms: REAL; k, t, c, e, r: INTEGER;
+BEGIN
+  b := 1.0E9;
+  FOR k := 1 TO 3 DO
+    t := Now(); c := 0;
+    REPEAT r := Work(w); INC(c); e := Now() - t UNTIL e >= 50;
+    ms := FLOAT(e) * 10.0 / FLOAT(c);
+    IF ms < b THEN b := ms END
+  END;
+  WriteString("modula2 "); WriteString(name); WriteString(" ");
+  WriteFixed(b, 2, 1); WriteString(" ms  "); WriteInt(r, 1);
+  WriteString("  (last: "); WriteInt(c, 1); WriteString(" runs in ");
+  WriteInt(e, 1); WriteString(" cs)"); WriteLn
+END Best;
+
+BEGIN
+  Best("fib", 1);
+  Best("sieve", 2)
+END bench.
