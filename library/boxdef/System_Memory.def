@@ -1,0 +1,15 @@
+(* System_Memory for the BOX: the two Win32 calls the Modula-2 heap
+   (sharedmod/Heap.mod) makes for its chunks. The runtime gives them
+   (win32_compat.rs); in the box the memory is the run's dynamic area, so a
+   pointer from NEW or Storage.ALLOCATE is a RISC OS address a SWI can be
+   handed. See design/BOX_PORT.md. *)
+DEFINITION MODULE System_Memory;
+
+FROM SYSTEM IMPORT ADDRESS;
+
+PROCEDURE VirtualAlloc ["VirtualAlloc" EXTERNAL]
+  (lpAddress: ADDRESS; dwSize: ADRCARD; flAllocationType: DWORD; flProtect: DWORD): ADDRESS;
+PROCEDURE VirtualFree ["VirtualFree" EXTERNAL]
+  (lpAddress: ADDRESS; dwSize: ADRCARD; dwFreeType: DWORD): INTEGER32;
+
+END System_Memory.

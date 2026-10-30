@@ -22,13 +22,13 @@
 #[cfg(windows)]
 pub use imp::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub use imp_unix::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
 
 // Shared JIT symbol registry used by the POSIX handler to name JIT-compiled
 // frames (dladdr handles the AOT binary's real symbols; this covers Build & Run
 // demos JITted in the driver). The Windows handler keeps its own equivalent.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 mod jit_syms {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -92,13 +92,14 @@ mod jit_syms {
         Some((s.name.as_str(), offset))
     }
 }
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use jit_syms::{
     finalize as finalize_jit_symbols, register as register_jit_symbol, resolve as resolve_jit_symbol,
 };
 
-// Fallback for any non-Windows, non-Unix target: no-op.
-#[cfg(not(any(windows, unix)))]
+// Fallback for any other target (Linux: the BOX, whose module has its own fault
+// escape): no-op.
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp_stub {
     #[unsafe(no_mangle)]
     pub extern "C-unwind" fn nm2_install_crash_handler() {}
@@ -107,7 +108,7 @@ mod imp_stub {
     #[unsafe(no_mangle)]
     pub extern "C-unwind" fn nm2_finalize_jit_symbols() {}
 }
-#[cfg(not(any(windows, unix)))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use imp_stub::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_register_jit_symbol};
 
 // ── POSIX (macOS / Linux) crash handler ───────────────────────────────────────
@@ -119,7 +120,7 @@ pub use imp_stub::{nm2_finalize_jit_symbols, nm2_install_crash_handler, nm2_regi
 // via dladdr (the AOT IDE binary carries real `Module.Proc` symbols), and the
 // faulting address is decoded: if its bit-pattern is a finite IEEE-754 double it
 // flags the "a REAL was used as an object pointer" miscompile class directly.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 mod imp_unix {
     use core::ffi::c_void;
     use std::sync::Once;

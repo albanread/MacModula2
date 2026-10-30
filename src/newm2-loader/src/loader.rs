@@ -71,7 +71,7 @@ fn parse_def_with_hash(path: &Path, env: &Env) -> Result<(ast::Module, ContentHa
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, LoadError> {
-    std::fs::read(path).map_err(|e| LoadError {
+    crate::vfs::read(path).map_err(|e| LoadError {
         message: format!("read failed: {e}"),
         path: Some(path.to_path_buf()),
     })

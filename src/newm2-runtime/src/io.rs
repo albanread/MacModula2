@@ -54,6 +54,11 @@ fn write_str_inner(s: &str) {
             false
         }
     });
+    #[cfg(feature = "rosbox")]
+    if !captured {
+        crate::rosbox::write_str(s);
+        return;
+    }
     if !captured {
         let _guard = HOST_IO_LOCK.lock().unwrap();
         let mut stdout = io::stdout().lock();
@@ -72,6 +77,11 @@ fn write_ln_inner() {
             false
         }
     });
+    #[cfg(feature = "rosbox")]
+    if !captured {
+        crate::rosbox::write_str("\n");
+        return;
+    }
     if !captured {
         let _guard = HOST_IO_LOCK.lock().unwrap();
         let mut stdout = io::stdout().lock();
@@ -225,6 +235,9 @@ pub unsafe extern "C-unwind" fn nm2_libc_printf(ptr: *const u16, _high: u64) -> 
 /// `exit` equivalent: terminate the program with `code`. Bound to: `libc.exit`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_libc_exit(code: i64) {
+    #[cfg(feature = "rosbox")]
+    crate::termination::nm2_halt(code);
+    #[allow(unreachable_code)]
     use std::io::Write;
     let _ = std::io::stdout().flush();
     std::process::exit(code as i32);
@@ -263,6 +276,12 @@ pub unsafe extern "C-unwind" fn nm2_io_write_err_text(addr: *const u16, n: u64) 
     }
     let units = unsafe { slice::from_raw_parts(addr, n as usize) };
     let s = render_utf16_units(units);
+    #[cfg(feature = "rosbox")]
+    {
+        crate::rosbox::write_str(&s);
+        return;
+    }
+    #[allow(unreachable_code)]
     let _guard = HOST_IO_LOCK.lock().unwrap();
     let mut stream = io::stderr().lock();
     let _ = stream.write_all(s.as_bytes());
@@ -286,6 +305,11 @@ pub unsafe extern "C-unwind" fn nm2_io_write_bytes(addr: *const u8, n: u64) {
             false
         }
     });
+    #[cfg(feature = "rosbox")]
+    if !captured {
+        crate::rosbox::write_bytes(bytes);
+        return;
+    }
     if !captured {
         let _guard = HOST_IO_LOCK.lock().unwrap();
         let mut stream = io::stdout().lock();
@@ -329,16 +353,44 @@ const READ_ALL_RIGHT: i32 = 1;
 const READ_END_OF_LINE: i32 = 4;
 const READ_END_OF_INPUT: i32 = 5;
 
+/// The next byte of input, or None at its end.
+#[cfg(not(feature = "rosbox"))]
+fn stdin_byte() -> Option<u8> {
+    let _guard = HOST_IO_LOCK.lock().unwrap();
+    let mut buf = [0u8; 1];
+    match io::stdin().lock().read(&mut buf) {
+        Ok(1) => Some(buf[0]),
+        _ => None,
+    }
+}
+
+/// The box: a line at a time from the module's read hook (OS_ReadLine32).
+#[cfg(feature = "rosbox")]
+fn stdin_byte() -> Option<u8> {
+    use std::collections::VecDeque;
+    static LINE: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+    let mut l = LINE.lock().unwrap();
+    if l.is_empty() {
+        l.extend(crate::rosbox::read_line()?);
+    }
+    l.pop_front()
+}
+
+/// A new run (the box runs many programs in one process): no input left
+/// over, no end of input seen.
+pub fn reset_stdin() {
+    let mut s = STDIN_STATE.lock().unwrap();
+    s.peek = None;
+    s.at_eof = false;
+}
+
 fn refill_peek(state: &mut StdinState) {
     if state.peek.is_some() || state.at_eof {
         return;
     }
-    let _guard = HOST_IO_LOCK.lock().unwrap();
-    let mut buf = [0u8; 1];
-    match io::stdin().lock().read(&mut buf) {
-        Ok(0) => state.at_eof = true,
-        Ok(_) => state.peek = Some(buf[0] as u16),
-        Err(_) => state.at_eof = true,
+    match stdin_byte() {
+        None => state.at_eof = true,
+        Some(b) => state.peek = Some(b as u16),
     }
 }
 
@@ -388,15 +440,12 @@ pub unsafe extern "C-unwind" fn nm2_io_read_text(addr: *mut u16, max: u64, out_n
         written = 1;
     }
     while written < dst.len() && !state.at_eof {
-        let _guard = HOST_IO_LOCK.lock().unwrap();
-        let mut buf = [0u8; 1];
-        match io::stdin().lock().read(&mut buf) {
-            Ok(0) => state.at_eof = true,
-            Ok(_) => {
-                dst[written] = buf[0] as u16;
+        match stdin_byte() {
+            None => state.at_eof = true,
+            Some(b) => {
+                dst[written] = b as u16;
                 written += 1;
             }
-            Err(_) => state.at_eof = true,
         }
     }
     unsafe { *out_n = written as u64 };

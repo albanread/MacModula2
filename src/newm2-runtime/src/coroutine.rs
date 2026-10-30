@@ -164,42 +164,51 @@ mod aarch64_impl {
         fn nm2_coroutine_trampoline();
     }
 
-    core::arch::global_asm!(
-        ".p2align 2",
-        ".globl _nm2_ctx_switch",
-        "_nm2_ctx_switch:",
-        "  stp x19, x20, [x0, #0]",
-        "  stp x21, x22, [x0, #16]",
-        "  stp x23, x24, [x0, #32]",
-        "  stp x25, x26, [x0, #48]",
-        "  stp x27, x28, [x0, #64]",
-        "  stp x29, x30, [x0, #80]",
-        "  mov x9, sp",
-        "  str x9, [x0, #96]",
-        "  stp d8,  d9,  [x0, #104]",
-        "  stp d10, d11, [x0, #120]",
-        "  stp d12, d13, [x0, #136]",
-        "  stp d14, d15, [x0, #152]",
-        "  ldp x19, x20, [x1, #0]",
-        "  ldp x21, x22, [x1, #16]",
-        "  ldp x23, x24, [x1, #32]",
-        "  ldp x25, x26, [x1, #48]",
-        "  ldp x27, x28, [x1, #64]",
-        "  ldp x29, x30, [x1, #80]",
-        "  ldr x9, [x1, #96]",
-        "  mov sp, x9",
-        "  ldp d8,  d9,  [x1, #104]",
-        "  ldp d10, d11, [x1, #120]",
-        "  ldp d12, d13, [x1, #136]",
-        "  ldp d14, d15, [x1, #152]",
-        "  ret",
-        ".p2align 2",
-        ".globl _nm2_coroutine_trampoline",
-        "_nm2_coroutine_trampoline:",
-        "  blr x19",                  // call the coroutine body (no args)
-        "  bl _nm2_coroutine_finish", // body returned: switch back to main
-        "  brk #0",                   // unreachable
-    );
+    // Symbol names: Mach-O prefixes C names with "_", ELF (the BOX's Linux) does not.
+    macro_rules! ctx_asm {
+        ($P:literal) => {
+            core::arch::global_asm!(concat!(
+        ".p2align 2\n",
+        ".globl ", $P, "nm2_ctx_switch\n",
+        $P, "nm2_ctx_switch:\n",
+        "  stp x19, x20, [x0, #0]\n",
+        "  stp x21, x22, [x0, #16]\n",
+        "  stp x23, x24, [x0, #32]\n",
+        "  stp x25, x26, [x0, #48]\n",
+        "  stp x27, x28, [x0, #64]\n",
+        "  stp x29, x30, [x0, #80]\n",
+        "  mov x9, sp\n",
+        "  str x9, [x0, #96]\n",
+        "  stp d8,  d9,  [x0, #104]\n",
+        "  stp d10, d11, [x0, #120]\n",
+        "  stp d12, d13, [x0, #136]\n",
+        "  stp d14, d15, [x0, #152]\n",
+        "  ldp x19, x20, [x1, #0]\n",
+        "  ldp x21, x22, [x1, #16]\n",
+        "  ldp x23, x24, [x1, #32]\n",
+        "  ldp x25, x26, [x1, #48]\n",
+        "  ldp x27, x28, [x1, #64]\n",
+        "  ldp x29, x30, [x1, #80]\n",
+        "  ldr x9, [x1, #96]\n",
+        "  mov sp, x9\n",
+        "  ldp d8,  d9,  [x1, #104]\n",
+        "  ldp d10, d11, [x1, #120]\n",
+        "  ldp d12, d13, [x1, #136]\n",
+        "  ldp d14, d15, [x1, #152]\n",
+        "  ret\n",
+        ".p2align 2\n",
+        ".globl ", $P, "nm2_coroutine_trampoline\n",
+        $P, "nm2_coroutine_trampoline:\n",
+        "  blr x19\n",                  // call the coroutine body (no args)
+        "  bl ", $P, "nm2_coroutine_finish\n", // body returned: switch back to main
+        "  brk #0\n",                   // unreachable
+            ));
+        };
+    }
+    #[cfg(target_os = "macos")]
+    ctx_asm!("_");
+    #[cfg(not(target_os = "macos"))]
+    ctx_asm!("");
 
     fn ensure_main() -> *mut Coroutine {
         let mut m = MAIN.with(|c| c.get());

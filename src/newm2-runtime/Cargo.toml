@@ -16,6 +16,8 @@ crate-type = ["rlib", "staticlib"]
 # `--features gc` to compile the collector back in.
 default = []
 gc = []
+# The BOX (design/BOX_PORT.md): MCJIT, RISC OS I/O hooks, data in a dynamic area
+rosbox = ["dep:dlmalloc"]
 
 [dependencies]
 
@@ -32,3 +34,4 @@ windows-sys = { version = "0.59", features = ["Win32_System_Com", "Win32_Foundat
 [target.'cfg(not(windows))'.dependencies]
 newm2-lexer = { path = "../newm2-lexer" }
 libc = "0.2"
+dlmalloc = { version = "0.2", optional = true }

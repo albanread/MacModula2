@@ -36,6 +36,12 @@ pub extern "C-unwind" fn nm2_term_is_terminating() -> bool {
 
 /// Mark that program termination (finalization) has begun. Called by the JIT
 /// runner before it executes module finalizers.
+/// A new run (the box runs many programs in one process).
+pub fn reset_termination() {
+    HALTED.store(false, Ordering::SeqCst);
+    TERMINATING.store(false, Ordering::SeqCst);
+}
+
 pub fn begin_termination() {
     TERMINATING.store(true, Ordering::SeqCst);
 }

@@ -44,6 +44,10 @@ fn regions() -> &'static Mutex<HashMap<usize, usize>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// A region's length with this bit set is in the BOX's dynamic area.
+#[cfg(feature = "rosbox")]
+const ARENA_REGION: usize = 1 << 63;
+
 /// `VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect)` — Win32
 /// contract, mmap implementation. We honor the common reserve+commit /
 /// read-write case the runtime heap uses and ignore the (NULL) hint address.
@@ -61,6 +65,16 @@ pub extern "C" fn VirtualAlloc(
 ) -> *mut c_void {
     if dw_size == 0 {
         return std::ptr::null_mut();
+    }
+    // The BOX: the run's dynamic area (64 KB aligned, as Windows gives)
+    #[cfg(feature = "rosbox")]
+    if crate::rosbox::arena_on() {
+        let p = crate::rosbox::arena_alloc(dw_size, 0x10000);
+        if !p.is_null() {
+            unsafe { std::ptr::write_bytes(p, 0, dw_size) };
+            regions().lock().unwrap().insert(p as usize, dw_size | ARENA_REGION);
+        }
+        return p as *mut c_void;
     }
     let p = unsafe {
         mmap(
@@ -89,6 +103,11 @@ pub extern "C" fn VirtualFree(
 ) -> i32 {
     let len = regions().lock().unwrap().remove(&(lp_address as usize));
     match len {
+        #[cfg(feature = "rosbox")]
+        Some(len) if len & ARENA_REGION != 0 => {
+            crate::rosbox::arena_free(lp_address as *mut u8, len & !ARENA_REGION, 0x10000);
+            1
+        }
         Some(len) => {
             let rc = unsafe { munmap(lp_address, len) };
             if rc == 0 { 1 } else { 0 }

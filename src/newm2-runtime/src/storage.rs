@@ -45,6 +45,11 @@ pub unsafe extern "C-unwind" fn nm2_storage_allocate(
         unsafe { *addr_slot = std::ptr::null_mut() };
         return;
     };
+    #[cfg(feature = "rosbox")]
+    if crate::rosbox::arena_on() {
+        unsafe { *addr_slot = crate::rosbox::arena_alloc(n, STORAGE_ALIGN) };
+        return;
+    }
     let ptr = unsafe { std::alloc::alloc(layout) };
     // Return NIL gracefully if the allocator is exhausted.
     // if ptr.is_null(), std::alloc::alloc already returns null, which we write to addr_slot.
@@ -72,6 +77,12 @@ pub unsafe extern "C-unwind" fn nm2_storage_deallocate(
         unsafe { *addr_slot = std::ptr::null_mut() };
         return;
     };
+    #[cfg(feature = "rosbox")]
+    if crate::rosbox::arena_on() {
+        crate::rosbox::arena_free(ptr, n, STORAGE_ALIGN);
+        unsafe { *addr_slot = std::ptr::null_mut() };
+        return;
+    }
     unsafe { std::alloc::dealloc(ptr, layout) };
     unsafe { *addr_slot = std::ptr::null_mut() };
 }

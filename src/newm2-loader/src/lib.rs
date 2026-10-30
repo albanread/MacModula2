@@ -16,6 +16,7 @@ pub mod graph;
 pub mod loader;
 pub mod print;
 pub mod search_path;
+pub mod vfs;
 pub mod win32_finder;
 
 pub use cache::{Cache, CacheKey, ContentHash, MemoryMode, hash_source};

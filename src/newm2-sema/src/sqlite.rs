@@ -16,6 +16,7 @@ const SQLITE_OPEN_READONLY: c_int = 0x0000_0001;
 const SQLITE_OPEN_FULLMUTEX: c_int = 0x0001_0000; // serialize; safe to share across threads
 const SQLITE_TRANSIENT: isize = -1; // tell sqlite to copy bound text immediately
 
+#[cfg(not(target_os = "linux"))]
 #[link(name = "sqlite3")]
 unsafe extern "C" {
     fn sqlite3_open_v2(
@@ -49,6 +50,25 @@ unsafe extern "C" {
     #[cfg(test)]
     fn sqlite3_next_stmt(db: *mut c_void, prev: *mut c_void) -> *mut c_void;
 }
+
+// The BOX's /init (Linux) has no libsqlite3 and no Cocoa database to read:
+// every open fails, so the Cocoa selector database is simply absent.
+#[cfg(target_os = "linux")]
+#[allow(clippy::missing_safety_doc)]
+mod nosqlite {
+    use std::ffi::{c_char, c_int, c_void};
+    pub unsafe fn sqlite3_open_v2(_: *const c_char, _: *mut *mut c_void, _: c_int, _: *const c_char) -> c_int { 1 }
+    pub unsafe fn sqlite3_close(_: *mut c_void) -> c_int { 0 }
+    pub unsafe fn sqlite3_prepare_v2(_: *mut c_void, _: *const c_char, _: c_int, _: *mut *mut c_void, _: *mut *const c_char) -> c_int { 1 }
+    pub unsafe fn sqlite3_bind_text(_: *mut c_void, _: c_int, _: *const c_char, _: c_int, _: *mut c_void) -> c_int { 1 }
+    pub unsafe fn sqlite3_step(_: *mut c_void) -> c_int { 101 }
+    pub unsafe fn sqlite3_column_text(_: *mut c_void, _: c_int) -> *const u8 { std::ptr::null() }
+    pub unsafe fn sqlite3_finalize(_: *mut c_void) -> c_int { 0 }
+    #[cfg(test)]
+    pub unsafe fn sqlite3_next_stmt(_: *mut c_void, _: *mut c_void) -> *mut c_void { std::ptr::null_mut() }
+}
+#[cfg(target_os = "linux")]
+use nosqlite::*;
 
 /// An open, read-only SQLite connection. Opened with FULLMUTEX so the handle is
 /// safe to use from any thread (the Send/Sync impls below rely on that).

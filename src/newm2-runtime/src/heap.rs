@@ -404,6 +404,17 @@ mod imp {
         let Some(layout) = layout(total) else {
             return std::ptr::null_mut();
         };
+        #[cfg(feature = "rosbox")]
+        let base = if crate::rosbox::arena_on() {
+            let p = crate::rosbox::arena_alloc(total, ALIGN);
+            if !p.is_null() {
+                unsafe { std::ptr::write_bytes(p, 0, total) };
+            }
+            p
+        } else {
+            unsafe { alloc_zeroed(layout) }
+        };
+        #[cfg(not(feature = "rosbox"))]
         let base = unsafe { alloc_zeroed(layout) };
         if base.is_null() {
             return std::ptr::null_mut();
@@ -424,6 +435,11 @@ mod imp {
             // leak the block rather than dealloc with a bogus size.
             let Some(total) = size.checked_add(PREFIX) else { return };
             let Some(layout) = layout(total) else { return };
+            #[cfg(feature = "rosbox")]
+            if crate::rosbox::arena_on() {
+                crate::rosbox::arena_free(base, total, ALIGN);
+                return;
+            }
             dealloc(base, layout);
         }
     }

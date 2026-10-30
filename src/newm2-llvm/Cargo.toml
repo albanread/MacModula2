@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 # Opt-in tracing GC; forwards to the runtime's `gc` feature. Off by default.
 default = []
 gc = ["newm2-runtime/gc"]
+# The BOX (design/BOX_PORT.md): MCJIT, RISC OS I/O hooks, data in a dynamic area
+rosbox = ["newm2-runtime/rosbox"]
 
 [dependencies]
 new-asm   = { path = "../../new-asm" }

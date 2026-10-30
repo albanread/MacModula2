@@ -62,6 +62,10 @@ pub mod callback;
 /// is a separate step.
 pub mod exceptions;
 
+/// The BOX: hooks out to RISC OS (design/BOX_PORT.md).
+#[cfg(feature = "rosbox")]
+pub mod rosbox;
+
 /// Signal-safe Windows crash handler producing annotated (M2 + native)
 /// backtraces on fatal hardware faults.
 pub mod crash;
@@ -78,11 +82,11 @@ pub mod win32_compat;
 
 /// macOS Objective-C runtime bridge (objc_getClass / sel_registerName /
 /// objc_msgSend) — the native framework-dispatch layer, analogue of COM.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub mod objc;
 
 /// macOS subprocess + file helpers (RunProg analogue) for the IDE.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub mod proc;
 
 /// No-op `SYSTEM.COLLECT` / `SYSTEM.GCREPORT` for the manual-memory build.

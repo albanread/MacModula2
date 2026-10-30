@@ -36,6 +36,14 @@ use newm2_sema::SemaResult;
 
 pub use codegen::{CodegenOptions, emit_module};
 
+// The BOX (design/BOX_PORT.md): MCJIT over the box's LLVM, data in the arena.
+#[cfg(feature = "rosbox")]
+mod boxjit;
+#[cfg(feature = "rosbox")]
+pub use boxjit::{box_end_run, box_recover, compile_modules_box, run_modules_box, BOX_DEBUG};
+#[cfg(feature = "rosbox")]
+mod static_dl;
+
 /// Return the LLVM IR text for `ir` (used by `dump-llvm`).
 pub fn emit_llvm_ir(ir: &IrModule, sema: &SemaResult, opts: CodegenOptions) -> String {
     let ctx = Context::create();
@@ -293,7 +301,7 @@ fn runtime_forwarder_pairs() -> Vec<(String, &'static str)> {
     }
 
     // macOS Objective-C bridge forwarders (mirrors the bind() calls above).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         v.push(("ObjC.GetClass".to_string(), "nm2_objc_get_class"));
         v.push(("ObjC.Selector".to_string(), "nm2_objc_sel"));
@@ -593,6 +601,7 @@ mod orc_seh {
 /// relocates already-emitted machine code), define the runtime/extern bindings
 /// as absolute symbols, then run each module body in topo order. The object-file
 /// entry point is also what lets the JIT load a prebuilt stdlib object later.
+#[cfg(not(feature = "rosbox"))]
 pub fn run_modules_orc(
     irs: &[&IrModule],
     entry_module_name: &str,
@@ -807,6 +816,7 @@ pub fn run_modules(
 ) -> Result<i32, String> {
     // ORC LLJIT is the default engine. The legacy MCJIT path is kept reachable
     // via NEWM2_MCJIT during the transition, then removed.
+    #[cfg(not(feature = "rosbox"))]
     if std::env::var_os("NEWM2_MCJIT").is_none() {
         return run_modules_orc(irs, entry_module_name, sema, opts);
     }
@@ -919,7 +929,7 @@ pub fn run_modules(
     // Wrap the run in an autorelease pool (default on) so +0 /
     // convenience-constructor Cocoa objects drain at the end of the run rather
     // than leaking with no pool in place. macOS only (no objc on Windows).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     let pool = if newm2_runtime::objc::autorelease_pool_enabled() {
         newm2_runtime::objc::autorelease_pool_push()
     } else {
@@ -963,7 +973,7 @@ pub fn run_modules(
     }
 
     // Drain the run's autorelease pool (no-op if disabled / null token).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     newm2_runtime::objc::autorelease_pool_pop(pool);
 
     match first_error {
@@ -976,7 +986,7 @@ pub fn run_modules(
 /// JIT `run_modules` (default on). Off → +0 Cocoa objects leak; useful for
 /// isolating allocation behaviour. The driver wires `--no-autorelease-pool`
 /// here. (No-op on Windows, where there is no Objective-C runtime.)
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn set_autorelease_pool(on: bool) {
     newm2_runtime::objc::nm2_set_autorelease_pool(on);
 }
@@ -1257,7 +1267,7 @@ fn for_each_runtime_binding(
     bind("libc.exit", nm2_libc_exit as *const ());
     // macOS Objective-C bridge: class lookup, selector interning, and the
     // address of objc_msgSend (M2 casts it to a typed PROCEDURE per call site).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         bind("ObjC.GetClass", newm2_runtime::objc::nm2_objc_get_class as *const ());
         bind("ObjC.Selector", newm2_runtime::objc::nm2_objc_sel as *const ());
@@ -1623,7 +1633,13 @@ fn resolve_external_function_address_impl(name: &str, _dll: Option<&str>) -> Opt
     //    DLL probing. After the Obj-C bridge bootstraps the umbrella frameworks,
     //    every libSystem / libobjc / framework C entry point resolves here, so
     //    `EXTERNAL` Modula-2 procedures can call AppKit/Foundation/CoreGraphics.
-    newm2_runtime::objc::dlsym_default(name)
+    #[cfg(target_os = "macos")]
+    return newm2_runtime::objc::dlsym_default(name);
+    // The box's /init is static: the few C routines static_dl offers.
+    #[cfg(feature = "rosbox")]
+    return static_dl::address(name);
+    #[allow(unreachable_code)]
+    None
 }
 
 fn patch_vtables(

@@ -85,7 +85,7 @@ pub unsafe extern "C-unwind" fn nm2_aot_run(entries: *const AotEntry, n: usize) 
     // convenience-constructor Cocoa objects are released when it drains, rather
     // than leaking with no pool in place. Default on; `NM2_NO_AUTORELEASE_POOL`
     // turns it off for this executable.
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     let pool = if crate::objc::autorelease_pool_enabled() {
         crate::objc::autorelease_pool_push()
     } else {
@@ -124,7 +124,7 @@ pub unsafe extern "C-unwind" fn nm2_aot_run(entries: *const AotEntry, n: usize) 
     }
 
     // Drain the run's autorelease pool (no-op if disabled / null token).
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     crate::objc::autorelease_pool_pop(pool);
 
     match first_error {

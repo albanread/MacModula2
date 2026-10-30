@@ -43,13 +43,13 @@ impl SearchPath {
         // generated/reduced shape instead of the authoritative one).
         for dir in &self.entries {
             let p = dir.join(format!("{module}.def"));
-            if p.is_file() {
+            if crate::vfs::is_file(&p) {
                 return Some(p);
             }
         }
         for dir in &self.entries {
             let p = dir.join(format!("{module}_types.def"));
-            if p.is_file() {
+            if crate::vfs::is_file(&p) {
                 return Some(p);
             }
         }
@@ -63,7 +63,7 @@ impl SearchPath {
         // Strategy 1: same directory, .mod extension.
         let mut candidate = def_path.to_path_buf();
         candidate.set_extension("mod");
-        if candidate.is_file() {
+        if crate::vfs::is_file(&candidate) {
             return Some(candidate);
         }
         // Strategy 2: sibling directory rewriting *def → *mod in the
@@ -79,7 +79,7 @@ impl SearchPath {
             "{}.mod",
             basename.to_str()?
         ));
-        if alt.is_file() { Some(alt) } else { None }
+        if crate::vfs::is_file(&alt) { Some(alt) } else { None }
     }
 }
 
