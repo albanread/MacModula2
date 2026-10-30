@@ -112,7 +112,7 @@ mod windows_impl {
 }
 
 // ─────────────────────────── macOS / arm64 (native) ─────────────────────────
-#[cfg(all(not(windows), target_arch = "aarch64"))]
+#[cfg(all(not(windows), any(target_arch = "aarch64", target_arch = "x86_64")))]
 mod aarch64_impl {
     use super::{c_void, CoroutineBody};
     use std::cell::Cell;
@@ -205,10 +205,58 @@ mod aarch64_impl {
             ));
         };
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     ctx_asm!("_");
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     ctx_asm!("");
+
+    // x86-64 (System V: the BOX's Intel /init). Ctx: regs[0..=5] rbx, rbp,
+    // r12-r15; regs[6] the stack pointer after the return; regs[7] the
+    // return address; regs[8] MXCSR and the x87 control word. A new
+    // coroutine "returns" into the trampoline with rsp at its stack's top
+    // (16-aligned), so the body is called with the ABI's alignment.
+    #[cfg(target_arch = "x86_64")]
+    macro_rules! ctx_asm_x64 {
+        ($P:literal) => {
+            core::arch::global_asm!(concat!(
+                ".p2align 4\n",
+                ".globl ", $P, "nm2_ctx_switch\n",
+                $P, "nm2_ctx_switch:\n",
+                "  mov [rdi + 0], rbx\n",
+                "  mov [rdi + 8], rbp\n",
+                "  mov [rdi + 16], r12\n",
+                "  mov [rdi + 24], r13\n",
+                "  mov [rdi + 32], r14\n",
+                "  mov [rdi + 40], r15\n",
+                "  lea rax, [rsp + 8]\n",
+                "  mov [rdi + 48], rax\n",
+                "  mov rax, [rsp]\n",
+                "  mov [rdi + 56], rax\n",
+                "  stmxcsr [rdi + 64]\n",
+                "  fnstcw [rdi + 68]\n",
+                "  mov rbx, [rsi + 0]\n",
+                "  mov rbp, [rsi + 8]\n",
+                "  mov r12, [rsi + 16]\n",
+                "  mov r13, [rsi + 24]\n",
+                "  mov r14, [rsi + 32]\n",
+                "  mov r15, [rsi + 40]\n",
+                "  ldmxcsr [rsi + 64]\n",
+                "  fldcw [rsi + 68]\n",
+                "  mov rsp, [rsi + 48]\n",
+                "  jmp qword ptr [rsi + 56]\n",
+                ".p2align 4\n",
+                ".globl ", $P, "nm2_coroutine_trampoline\n",
+                $P, "nm2_coroutine_trampoline:\n",
+                "  call rbx\n",
+                "  call ", $P, "nm2_coroutine_finish\n",
+                "  ud2\n",
+            ));
+        };
+    }
+    #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+    ctx_asm_x64!("_");
+    #[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+    ctx_asm_x64!("");
 
     fn ensure_main() -> *mut Coroutine {
         let mut m = MAIN.with(|c| c.get());
@@ -296,9 +344,19 @@ mod aarch64_impl {
         let (guarded, base, top) = alloc_guarded_stack(size);
 
         let mut ctx = Ctx::zeroed();
-        ctx.regs[0] = body as usize as u64; // x19 = body fn ptr
-        ctx.regs[11] = nm2_coroutine_trampoline as usize as u64; // x30 (lr)
-        ctx.regs[12] = top as u64; // sp
+        #[cfg(target_arch = "aarch64")]
+        {
+            ctx.regs[0] = body as usize as u64; // x19 = body fn ptr
+            ctx.regs[11] = nm2_coroutine_trampoline as usize as u64; // x30 (lr)
+            ctx.regs[12] = top as u64; // sp
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            ctx.regs[0] = body as usize as u64; // rbx = body fn ptr
+            ctx.regs[6] = top as u64; // rsp
+            ctx.regs[7] = nm2_coroutine_trampoline as usize as u64; // where it "returns"
+            ctx.regs[8] = 0x1F80 | (0x037F << 32); // MXCSR, the x87 control word: their defaults
+        }
 
         let co = Box::new(Coroutine { ctx, _stack: Some(guarded), stack_base: base, stack_top: top });
         let ptr = Box::into_raw(co);
@@ -370,7 +428,7 @@ mod aarch64_impl {
 }
 
 // ─────────────── other non-Windows arches (unsupported stub) ────────────────
-#[cfg(all(not(windows), not(target_arch = "aarch64")))]
+#[cfg(all(not(windows), not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
 mod aarch64_impl {
     use super::{c_void, CoroutineBody};
     pub(super) fn new(_body: CoroutineBody, _stack_size: usize) -> *mut c_void {
