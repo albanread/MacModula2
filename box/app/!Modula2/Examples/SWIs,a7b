@@ -1,0 +1,16 @@
+MODULE SWIs;
+(* RISC OS SWIs from Modula-2: by name and number, the X form's error *)
+IMPORT SWI;
+FROM SYSTEM IMPORT ADDRESS;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteCard;
+VAR r: SWI.Regs; e: ADDRESS; s: ARRAY [0..255] OF CHAR;
+BEGIN
+  r[0] := SWI.Str("Written by OS_Write0"); SWI.CallName("OS_Write0", r);
+  SWI.CallName("OS_NewLine", r);
+  SWI.CallName("OS_ReadMonotonicTime", r);
+  WriteString("The box has been up for "); WriteCard(r[0] DIV 100, 1); WriteString(" s"); WriteLn;
+  r[0] := 255; r[1] := SWI.Str("NoSuchFile");
+  e := SWI.XCallName("OS_File", r);
+  IF e # NIL THEN SWI.ErrorText(e, s); WriteString("XOS_File said: "); WriteString(s); WriteLn END
+END SWIs.

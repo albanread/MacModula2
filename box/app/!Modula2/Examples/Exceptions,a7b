@@ -1,0 +1,20 @@
+MODULE Exceptions;
+IMPORT EXCEPTIONS;
+FROM STextIO IMPORT WriteString, WriteLn;
+VAR src: EXCEPTIONS.ExceptionSource;
+PROCEDURE P;
+BEGIN
+  EXCEPTIONS.RAISE(src, 7, "seven")
+EXCEPT
+  WriteString("caught number "); 
+  IF EXCEPTIONS.CurrentNumber(src) = 7 THEN WriteString("7") END; WriteLn;
+  RETURN
+END P;
+BEGIN
+  EXCEPTIONS.AllocateSource(src);
+  P;
+  WriteString("now unhandled:"); WriteLn;
+  EXCEPTIONS.RAISE(src, 9, "nine")
+FINALLY
+  WriteString("finally ran"); WriteLn
+END Exceptions.

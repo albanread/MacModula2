@@ -1,0 +1,40 @@
+!Modula2 -- Modula-2 on the BOX
+
+Modula-2 (PIM 4 and ISO 10514-1) compiled to machine code in memory by
+LLVM and run at once, inside the box.  The compiler is MacModula2's.
+
+Files
+  &A7B Modula2   a program module or an implementation module (.mod)
+  &A7C M2Def     a definition module (.def)
+  Double-click a program to run it: its output appears in a TaskWindow;
+  a program that makes a Declaritive window runs as a task of its own.
+  The modules a program imports are found beside it (Name/def and
+  Name/mod, or def.Name and mod.Name), then in the standard library.
+
+The command
+  *Modula2 [-c] [-t] [-O0..3] <file> [<arguments>]
+    -c       compile only and report errors as  file:line: error: text
+    -t       give the compile time
+    -O0..-O3 LLVM's optimisation (default -O2)
+  Escape stops a program (as HALT).  A fault ends the run, not the box.
+
+The library
+  The ISO library (STextIO, SWholeIO, SRealIO, TextIO, SeqFile,
+  StreamFile, RndFile, Strings, EXCEPTIONS, COROUTINES, ...), PIM's
+  (InOut, ...), and two of the box's own:
+  SWI          RISC OS SWIs by name or number, registers in and out:
+               Call raises an exception on an error, XCall returns the
+               error block.  Str copies a string for a SWI, GetStr reads
+               one back, Addr checks that an address is RISC OS's.
+               NEW'd memory and global variables are in a dynamic area
+               ("Modula-2") and can be given to SWIs.
+  Declaritive  desktop windows described in JSON (the Declaritive
+               module): Init, Add, Create, Set, Get, Poll, CloseDown.
+  Their definition modules are in the ROM, /usr/lib/modula2/boxdef.
+
+Not on the box
+  Cocoa, Objective-C, COM and Win32, inline x86 assembler, and building
+  executables (programs are always compiled and run).
+
+Examples
+  Hello, SWIs, Files, Classes, Coroutines, Exceptions, Bench, Greeter.

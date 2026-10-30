@@ -1,0 +1,8 @@
+| !Boot for !Modula2: the file types and their sprites
+Set Modula2$Dir <Obey$Dir>
+IconSprites <Modula2$Dir>.!Sprites
+Set File$Type_A7B Modula2
+Set File$Type_A7C M2Def
+| Double-click: *Modula2 -run runs a program that makes a Declaritive window
+| as a task of its own, any other in a TaskWindow, where its output is read
+Set Alias$@RunType_A7B Modula2 -run %%*0

@@ -1,0 +1,41 @@
+MODULE Greeter;
+(* A desktop window from Modula-2, by the Declaritive module. The window is
+   described in JSON; its events come back from Poll. *)
+IMPORT Declaritive, SWI;
+FROM Declaritive IMPORT Event, Is;
+FROM WholeStr IMPORT IntToStr;
+FROM Strings IMPORT Concat;
+VAR w: Declaritive.Window; e: Event; done: BOOLEAN;
+    r: SWI.Regs; start: CARDINAL32; n, t: ARRAY [0..255] OF CHAR;
+BEGIN
+  Declaritive.Init("Greeter");
+  Declaritive.Add("{'type':'window','id':'greeter','title':'Modula-2 + Declaritive','tick':100,");
+  Declaritive.Add("'body':{'type':'form','children':[");
+  Declaritive.Add("{'type':'input','id':'name','label':'Your name','live':true},");
+  Declaritive.Add("{'type':'text','id':'greeting','label':'Greeting','text':'Type your name'},");
+  Declaritive.Add("{'type':'text','id':'clock','label':'Running for','text':''},");
+  Declaritive.Add("{'type':'row','span':true,'children':[{'type':'spacer'},");
+  Declaritive.Add("{'type':'button','id':'quit','text':'Quit'}]}]}}");
+  w := Declaritive.Create();
+  SWI.CallName("OS_ReadMonotonicTime", r); start := r[0];
+  done := FALSE;
+  WHILE NOT done DO
+    IF Declaritive.Poll(e) THEN
+      CASE e.kind OF
+        Declaritive.Click: done := Is(e.id, "quit")
+      | Declaritive.Change:
+          IF Is(e.id, "name") THEN
+            Concat("Hello, ", e.value, t); Concat(t, "!", t);
+            Declaritive.Set(w, "greeting", "text", t)
+          END
+      | Declaritive.Tick:
+          SWI.CallName("OS_ReadMonotonicTime", r);
+          IntToStr(VAL(INTEGER, (r[0] - start) DIV 100), n); Concat(n, " seconds", t);
+          Declaritive.Set(w, "clock", "text", t)
+      | Declaritive.Close, Declaritive.Quit: done := TRUE
+      ELSE
+      END
+    END
+  END;
+  Declaritive.CloseDown
+END Greeter.

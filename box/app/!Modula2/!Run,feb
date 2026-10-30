@@ -1,0 +1,3 @@
+| !Run for !Modula2: the file types, then the examples
+/<Obey$Dir>.!Boot
+Filer_OpenDir <Modula2$Dir>.Examples

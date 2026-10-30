@@ -1,0 +1,61 @@
+(* Declaritive: desktop windows described in JSON, from Modula-2 on the BOX.
+
+   The Declaritive module (SWI chunk &C0380) makes a Wimp window from a
+   JSON spec and turns the Wimp's events into the program's: a click on a
+   button, a change in a field, the tick, the window closed. A program
+   becomes a Wimp task with Init, makes its windows, then calls Poll in a
+   loop and acts on what it gets; CloseDown at the end.
+
+   A spec is built with Add (which appends to the spec in hand) and made
+   with Create; JSON's strings may be in single quotes:
+
+     Declaritive.Init("Greeter");
+     Declaritive.Add("{'type':'window','id':'w','title':'Hello',");
+     Declaritive.Add(" 'body':{'type':'button','id':'quit','text':'Quit'}}");
+     w := Declaritive.Create();
+     WHILE Declaritive.Poll(e) & NOT ((e.kind = Declaritive.Click) & Is(e.id, "quit")) DO END;
+     Declaritive.CloseDown
+
+   See the Declaritive module's SPEC.md for the nodes and their properties. *)
+DEFINITION MODULE Declaritive;
+
+TYPE
+  Window = CARDINAL32;
+  Text = ARRAY [0..255] OF CHAR;
+  Event = RECORD
+    kind: INTEGER;      (* Click .. Paste below; 0 none *)
+    window: Window;
+    name: Text;         (* the event's name *)
+    id: Text;           (* the node's id *)
+    value: Text;        (* a field's text, a choice, a file's name *)
+    number: INTEGER;    (* a choice's index, a file's type, a key *)
+    x, y: INTEGER;      (* a canvas click; a pointer; a new size *)
+  END;
+
+CONST
+  Click = 1; Change = 2; Submit = 3; Menu = 4; Close = 5; Iconbar = 6;
+  Quit = 7; Drop = 8; Tick = 9; Key = 10; Canvas = 11; Pointer = 12;
+  Resize = 13; Save = 14; Paste = 15;
+
+(* Starts the Wimp task (Declaritive_Initialise) *)
+PROCEDURE Init (taskName: ARRAY OF CHAR);
+(* Appends text to the spec in hand *)
+PROCEDURE Add (text: ARRAY OF CHAR);
+(* A window from the spec in hand (which is then emptied) *)
+PROCEDURE Create (): Window;
+(* A property of the node id in window w *)
+PROCEDURE Set (w: Window; id, prop, value: ARRAY OF CHAR);
+PROCEDURE Get (w: Window; id, prop: ARRAY OF CHAR; VAR value: ARRAY OF CHAR);
+(* Many properties at once, and a new spec for the window: from the spec in hand *)
+PROCEDURE Patch (w: Window);
+PROCEDURE Update (w: Window);
+PROCEDURE Open (w: Window);
+PROCEDURE CloseWindow (w: Window);
+(* One Wimp_Poll and its dispatch: TRUE with an event for the program in e *)
+PROCEDURE Poll (VAR e: Event): BOOLEAN;
+(* Whether two strings are the same (for e.id, e.name) *)
+PROCEDURE Is (a, b: ARRAY OF CHAR): BOOLEAN;
+(* Ends the task *)
+PROCEDURE CloseDown;
+
+END Declaritive.
