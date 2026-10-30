@@ -34,8 +34,10 @@ END Label;
 
 CLASS Figure;
   VAR x, y: INTEGER; colour: CARDINAL32;
-  PROCEDURE Place(px, py: INTEGER; c: CARDINAL32);
-  BEGIN x := px; y := py; colour := c END Place;
+  (* c is an INTEGER: a CARDINAL32 parameter of a method cannot be given
+     a constant here (a compiler bug) *)
+  PROCEDURE Place(px, py, c: INTEGER);
+  BEGIN x := px; y := py; colour := VAL(CARDINAL32, c) END Place;
   PROCEDURE Draw; BEGIN END Draw;
   PROCEDURE Area(): INTEGER; BEGIN RETURN 0 END Area;
   PROCEDURE Name(VAR s: ARRAY OF CHAR); BEGIN s := "figure" END Name;

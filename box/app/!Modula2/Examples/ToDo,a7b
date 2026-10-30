@@ -45,8 +45,12 @@ BEGIN
   DEC(count); Show
 END Remove;
 
+(* A SWI writes only into RISC OS memory: a global variable (or NEW'd
+   memory), never a procedure's local variable *)
+VAR buf: ARRAY [0..63] OF ACHAR;
+
 PROCEDURE Clock;
-VAR r: SWI.Regs; buf: ARRAY [0..63] OF ACHAR; t, s: ARRAY [0..63] OF CHAR;
+VAR r: SWI.Regs; t, s: ARRAY [0..63] OF CHAR;
 BEGIN
   r[0] := SWI.Str("Sys$Time"); r[1] := SWI.Addr(ADR(buf)); r[2] := 60; r[3] := 0; r[4] := 3;
   SWI.CallName("OS_ReadVarVal", r);

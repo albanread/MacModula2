@@ -4,7 +4,7 @@ MODULE Calc;
    adds.  Real numbers, read and written by RealStr. *)
 IMPORT Declaritive;
 FROM Declaritive IMPORT Event, Is;
-FROM RealStr IMPORT StrToReal, RealToStr;
+FROM RealStr IMPORT StrToReal, RealToFixed;
 FROM ConvTypes IMPORT ConvResults, strAllRight;
 
 VAR w: Declaritive.Window; e: Event; done: BOOLEAN;
@@ -31,7 +31,7 @@ BEGIN
   | "*": x := a * b
   | "/": IF b = 0.0 THEN Answer("Cannot divide by zero"); RETURN END; x := a / b
   END;
-  RealToStr(x, t);
+  RealToFixed(x, 4, t);                       (* four places after the point *)
   Answer(t)
 END Calculate;
 
