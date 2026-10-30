@@ -107,9 +107,9 @@ it), so that its pointers are RISC OS addresses:
   system memory is the dynamic area, grown with OS_ChangeDynamicArea;
 - the program's global variables: the JIT's data sections are allocated
   in the dynamic area by the memory manager;
-- the program's stack: the program body runs on a stack in the dynamic
-  area (the coroutine code's context switch, with the stack taken from
-  the area), so `ADR` of a local is a RISC OS address too.
+- the program's stack (planned: the body on a stack in the dynamic area,
+  so that `ADR` of a local is a RISC OS address too; not done, see
+  section 11).
 
 Only code (and Rust's own memory: the compiler, the runtime's tables)
 stays above 4 GB. A register value passed to a SWI that does not fit in
@@ -214,6 +214,152 @@ done.
 4. !Code.
 5. Intel: build, host checks, the Mac Pro run written down.
 
-## 11. As built
+## 11. As built (30 Oct 2026)
 
-(Filled in as the steps are done.)
+Branches: this repository's `cli/m2-box`; A7232ToolChain's `modula2`
+(from `fbllvm`; worktree `src/A7232ToolChain-modula2`).
+
+**Build.** `sh box/build.sh aarch64|x86_64` (cargo for
+`<arch>-unknown-linux-musl`, zig 0.15 as the C compiler, about a minute
+from clean, seconds after) makes `BOX/caches/modula2/out-<arch>/`:
+`libm2-box.a` (the Rust staticlib, which already carries the NCL LLVM
+archives that llvm-sys links statically, partly linked and every symbol
+but `box/exports.txt` made local) and `lib/`, the standard library
+(isodef/isomod, pimdef/pimmod, rtdef, utildef/utilmod, ulibdef/ulibmod,
+shareddef/sharedmod, boxdef/boxmod). The A7232ToolChain Makefile links the
+library into `/init` when it is there (`M2_LIB`), puts `lib/` in the ROM
+as `/usr/lib/modula2`, and `make usershare` copies `box/app/!Modula2`.
+
+**Size.** The Arm `/init`'s code is 109 MB (FasterBASIC's branch: 75 MB):
+LLVM is in it twice now, FasterBASIC's copy and this one, each made local
+to its library. Sharing one copy of LLVM between the two (or with rosbas)
+is the box's choice to make; it would need both libraries to be linked
+against one set of LLVM symbols.
+
+**The JIT.** MCJIT, as section 3. One thing differed from the plan: the
+AArch64 code MCJIT makes is position-independent and reaches its data
+through a GOT by ADRP (+-4 GB) whatever code model is asked for. With the
+data in the arena (below 4 GB) and the code mmap'd anywhere, the first run
+faulted on a wrapped address. The memory manager now puts code just above
+4 GB (asked for at 0x1_0000_0000 upwards), in reach of the arena.
+
+**What was found and fixed on the way** (all in these branches):
+- `static_dl.rs`, taken from NewCL-BOX: the table of C routines LLVM's code
+  calls on its own (memcpy, the maths library, 128-bit division) was
+  evaluated and its answer dropped, so every one resolved to null and a
+  program that copied a string jumped to address 0. NewCL-BOX has the same
+  code (src/ncl-llvm/src/static_dl.rs) and should take the fix.
+- The coroutine switch's assembly named its symbols for Mach-O only
+  ("_nm2_ctx_switch"); it now works on ELF, and there is an x86-64 switch.
+- The ISO file devices (SeqFile, StreamFile, RndFile) and the console
+  (StdChans, TermFile) read text past the line mark, so `ReadString` ran
+  lines together and `ReadString; SkipLine` swallowed the next line; they
+  now stop at it (ISO), on the Mac too.
+- Cocoa, ObjC, Proc and the POSIX crash handler are macOS-only in the
+  runtime; the Cocoa selector database (SQLite) is absent on Linux.
+- Classes are Objective-C or vtables by a run-time switch
+  (`set_native_classes`), so the host check sees the box's classes.
+
+**What had to go**: Cocoa, Objective-C, CG, Proc, COM, Win32 and their
+library directories (macrt*, NewM2), inline ASM procedures, `newm2 build`
+(executables) and the GC feature. **Kept**: modules (a program's own
+modules beside it, as `Name/def` and `Name/mod` or `def.Name`, `mod.Name`),
+the ISO and PIM libraries, exceptions with EXCEPT and FINALLY, coroutines,
+sets, LONGREAL, CLASS (with vtables), HALT's code in `Sys$ReturnCode`.
+
+**Proved in the Arm box under QEMU** (slots A and B):
+- `*Modula2` (box/boxtest.sh): output through the VDU; `-c`, `-t`, `-O0`
+  to `-O3`; a compile error as `FILE:LINE: error: TEXT` with the RISC OS
+  name; SWIs by name and number, registers in and out, `XCall`'s error
+  block with V set, `Call`'s error caught as an exception, a global
+  ACHAR buffer and a NEW'd one given to SWIs; files written and read back
+  through RISC OS (ISO SeqFile, TextIO); coroutines; a class with an
+  overridden method; an unhandled exception reported; a stack overflow
+  ending the run and the next run normal.
+- `tools/build-arm-mac.sh --check`: 4 of 2023 checks failed, the known
+  four (three share checks, one MimeMap); the 13 Modula-2 checks
+  (boot/selftest_modula2.c) pass.
+- The desktop, driven with deskdrive (box/deskbox.sh): `!Modula2` in the
+  Filer with its icon, its !Run opening Examples, the file types' icons;
+  a double-click on Hello running it in a TaskWindow; input read there;
+  Escape ending a printing loop (its FINALLY ran); a double-click on
+  Greeter running it as its own task: the Declaritive window, its tick,
+  change events ("Hello, Box!"), Quit.
+- !Code: a Modula-2 file dropped on it, highlighted (nested comments,
+  pragmas, strings, numbers); Build reporting the compiler's error in the
+  problems and F8 going to its line; Ctrl-Shift-F formatting; F1 showing
+  `STextIO.WriteString`'s declaration and comment from the ROM's library;
+  Run; a directory dropped on it made a Modula-2 project by the Project
+  pane, run with Ctrl-F5 (`*Make run`: main/mod importing Greet).
+
+**Benchmarks** (`box/tests/bench.mod`, best of three, Arm box under QEMU,
+beside docs/cli-tasks/bench-fasterbasic.bas's numbers in
+zfb2026's design/BOX_PORT.md):
+
+| test | Modula-2 (O2) | FasterBASIC LLVM (O2) | FasterBASIC QBE |
+|---|---|---|---|
+| fib(30) | 1.67 ms | 1.37 ms | 1.8 ms |
+| sieve, primes below 2,000,000 | 4.24 ms (148933) | 7.0 ms | 14.7 ms |
+
+At -O3 LLVM sees that Fib(30) is pure and the loop's result unused and
+hoists it (0.00 ms): not a measurement. -O0: fib 2.37 ms, sieve 10.6 ms.
+The bench compiles in 335 ms (front end 33 ms), most of it the ISO library
+modules it imports, which are compiled with every program.
+
+**The Intel box.** Built on the Studio: `box/build.sh x86_64` (the X86
+backend only: the AArch64 initialisers are gone from the x86 library) and
+`make ARCH=x86_64` in A7232ToolChain `modula2`: `build/init` links the
+module and library (an x86-64 ELF, 119 MB of text; `build/initramfs.cpio`
+341 MB, with /usr/lib/modula2). Host-side, `sh box/hostcheck.sh` compiles
+box/tests/*.mod (hello, swi, cls, cor, files, exc, deep, bench) with the
+box's front end and code generator for x86_64-unknown-linux-musl, as the
+JIT does (the large code model), and checks: ELF x86-64; no 32-bit
+PC-relative reference out of an object; every name an object needs is
+bound by the JIT. All eight pass. Nothing has run on x86-64: the x86-64
+coroutine switch, the MCJIT memory manager's placement on x86-64 and the
+fault escape there are unproved.
+
+**What must be run on the Mac Pro** (`ssh macpro`, BOX root
+/Users/Shared/BOX; one session at a time):
+
+1. Check out A7232ToolChain branch `modula2` and this repository's branch
+   `cli/m2-box` side by side in `BOX/src` (as `A7232ToolChain-modula2` and
+   `MacModula2-cli-m2-box`); `rosgd/tools/box-root.sh` in the first.
+2. The library: copy the Studio's `BOX/caches/modula2/out-x86_64` to the
+   same place there (or build it: `sh box/build.sh x86_64` needs Rust with
+   the x86_64-unknown-linux-musl target, zig 0.15 and the x86-64 NCL LLVM
+   set in `BOX/caches/intel-mac/llvm-libs-box-x86_64-ncl`).
+3. In `rosgd`: `tools/build-intel-mac.sh --check`. Pass: no more than the
+   4 known failures, and every check from "the Modula2 module is in the
+   ROM" to "the run after a fault is as good as the first" (13) reading
+   `ok`. These prove MCJIT's x86-64 code with data in the arena, the
+   runtime and the SWI bridge, files, the x86-64 coroutine switch, and
+   the fault escape on x86-64.
+4. The bench: `box/tests/bench.mod` on a share as `bench,a7b`, then
+   `*Modula2 -t HostFS::Host.$.bench` in a box under HVF.
+5. The desktop (`run/run-x86_64.sh` with `make ARCH=x86_64 usershare`):
+   `!Modula2`, a double-click on Examples.Hello and Examples.Greeter, and
+   !Code with a Modula-2 file (Build, F8, F1, Ctrl-Shift-F, Run).
+
+**Left.**
+- Everything Intel beyond building and the host check: the run above.
+- Escape is seen when a program prints, reads or calls a SWI: a loop that
+  does none of these cannot be stopped (as FasterBASIC).
+- A fault inside the runtime's Rust while it holds a lock (the arena's,
+  the files') would leave that lock held for the next run.
+- The library is compiled with every program (no interface or object
+  cache in the box); a cache in the dynamic area or on disc would cut the
+  300 ms of a program that imports the ISO I/O modules.
+- Text in files is written as UTF-8 (a character above 127 is two bytes),
+  the console as Latin-1.
+- A text file read through the ISO channels costs a SWI per character (the
+  device reads a character at a time); a buffer in the RISC OS file would
+  remove that.
+- The program's stack is /init's, not in the arena: `ADR` of a local
+  variable is not a RISC OS address (SWI.Addr says so); globals, NEW'd
+  memory and SWI.Str are. Running the program body on a stack in the
+  dynamic area (section 5) is not done.
+- A module's own FINALLY does not run when its body ends with an unhandled
+  exception (the Mac's behaviour too).
+- !Code: no completion or rename for Modula-2 (no language server);
+  Comment out has no line comment to use.
