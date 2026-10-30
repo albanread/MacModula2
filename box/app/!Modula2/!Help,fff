@@ -37,4 +37,26 @@ Not on the box
   executables (programs are always compiled and run).
 
 Examples
-  Hello, SWIs, Files, Classes, Coroutines, Exceptions, Bench, Greeter.
+  Graphics go to the screen: run Figures and Bounce from the command line
+  (F12): *Modula2 <Modula2$Dir>.Examples.Figures.  Double-click the rest.
+
+  Hello       printing, and a SWI
+  SWIs        by name and number, registers in and out, the X form's error
+  Machine     time and date, OS version, memory, variables, the screen mode
+  Files       a text file written and read back by SeqFile and TextIO
+  Catalogue   OS_File: save, information, load; a directory by OS_GBPB
+  Guess       a number guessing game: ReadInt, and a key by OS_Byte 129
+  Figures     a CLASS hierarchy that draws itself with OS_Plot
+  Bounce      an animation, with text placed by VDU 31 and coloured by VDU 17
+  Life        Conway's Game of Life in text, drawn in place
+  Classes     a class and a subclass, a method overridden
+  Modules     a module of its own (def.Queues, mod.Queues): an opaque type,
+              and its exception caught
+  Sets        enumerations and sets: union, intersection, IN, INCL, EXCL
+  Exceptions  RAISE, EXCEPT and FINALLY
+  Coroutines  NEWPROCESS and TRANSFER
+  Generators  coroutines as generators: primes and Fibonacci side by side
+  Bench       a benchmark, timed
+  Greeter     a desktop window from JSON, by the Declaritive module
+  Calc        a calculator form: fields, buttons, an answer (Declaritive)
+  ToDo        a to-do list: a list box, buttons and a clock (Declaritive)
