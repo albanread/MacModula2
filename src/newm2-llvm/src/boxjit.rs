@@ -146,6 +146,25 @@ fn target_machine(opt: u32) -> Result<TargetMachine, String> {
         .ok_or_else(|| "create_target_machine failed".to_string())
 }
 
+/// The host check (box/hostcheck.sh): the box's code for `triple` (as the
+/// JIT makes it: the large code model) written as an object file.
+pub fn emit_object_box(irs: &[&IrModule], sema: &SemaResult, opts: CodegenOptions, triple: &str, out: &std::path::Path) -> Result<(), String> {
+    codegen::init_llvm();
+    #[cfg(feature = "x86-check")]
+    Target::initialize_x86(&inkwell::targets::InitializationConfig::default());
+    let ctx = Context::create();
+    let module = emit_linked_module(&ctx, irs, sema, opts)?;
+    module.verify().map_err(|e| format!("LLVM verify: {e}"))?;
+    let t = inkwell::targets::TargetTriple::create(triple);
+    let target = Target::from_triple(&t).map_err(|e| format!("Target::from_triple: {e}"))?;
+    let tm = target
+        .create_target_machine(&t, "generic", "", opt_level(opts.opt_level), RelocMode::Default, CodeModel::Large)
+        .ok_or_else(|| "create_target_machine failed".to_string())?;
+    module.set_triple(&t);
+    optimize_module(&module, &tm, opts.opt_level)?;
+    tm.write_to_file(&module, FileType::Object, out).map_err(|e| format!("write {}: {e}", out.display()))
+}
+
 /// `*Modula2 -c`: the whole back end, no run.
 pub fn compile_modules_box(irs: &[&IrModule], sema: &SemaResult, opts: CodegenOptions) -> Result<(), String> {
     codegen::init_llvm();

@@ -9,6 +9,15 @@ description = "Modula-2 for the BOX (64-bit RISC OS over Linux): the compiler an
 crate-type = ["rlib", "staticlib"]
 path = "src/lib.rs"
 
+[features]
+# box/hostcheck.sh: x86-64 objects from an Arm Mac
+x86-check = ["newm2-llvm/x86-check"]
+
+[[bin]]
+name = "m2-hostcheck"
+path = "src/hostcheck.rs"
+required-features = ["x86-check"]
+
 [dependencies]
 newm2-ir = { path = "../src/newm2-ir" }
 newm2-lexer = { path = "../src/newm2-lexer" }

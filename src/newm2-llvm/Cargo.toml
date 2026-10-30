@@ -10,6 +10,8 @@ default = []
 gc = ["newm2-runtime/gc"]
 # The BOX (design/BOX_PORT.md): MCJIT, RISC OS I/O hooks, data in a dynamic area
 rosbox = ["newm2-runtime/rosbox"]
+# The host check of the BOX's Intel code on an Arm Mac: LLVM's X86 backend too
+x86-check = ["inkwell/target-x86"]
 
 [dependencies]
 new-asm   = { path = "../../new-asm" }

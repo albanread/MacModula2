@@ -27,6 +27,20 @@ use crate::module::{Global, IrModule, MemoryMode, ObjCMethod};
 
 // ---- Entry point ----------------------------------------------------------
 
+/// Classes are Objective-C classes on macOS (docs/macm2-runtime.md), the
+/// compiler's own vtables elsewhere. `set_native_classes(true)` asks for the
+/// vtables on macOS too: the BOX's host check (box/hostcheck.sh) compiles the
+/// box's code on a Mac.
+static NATIVE_CLASSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_native_classes(on: bool) {
+    NATIVE_CLASSES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn objc_classes() -> bool {
+    cfg!(target_os = "macos") && !NATIVE_CLASSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Lower a single module from AST+sema to IR.
 ///
 /// Returns `None` for intrinsic-only modules (e.g. SYSTEM) that have no
@@ -239,7 +253,7 @@ pub fn lower_module_opts(
         // NEW/dispatch keep using it until the M0 NEW/dispatch stages land.
         // An EXTERNAL Cocoa class (`<* cocoa_class "X" *>`) is the existing Obj-C
         // class X — never registered; only subclasses of it and direct use are.
-        if cfg!(target_os = "macos") && class.objc_class_name.is_none() {
+        if objc_classes() && class.objc_class_name.is_none() {
             let methods: Vec<ObjCMethod> = class
                 .vtable
                 .iter()
@@ -1124,7 +1138,7 @@ fn lower_method(
     // hidden `_cmd` selector slot after SELF so the declared parameters land in
     // the right registers under objc_msgSend. The body never names `_cmd`; it is
     // a dead incoming argument. See docs/design/cocoa-classes.md.
-    if cfg!(target_os = "macos") {
+    if objc_classes() {
         params.push(IrParam {
             name: "_cmd".into(),
             ty: ctx.sema.types.builtin(Builtin::Address),
@@ -2679,7 +2693,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         let sel = self.eval_expr(selector);
         let addr = self.ctx.sema.types.builtin(Builtin::Address);
         let bool_ty = self.ctx.sema.types.builtin(Builtin::Boolean);
-        let on_macos = cfg!(target_os = "macos");
+        let on_macos = objc_classes();
         // The selector's typeinfo, computed ONCE (null-safe). On macOS the object
         // is an Obj-C instance with no field-0 typeinfo, so each arm tests via
         // `isKindOfClass:` instead (below) and this is unused.
@@ -4398,7 +4412,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // macOS: an M2 object is an Obj-C object, so a class membership test is
         // `[value isKindOfClass: getClass(T)]` (the Cocoa analogue of the COM QI
         // probe) — never the native field-0 RTTI walk, which would read the isa.
-        if cfg!(target_os = "macos") {
+        if objc_classes() {
             // `ISMEMBER(p1,p2)` tests class(p1) <= class(p2) (p1 is-a p2). Which
             // runtime primitive computes that depends on which side has a live
             // instance to introspect:
@@ -5078,7 +5092,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // call IS a message send — objc_msgSend(self, @selector(...), args…) —
         // not a native vtable load (field 0 is the isa, not our vtable). See
         // docs/design/cocoa-classes.md.
-        if cfg!(target_os = "macos") {
+        if objc_classes() {
             if let Some(msig) = msgsend_sig {
                 let addr = self.ctx.sema.types.builtin(Builtin::Address);
                 let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
@@ -5968,7 +5982,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
                 };
                 // macOS: a class instance is a real Obj-C object — `[p release]`
                 // rather than the native heap deallocate. See cocoa-classes.md.
-                let is_objc_obj = cfg!(target_os = "macos") && self.class_instance_info(target).is_some();
+                let is_objc_obj = objc_classes() && self.class_instance_info(target).is_some();
                 let ptr = self.eval_designator_val(target);
                 if is_objc_obj {
                     let addr = self.ctx.sema.types.builtin(Builtin::Address);
@@ -6214,7 +6228,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
     /// `SELF.field` lands in the `__m2` ivar that sits after the Cocoa
     /// superclass's ivars. A no-op for NSObject/M2-rooted classes.
     fn objc_field_base(&mut self, obj: ValueId, cid: ClassSymbolId) -> ValueId {
-        if cfg!(target_os = "macos") && self.ctx.sema.classes.is_cocoa_rooted(cid) {
+        if objc_classes() && self.ctx.sema.classes.is_cocoa_rooted(cid) {
             let addr = self.ctx.sema.types.builtin(Builtin::Address);
             self.call_runtime(
                 "nm2_objc_field_base",
@@ -6284,7 +6298,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         // macOS (Max Mac Native): NEW(p) makes a real Obj-C instance —
         // [[Class alloc] init] on the class the registrar built — so an M2
         // object is a genuine Cocoa object. See docs/design/cocoa-classes.md.
-        if cfg!(target_os = "macos") {
+        if objc_classes() {
             // An EXTERNAL Cocoa class allocates the real Obj-C class by its bound
             // name; an M2 class allocates its registered `M2.<module>.<class>`.
             let mangled = self

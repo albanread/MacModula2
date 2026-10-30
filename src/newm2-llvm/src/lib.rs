@@ -40,9 +40,19 @@ pub use codegen::{CodegenOptions, emit_module};
 #[cfg(feature = "rosbox")]
 mod boxjit;
 #[cfg(feature = "rosbox")]
-pub use boxjit::{box_end_run, box_recover, compile_modules_box, run_modules_box, BOX_DEBUG};
-#[cfg(feature = "rosbox")]
+pub use boxjit::{box_end_run, box_recover, compile_modules_box, emit_object_box, run_modules_box, BOX_DEBUG};
+#[cfg(all(feature = "rosbox", target_os = "linux"))]
 mod static_dl;
+/// Off the box (the host check) the JIT's C routines are the process's own.
+#[cfg(all(feature = "rosbox", not(target_os = "linux")))]
+mod static_dl {
+    pub fn offers(_: &str) -> bool {
+        true
+    }
+    pub fn address(_: &str) -> Option<*const ()> {
+        None
+    }
+}
 
 /// Return the LLVM IR text for `ir` (used by `dump-llvm`).
 pub fn emit_llvm_ir(ir: &IrModule, sema: &SemaResult, opts: CodegenOptions) -> String {

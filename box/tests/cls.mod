@@ -1,0 +1,20 @@
+MODULE cls;
+FROM STextIO IMPORT WriteString, WriteLn;
+FROM SWholeIO IMPORT WriteInt;
+CLASS Animal;
+  VAR legs: INTEGER;
+  PROCEDURE Init(n: INTEGER); BEGIN legs := n END Init;
+  PROCEDURE Legs(): INTEGER; BEGIN RETURN legs END Legs;
+  PROCEDURE Speak; BEGIN WriteString("...") END Speak;
+END Animal;
+CLASS Dog;
+  INHERIT Animal;
+  OVERRIDE PROCEDURE Speak; BEGIN WriteString("Woof") END Speak;
+END Dog;
+VAR a: Animal; d: Dog;
+BEGIN
+  NEW(a); a.Init(2); NEW(d); d.Init(4);
+  a.Speak; WriteInt(a.Legs(), 2); WriteLn;
+  a := d; a.Speak; WriteInt(a.Legs(), 2); WriteLn;
+  WriteString("classes done"); WriteLn
+END cls.

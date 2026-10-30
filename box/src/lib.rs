@@ -224,6 +224,30 @@ fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
     }
 }
 
+/// The host check: `entry` (a host path) and its imports, compiled by the
+/// box's front end and code generator for `triple`, as an object file.
+pub fn host_emit(entry: &Path, library: &Path, triple: &str, out: &Path) -> Result<(), String> {
+    *LIBRARY.lock().unwrap() = Some(library.to_path_buf());
+    newm2_ir::set_native_classes(true);
+    let mut sp = SearchPath::new();
+    if let Some(p) = entry.parent() {
+        sp.push(p);
+    }
+    for d in search_path(Path::new("/")).entries() {
+        sp.push(d.clone());
+    }
+    let env = Env::target_default().with("BOX", true).with("RISCOS", true);
+    let graph = newm2_loader::build_module_graph_with_extra_roots(entry, &sp, &env, None, &[]).map_err(|e| e.message)?;
+    let sema = newm2_sema::check_module_graph_strict(&graph, false);
+    if sema.has_errors() {
+        return Err(sema.diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; "));
+    }
+    let lowered: Vec<_> = graph.topo_order.iter().filter_map(|&mid| lower_module_opts(&graph, mid, &sema, MemoryMode::NoGc, true)).collect();
+    let refs: Vec<_> = lowered.iter().collect();
+    let opts = CodegenOptions { memory_mode: MemoryMode::NoGc, opt_level: 2, aot: false, m2_heap: false, protect_heap: false };
+    newm2_llvm::emit_object_box(&refs, &sema, opts, triple, out)
+}
+
 fn reset_run() {
     newm2_runtime::file::close_all();
     rosbox::clear_stop();
