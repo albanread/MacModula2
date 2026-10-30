@@ -1,0 +1,50 @@
+(* SWI: RISC OS SWIs from Modula-2, on the BOX.
+
+   A SWI is called by number or by name with ten registers in and out.
+   Call raises an exception (source SWI.Source(), its number and message
+   the RISC OS error's) when the SWI returns an error; XCall returns the
+   error block (V set), or NIL when there is none.
+
+   Registers are 32 bits: an address given to a SWI must be a RISC OS one.
+   Memory from NEW and Storage.ALLOCATE, and a program's global variables,
+   are (they are in the run's dynamic area): pass them with Addr(ADR(x)),
+   which checks. Str makes a 0-terminated copy of a string for a SWI;
+   GetStr reads one back. CHAR is 16 bits here, RISC OS's characters are
+   bytes: Str and GetStr convert (Latin-1). An ARRAY OF ACHAR buffer is
+   passed as it is.
+
+     VAR r: SWI.Regs;
+     r[0] := SWI.Str("Hello"); SWI.CallName("OS_Write0", r);
+     SWI.CallName("OS_ReadMonotonicTime", r); t := r[0];
+*)
+DEFINITION MODULE SWI;
+
+FROM SYSTEM IMPORT ADDRESS;
+
+TYPE
+  Regs = ARRAY [0..9] OF CARDINAL32;
+
+CONST
+  XBit = 20000H;   (* the X form's bit in a SWI number *)
+
+PROCEDURE Call ["NM2.SWI.Call" EXTERNAL] (swi: CARDINAL32; VAR r: Regs);
+PROCEDURE XCall ["NM2.SWI.XCall" EXTERNAL] (swi: CARDINAL32; VAR r: Regs): ADDRESS;
+PROCEDURE CallName ["NM2.SWI.CallName" EXTERNAL] (name: ARRAY OF CHAR; VAR r: Regs);
+PROCEDURE XCallName ["NM2.SWI.XCallName" EXTERNAL] (name: ARRAY OF CHAR; VAR r: Regs): ADDRESS;
+(* OS_SWINumberFromString; raises if the name is not known *)
+PROCEDURE Number ["NM2.SWI.Number" EXTERNAL] (name: ARRAY OF CHAR): CARDINAL32;
+(* N, Z, C, V after the last call, as bits 3, 2, 1, 0 *)
+PROCEDURE Flags ["NM2.SWI.Flags" EXTERNAL] (): CARDINAL32;
+(* a as a RISC OS address; raises if it is above 4 GB (not one) *)
+PROCEDURE Addr ["NM2.SWI.Addr" EXTERNAL] (a: ADDRESS): CARDINAL32;
+(* a 0-terminated copy of s that a SWI can read, until the program ends *)
+PROCEDURE Str ["NM2.SWI.Str" EXTERNAL] (s: ARRAY OF CHAR): CARDINAL32;
+(* the string (ended by any control character) at RISC OS address a *)
+PROCEDURE GetStr ["NM2.SWI.GetStr" EXTERNAL] (a: CARDINAL32; VAR s: ARRAY OF CHAR);
+(* an error block's number and text *)
+PROCEDURE ErrorNumber ["NM2.SWI.ErrorNumber" EXTERNAL] (e: ADDRESS): CARDINAL32;
+PROCEDURE ErrorText ["NM2.SWI.ErrorText" EXTERNAL] (e: ADDRESS; VAR s: ARRAY OF CHAR);
+(* the exception source of SWI errors raised by Call and CallName *)
+PROCEDURE Source ["NM2.SWI.Source" EXTERNAL] (): CARDINAL;
+
+END SWI.

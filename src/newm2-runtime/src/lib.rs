@@ -65,6 +65,9 @@ pub mod exceptions;
 /// The BOX: hooks out to RISC OS (design/BOX_PORT.md).
 #[cfg(feature = "rosbox")]
 pub mod rosbox;
+/// The BOX: the SWI definition module's bodies.
+#[cfg(feature = "rosbox")]
+pub mod riscos;
 
 /// Signal-safe Windows crash handler producing annotated (M2 + native)
 /// backtraces on fatal hardware faults.

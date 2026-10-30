@@ -1326,6 +1326,23 @@ fn for_each_runtime_binding(
         bind("ObjC.FindClasses", newm2_runtime::objc::nm2_objc_find_classes as *const ());
         bind("ObjC.LineNumbers", newm2_runtime::objc::nm2_ide_line_numbers as *const ());
     }
+    // The BOX: SWI (library/boxdef/SWI.def)
+    #[cfg(feature = "rosbox")]
+    {
+        use newm2_runtime::riscos::*;
+        bind("NM2.SWI.Call", nm2_swi_call as *const ());
+        bind("NM2.SWI.XCall", nm2_swi_xcall as *const ());
+        bind("NM2.SWI.CallName", nm2_swi_call_name as *const ());
+        bind("NM2.SWI.XCallName", nm2_swi_xcall_name as *const ());
+        bind("NM2.SWI.Number", nm2_swi_number as *const ());
+        bind("NM2.SWI.Flags", nm2_swi_flags as *const ());
+        bind("NM2.SWI.Addr", nm2_swi_addr as *const ());
+        bind("NM2.SWI.Str", nm2_swi_str as *const ());
+        bind("NM2.SWI.GetStr", nm2_swi_get_str as *const ());
+        bind("NM2.SWI.ErrorNumber", nm2_swi_error_number as *const ());
+        bind("NM2.SWI.ErrorText", nm2_swi_error_text as *const ());
+        bind("NM2.SWI.Source", nm2_swi_source as *const ());
+    }
     bind("NM2.IO.WriteText", nm2_io_write_text as *const ());
     bind("NM2.IO.WriteErrText", nm2_io_write_err_text as *const ());
     bind("NM2.IO.WriteBytes", nm2_io_write_bytes as *const ());
