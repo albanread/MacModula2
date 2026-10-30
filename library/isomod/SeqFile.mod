@@ -47,7 +47,7 @@ BEGIN
   s := stateOf(x);
   IF refillPeek(s) THEN
     ch := s^.peekCh;
-    res := IOConsts.allRight;
+    IF ch = 12C THEN res := IOConsts.endOfLine ELSE res := IOConsts.allRight END;
   ELSE
     ch := 0C;
     res := IOConsts.endOfInput;
@@ -81,25 +81,25 @@ END doSkipLook;
 PROCEDURE doTextRead(x: IOLink.DeviceTablePtr; a: SYSTEM.ADDRESS;
                      max: CARDINAL; VAR locs: CARDINAL);
   TYPE BufPtr = POINTER TO ARRAY [0..MAX(CARDINAL) - 1] OF CHAR;
-  VAR s: StatePtr; p: BufPtr; i: CARDINAL; n: CARDINAL64;
+  VAR s: StatePtr; p: BufPtr; i: CARDINAL;
 BEGIN
   s := stateOf(x);
   p := SYSTEM.CAST(BufPtr, a);
+  (* Up to the line mark (ISO TextRead), which is left to be read: an empty
+     read before it is endOfLine *)
   i := 0;
-  IF s^.havePeek & (max > 0) THEN
-    p^[0] := s^.peekCh;
+  WHILE (i < max) & refillPeek(s) & (s^.peekCh # 12C) DO
+    p^[i] := s^.peekCh;
     s^.havePeek := FALSE;
-    i := 1;
-  END;
-  IF i < max THEN
-    n := NM2File.ReadText(s^.handle, SYSTEM.ADR(p^[i]), VAL(CARDINAL64, max - i));
-    i := i + VAL(CARDINAL, n);
+    INC(i);
   END;
   locs := i;
-  IF i = 0 THEN
-    x^.result := IOConsts.endOfInput;
-  ELSE
+  IF i > 0 THEN
     x^.result := IOConsts.allRight;
+  ELSIF refillPeek(s) THEN
+    x^.result := IOConsts.endOfLine;
+  ELSE
+    x^.result := IOConsts.endOfInput;
   END;
 END doTextRead;
 

@@ -9,7 +9,11 @@
 //! code through `*VAR res` parameters on read/write.
 
 use std::collections::HashSet;
+#[cfg(not(feature = "rosbox"))]
 use std::fs::{File, OpenOptions};
+// The BOX: RISC OS's files (OS_Find, OS_GBPB, OS_Args), with std's shape
+#[cfg(feature = "rosbox")]
+use crate::rosbox::{RosFile as File, RosOpenOptions as OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{LazyLock, Mutex};
 
@@ -30,6 +34,15 @@ pub mod flags {
 /// registered on open and removed on close; anything else treats an
 /// unregistered handle as invalid instead of trusting the raw pointer.
 static LIVE_HANDLES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// The run is over (the BOX runs many programs in one process): every file
+/// it left open is closed.
+pub fn close_all() {
+    let hs: Vec<u64> = LIVE_HANDLES.lock().unwrap().drain().collect();
+    for h in hs {
+        let _ = unsafe { Box::from_raw(h as *mut File) };
+    }
+}
 
 /// Box-leak a File and return its address as a 64-bit handle.
 fn handle_of(f: File) -> u64 {

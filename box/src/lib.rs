@@ -225,6 +225,7 @@ fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
 }
 
 fn reset_run() {
+    newm2_runtime::file::close_all();
     rosbox::clear_stop();
     rosbox::arena_reset();
     newm2_runtime::termination::reset_termination();

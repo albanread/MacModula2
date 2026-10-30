@@ -209,3 +209,177 @@ pub fn arena_reset() {
         std::mem::forget(d); // its memory was the area's
     }
 }
+
+// ── Files through RISC OS ────────────────────────────────────────────────
+//
+// file.rs (NM2File, under the ISO StreamFile, SeqFile and RndFile) works on
+// a std::fs::File; in the box it gets this one instead, with the same
+// methods, whose files are RISC OS's: OS_Find, OS_GBPB, OS_Args. The bytes
+// go through a bounce buffer in the dynamic area, which a SWI can address.
+
+const OS_ARGS: u32 = 0x09;
+const OS_GBPB: u32 = 0x0C;
+const OS_FIND: u32 = 0x0D;
+const BOUNCE: usize = 16384;
+
+pub struct RosFile {
+    handle: u32,
+    buf: *mut u8,
+}
+
+unsafe impl Send for RosFile {}
+
+fn io_err(e: u32) -> std::io::Error {
+    std::io::Error::other(if e == 0 { "no SWI handler".to_string() } else { error_text(e) })
+}
+
+impl RosFile {
+    fn args(&self, op: u32, value: u32) -> std::io::Result<u32> {
+        let mut r = [0u32; 10];
+        r[0] = op;
+        r[1] = self.handle;
+        r[2] = value;
+        swi(OS_ARGS, &mut r).map_err(io_err)?;
+        Ok(r[2])
+    }
+
+    pub fn metadata(&self) -> std::io::Result<RosMeta> {
+        Ok(RosMeta(self.args(2, 0)? as u64))
+    }
+}
+
+pub struct RosMeta(u64);
+
+impl RosMeta {
+    pub fn len(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Drop for RosFile {
+    fn drop(&mut self) {
+        let mut r = [0u32; 10];
+        r[1] = self.handle;
+        let _ = swi(OS_FIND, &mut r);
+        arena_free(self.buf, BOUNCE, 16);
+    }
+}
+
+impl std::io::Read for RosFile {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = out.len().min(BOUNCE);
+        let mut r = [0u32; 10];
+        r[0] = 4;
+        r[1] = self.handle;
+        r[2] = self.buf as usize as u32;
+        r[3] = n as u32;
+        swi(OS_GBPB, &mut r).map_err(io_err)?;
+        let got = n - r[3] as usize;
+        unsafe { std::ptr::copy_nonoverlapping(self.buf, out.as_mut_ptr(), got) };
+        Ok(got)
+    }
+}
+
+impl std::io::Write for RosFile {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let n = data.len().min(BOUNCE);
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.buf, n) };
+        let mut r = [0u32; 10];
+        r[0] = 2;
+        r[1] = self.handle;
+        r[2] = self.buf as usize as u32;
+        r[3] = n as u32;
+        swi(OS_GBPB, &mut r).map_err(io_err)?;
+        Ok(n - r[3] as usize)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.args(255, 0).map(|_| ())
+    }
+}
+
+impl std::io::Seek for RosFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let to = match pos {
+            std::io::SeekFrom::Start(n) => n as i64,
+            std::io::SeekFrom::Current(d) => self.args(0, 0)? as i64 + d,
+            std::io::SeekFrom::End(d) => self.args(2, 0)? as i64 + d,
+        };
+        if !(0..=u32::MAX as i64).contains(&to) {
+            return Err(std::io::Error::other("seek out of range"));
+        }
+        self.args(1, to as u32)?;
+        Ok(to as u64)
+    }
+}
+
+/// std::fs::OpenOptions's shape, for RISC OS files.
+#[derive(Default)]
+pub struct RosOpenOptions {
+    read: bool,
+    write: bool,
+    create: bool,
+    truncate: bool,
+}
+
+impl RosOpenOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn read(&mut self, v: bool) -> &mut Self {
+        self.read = v;
+        self
+    }
+    pub fn write(&mut self, v: bool) -> &mut Self {
+        self.write = v;
+        self
+    }
+    pub fn create(&mut self, v: bool) -> &mut Self {
+        self.create = v;
+        self
+    }
+    pub fn truncate(&mut self, v: bool) -> &mut Self {
+        self.truncate = v;
+        self
+    }
+
+    fn find(buf: *mut u8, reason: u32) -> u32 {
+        let mut r = [0u32; 10];
+        r[0] = reason;
+        r[1] = buf as usize as u32;
+        match swi(OS_FIND, &mut r) {
+            Ok(_) => r[0],
+            Err(_) => 0,
+        }
+    }
+
+    pub fn open(&self, name: String) -> std::io::Result<RosFile> {
+        let buf = arena_alloc(BOUNCE, 16);
+        if buf.is_null() || name.len() >= BOUNCE {
+            arena_free(buf, BOUNCE, 16);
+            return Err(std::io::Error::other("no memory for the file"));
+        }
+        let b: Vec<u8> = name.chars().map(|c| if (c as u32) < 256 { c as u32 as u8 } else { b'?' }).collect();
+        unsafe {
+            std::ptr::copy_nonoverlapping(b.as_ptr(), buf, b.len());
+            *buf.add(b.len()) = 0;
+        }
+        // OS_Find: &40 read, &80 create (and empty), &C0 update; +&0C: an
+        // error if the name is a directory or is not there
+        let handle = if !self.write {
+            Self::find(buf, 0x4C)
+        } else if self.truncate {
+            Self::find(buf, 0x8C)
+        } else {
+            match Self::find(buf, 0xCC) {
+                0 if self.create => Self::find(buf, 0x8C),
+                h => h,
+            }
+        };
+        if handle == 0 {
+            arena_free(buf, BOUNCE, 16);
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, name));
+        }
+        Ok(RosFile { handle, buf })
+    }
+}
