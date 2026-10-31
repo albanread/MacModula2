@@ -3,6 +3,13 @@
 Modula-2 (PIM 4 and ISO 10514-1) compiled to machine code in memory by
 LLVM and run at once, inside the box.  The compiler is MacModula2's.
 
+The shell
+  Double-click !Modula2 (or *Modula2 -edit [<file>]) for the Modula-2
+  shell: a window with a menu bar (File, Edit, Run, Help), the program,
+  and its output below.  F5 saves, compiles and runs the program there;
+  Shift-F5 runs it in a TaskWindow; Ctrl-F re-indents it; F10 the menu
+  bar; F1 the manual.  File > Open lists the programs in a directory.
+
 Files
   &A7B Modula2   a program module or an implementation module (.mod)
   &A7C M2Def     a definition module (.def)
@@ -13,6 +20,7 @@ Files
 
 The command
   *Modula2 [-c] [-t] [-O0..3] <file> [<arguments>]
+  *Modula2 -edit [<file>]   the shell
     -c       compile only and report errors as  file:line: error: text
     -t       give the compile time
     -O0..-O3 LLVM's optimisation (default -O2)
