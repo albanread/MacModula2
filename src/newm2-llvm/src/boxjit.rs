@@ -41,6 +41,8 @@ fn section_name(p: *const c_char) -> String {
 struct Mm {
     /// mmap'd code: (address, length)
     code: Vec<(usize, usize)>,
+    /// mmap'd data beside the code, when there is no arena: (address, length)
+    data: Vec<(usize, usize)>,
 }
 
 unsafe extern "C" {
@@ -103,6 +105,17 @@ extern "C" fn alloc_code(opaque: *mut c_void, size: usize, align: u32, _id: u32,
 }
 
 extern "C" fn alloc_data(opaque: *mut c_void, size: usize, align: u32, _id: u32, _name: *const c_char, _ro: i32) -> *mut u8 {
+    // No arena (64-bit SWIs, ROSLIN): the data beside the code, in pages
+    // from the same place, as AArch64's ADRP reaches only +-4 GB
+    if !newm2_runtime::rosbox::arena_on() && newm2_runtime::rosbox::wide() {
+        let mm = unsafe { &mut *(opaque as *mut Mm) };
+        let len = (size.max(1) + 0xFFF) & !0xFFF;
+        let p = code_pages(len);
+        if !p.is_null() {
+            mm.data.push((p as usize, len));
+        }
+        return p as *mut u8;
+    }
     let _ = opaque;
     let align = align.max(16) as usize;
     if newm2_runtime::rosbox::arena_on() {
@@ -131,7 +144,7 @@ extern "C" fn finalize(opaque: *mut c_void, _err: *mut *mut c_char) -> i32 {
 
 extern "C" fn destroy(opaque: *mut c_void) {
     let mm = unsafe { Box::from_raw(opaque as *mut Mm) };
-    for &(p, n) in &mm.code {
+    for &(p, n) in mm.code.iter().chain(mm.data.iter()) {
         unsafe { munmap(p as *mut c_void, n) };
     }
 }
@@ -199,7 +212,7 @@ pub fn run_modules_box(
     unsafe { LLVMInitializeMCJITCompilerOptions(&mut jo, std::mem::size_of::<LLVMMCJITCompilerOptions>()) };
     jo.OptLevel = opts.opt_level.min(3);
     jo.CodeModel = llvm_sys::target_machine::LLVMCodeModel::LLVMCodeModelLarge;
-    let mm = Box::into_raw(Box::new(Mm { code: Vec::new() })) as *mut c_void;
+    let mm = Box::into_raw(Box::new(Mm { code: Vec::new(), data: Vec::new() })) as *mut c_void;
     jo.MCJMM = unsafe { LLVMCreateSimpleMCJITMemoryManager(mm, alloc_code, alloc_data, finalize, Some(destroy)) };
 
     let mut engine: LLVMExecutionEngineRef = std::ptr::null_mut();
