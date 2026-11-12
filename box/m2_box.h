@@ -28,6 +28,13 @@ struct m2_box_hooks {
     /* grows the run's dynamic area by n bytes: the old end (a RISC OS
      * address), or 0.  The area is the module's to remove after the run */
     size_t (*arena_grow)(size_t n);
+    /* the 64-bit SWI (ROSLIN, where registers and addresses are 64 bits):
+     * as swi, with r[0..9] whole 64-bit registers in and out and the error
+     * block's whole address returned.  When it is given, SWI.Regs is ten
+     * CARDINAL64s (ROSLIN's SWI.def) and no address need be below 4 GB;
+     * arena_grow may then be NULL (the program's data from the C library's
+     * heap).  NULL: the 32-bit swi, as in the BOX. */
+    uint64_t (*swi64)(uint32_t number, uint64_t r[10], uint32_t *flags, uint32_t *errnum);
 };
 
 void m2_box_set_hooks(const struct m2_box_hooks *h);

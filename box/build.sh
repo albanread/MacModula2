@@ -114,4 +114,10 @@ mkdir -p "$out/lib"
 for d in isodef isomod pimdef pimmod rtdef utildef utilmod ulibdef ulibmod shareddef sharedmod boxdef boxmod; do
     [ -d "library/$d" ] && cp -R "library/$d" "$out/lib/"
 done
+# ROSLIN (M2_ROSLIN=1): its SWIs are 64-bit (the host's swi64 hook), so
+# SWI.Regs is ten CARDINAL64s and Declaritive hands addresses whole
+if [ "${M2_ROSLIN:-0}" = 1 ]; then
+    cp library/roslindef/*.def "$out/lib/boxdef/"
+    cp library/roslinmod/*.mod "$out/lib/boxmod/"
+fi
 echo "== $out/libm2-box.a: $(du -k "$out/libm2-box.a" | cut -f1) KB; library $(find "$out/lib" -type f | wc -l | tr -d ' ') files"

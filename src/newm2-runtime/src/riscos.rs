@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-pub type Regs = [u32; 10];
+/// SWI.Regs: ten CARDINAL32s in the BOX, ten CARDINAL64s on ROSLIN (where
+/// the host gives the 64-bit SWI: rosbox::wide)
+pub type Regs = std::ffi::c_void;
 
 static FLAGS: AtomicU32 = AtomicU32::new(0);
 static SOURCE: AtomicU64 = AtomicU64::new(0);
@@ -68,22 +70,40 @@ fn number_of(name: &str) -> Option<u32> {
     Some(n)
 }
 
-fn call(swi: u32, r: *mut Regs) -> u32 {
-    let regs = unsafe { &mut *r };
-    match rosbox::swi(swi, regs) {
+fn call(swi: u32, r: *mut Regs) -> u64 {
+    let wide = rosbox::wide();
+    let mut q = [0u64; 10];
+    if !r.is_null() {
+        for (i, x) in q.iter_mut().enumerate() {
+            *x = unsafe { if wide { *(r as *const u64).add(i) } else { *(r as *const u32).add(i) as u64 } };
+        }
+    }
+    let res = rosbox::swi(swi, &mut q);
+    if !r.is_null() {
+        for (i, &x) in q.iter().enumerate() {
+            unsafe {
+                if wide {
+                    *(r as *mut u64).add(i) = x
+                } else {
+                    *(r as *mut u32).add(i) = x as u32
+                }
+            }
+        }
+    }
+    match res {
         Ok(f) => {
             FLAGS.store(f, Ordering::Relaxed);
             0
         }
         Err(e) => {
             FLAGS.store(1, Ordering::Relaxed);
-            if e == 0 { u32::MAX } else { e }
+            if e == 0 { u64::MAX } else { e }
         }
     }
 }
 
-fn raise_error(e: u32) -> ! {
-    if e == u32::MAX {
+fn raise_error(e: u64) -> ! {
+    if e == u64::MAX {
         raise(0, "SWI: no SWI handler (not in the box)");
     }
     raise(rosbox::error_number(e), &rosbox::error_text(e))
@@ -102,7 +122,7 @@ pub unsafe extern "C-unwind" fn nm2_swi_call(swi: u32, r: *mut Regs) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn nm2_swi_xcall(swi: u32, r: *mut Regs) -> usize {
     let e = call(swi, r);
-    if e == u32::MAX { 0 } else { e as usize }
+    if e == u64::MAX { 0 } else { e as usize }
 }
 
 unsafe fn named(name: *const u16, high: u64) -> u32 {
@@ -138,18 +158,19 @@ pub extern "C-unwind" fn nm2_swi_flags() -> u32 {
 }
 
 /// `SWI.Addr(a)`: a as a RISC OS address; raises if it is not one (above
-/// 4 GB: /init's own memory, which RISC OS cannot see).
+/// 4 GB: /init's own memory, which RISC OS cannot see). With 64-bit SWIs
+/// every address is one.
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn nm2_swi_addr(a: usize) -> u32 {
-    if a > u32::MAX as usize {
+pub extern "C-unwind" fn nm2_swi_addr(a: usize) -> u64 {
+    if !rosbox::wide() && a > u32::MAX as usize {
         raise(0x1E4, &format!("SWI.Addr: &{a:X} is not a RISC OS address (copy it with SWI.Str or put it in NEW'd memory)"));
     }
-    a as u32
+    a as u64
 }
 
 /// `SWI.Str(s)`: a 0-terminated Latin-1 copy of s in the dynamic area.
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn nm2_swi_str(s: *const u16, high: u64) -> u32 {
+pub unsafe extern "C-unwind" fn nm2_swi_str(s: *const u16, high: u64) -> u64 {
     let b = unsafe { latin1(s, high) };
     let p = rosbox::arena_alloc(b.len() + 1, 4);
     if p.is_null() {
@@ -164,10 +185,12 @@ pub unsafe extern "C-unwind" fn nm2_swi_str(s: *const u16, high: u64) -> u32 {
 
 /// `SWI.GetStr(a, s)`: the control-terminated string at RISC OS address a.
 #[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn nm2_swi_get_str(a: u32, dst: *mut u16, high: u64) {
+pub unsafe extern "C-unwind" fn nm2_swi_get_str(a: u64, dst: *mut u16, high: u64) {
     if dst.is_null() {
         return;
     }
+    // (a CARDINAL32 in the BOX: the register's upper half is not the caller's)
+    let a = if rosbox::wide() { a } else { a & 0xFFFF_FFFF };
     let mut i = 0usize;
     if a != 0 {
         let p = a as usize as *const u8;
@@ -187,7 +210,7 @@ pub unsafe extern "C-unwind" fn nm2_swi_get_str(a: u32, dst: *mut u16, high: u64
 
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_swi_error_number(e: usize) -> u32 {
-    rosbox::error_number(e as u32)
+    rosbox::error_number(e as u64)
 }
 
 #[unsafe(no_mangle)]
@@ -198,5 +221,5 @@ pub unsafe extern "C-unwind" fn nm2_swi_error_text(e: usize, dst: *mut u16, high
         }
         return;
     }
-    unsafe { nm2_swi_get_str(e as u32 + 4, dst, high) }
+    unsafe { nm2_swi_get_str(e as u64 + 4, dst, high) }
 }

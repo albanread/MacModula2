@@ -34,6 +34,11 @@ pub struct Hooks {
     /// 0 when it cannot. The area is made at the first call and removed
     /// by the module when the run ends.
     pub arena_grow: Option<unsafe extern "C" fn(usize) -> usize>,
+    /// The 64-bit SWI (ROSLIN): as `swi` with whole 64-bit registers and
+    /// the error block's whole address. When set, it is used in place of
+    /// `swi`, SWI.Regs is ten 64-bit words, and no address need be below
+    /// 4 GB.
+    pub swi64: Option<unsafe extern "C" fn(u32, *mut u64, *mut u32, *mut u32) -> u64>,
 }
 
 static HOOKS: AtomicPtr<Hooks> = AtomicPtr::new(std::ptr::null_mut());
@@ -93,12 +98,33 @@ pub fn read_line() -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Calls a SWI (always the X form). Ok(flags) or Err(error block address).
-pub fn swi(number: u32, r: &mut [u32; 10]) -> Result<u32, u32> {
-    let Some(f) = hooks().and_then(|h| h.swi) else { return Err(0) };
+/// Whether SWIs are 64-bit (the host gave `swi64`): whole registers, and
+/// addresses anywhere.
+pub fn wide() -> bool {
+    hooks().and_then(|h| h.swi64).is_some()
+}
+
+/// Calls a SWI (always the X form) by whichever hook there is. Ok(flags)
+/// or Err(error block address).
+pub fn swi(number: u32, r: &mut [u64; 10]) -> Result<u32, u64> {
+    let Some(h) = hooks() else { return Err(0) };
     let mut flags = 0u32;
     let mut errnum = 0u32;
-    let e = unsafe { f(number, r.as_mut_ptr(), &mut flags, &mut errnum) };
+    let e = if let Some(f) = h.swi64 {
+        unsafe { f(number, r.as_mut_ptr(), &mut flags, &mut errnum) }
+    } else if let Some(f) = h.swi {
+        let mut q = [0_u32; 10];
+        for i in 0..10 {
+            q[i] = r[i] as u32;
+        }
+        let e = unsafe { f(number, q.as_mut_ptr(), &mut flags, &mut errnum) };
+        for i in 0..10 {
+            r[i] = q[i] as u64;
+        }
+        e as u64
+    } else {
+        return Err(0);
+    };
     check_stop();
     if flags & 1 != 0 { Err(e) } else { Ok(flags) }
 }
@@ -130,7 +156,7 @@ pub fn file_kind(name: &str) -> i32 {
 }
 
 /// The text of a RISC OS error block at `e` (a RISC OS address).
-pub fn error_text(e: u32) -> String {
+pub fn error_text(e: u64) -> String {
     if e == 0 {
         return "no SWI handler".into();
     }
@@ -138,7 +164,7 @@ pub fn error_text(e: u32) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
-pub fn error_number(e: u32) -> u32 {
+pub fn error_number(e: u64) -> u32 {
     if e == 0 { 0 } else { unsafe { *(e as usize as *const u32) } }
 }
 
@@ -182,6 +208,10 @@ static ARENA: std::sync::Mutex<Option<dlmalloc::Dlmalloc<ArenaSys>>> = std::sync
 
 /// `n` bytes aligned to `align` in the arena, or null.
 pub fn arena_alloc(n: usize, align: usize) -> *mut u8 {
+    if !arena_on() {
+        let layout = std::alloc::Layout::from_size_align(n.max(1), align.max(16)).unwrap();
+        return unsafe { std::alloc::alloc(layout) };
+    }
     let mut g = ARENA.lock().unwrap();
     let d = g.get_or_insert_with(|| dlmalloc::Dlmalloc::new_with_allocator(ArenaSys));
     unsafe { d.malloc(n.max(1), align.max(16)) }
@@ -189,6 +219,11 @@ pub fn arena_alloc(n: usize, align: usize) -> *mut u8 {
 
 pub fn arena_free(p: *mut u8, n: usize, align: usize) {
     if p.is_null() {
+        return;
+    }
+    if !arena_on() {
+        let layout = std::alloc::Layout::from_size_align(n.max(1), align.max(16)).unwrap();
+        unsafe { std::alloc::dealloc(p, layout) };
         return;
     }
     let mut g = ARENA.lock().unwrap();
@@ -223,19 +258,19 @@ const OS_FIND: u32 = 0x0D;
 const BOUNCE: usize = 16384;
 
 pub struct RosFile {
-    handle: u32,
+    handle: u64,
     buf: *mut u8,
 }
 
 unsafe impl Send for RosFile {}
 
-fn io_err(e: u32) -> std::io::Error {
+fn io_err(e: u64) -> std::io::Error {
     std::io::Error::other(if e == 0 { "no SWI handler".to_string() } else { error_text(e) })
 }
 
 impl RosFile {
-    fn args(&self, op: u32, value: u32) -> std::io::Result<u32> {
-        let mut r = [0u32; 10];
+    fn args(&self, op: u64, value: u64) -> std::io::Result<u64> {
+        let mut r = [0u64; 10];
         r[0] = op;
         r[1] = self.handle;
         r[2] = value;
@@ -258,7 +293,7 @@ impl RosMeta {
 
 impl Drop for RosFile {
     fn drop(&mut self) {
-        let mut r = [0u32; 10];
+        let mut r = [0u64; 10];
         r[1] = self.handle;
         let _ = swi(OS_FIND, &mut r);
         arena_free(self.buf, BOUNCE, 16);
@@ -268,11 +303,11 @@ impl Drop for RosFile {
 impl std::io::Read for RosFile {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         let n = out.len().min(BOUNCE);
-        let mut r = [0u32; 10];
+        let mut r = [0u64; 10];
         r[0] = 4;
         r[1] = self.handle;
-        r[2] = self.buf as usize as u32;
-        r[3] = n as u32;
+        r[2] = self.buf as usize as u64;
+        r[3] = n as u64;
         swi(OS_GBPB, &mut r).map_err(io_err)?;
         let got = n - r[3] as usize;
         unsafe { std::ptr::copy_nonoverlapping(self.buf, out.as_mut_ptr(), got) };
@@ -284,11 +319,11 @@ impl std::io::Write for RosFile {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
         let n = data.len().min(BOUNCE);
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.buf, n) };
-        let mut r = [0u32; 10];
+        let mut r = [0u64; 10];
         r[0] = 2;
         r[1] = self.handle;
-        r[2] = self.buf as usize as u32;
-        r[3] = n as u32;
+        r[2] = self.buf as usize as u64;
+        r[3] = n as u64;
         swi(OS_GBPB, &mut r).map_err(io_err)?;
         Ok(n - r[3] as usize)
     }
@@ -308,7 +343,7 @@ impl std::io::Seek for RosFile {
         if !(0..=u32::MAX as i64).contains(&to) {
             return Err(std::io::Error::other("seek out of range"));
         }
-        self.args(1, to as u32)?;
+        self.args(1, to as u64)?;
         Ok(to as u64)
     }
 }
@@ -343,10 +378,10 @@ impl RosOpenOptions {
         self
     }
 
-    fn find(buf: *mut u8, reason: u32) -> u32 {
-        let mut r = [0u32; 10];
+    fn find(buf: *mut u8, reason: u64) -> u64 {
+        let mut r = [0u64; 10];
         r[0] = reason;
-        r[1] = buf as usize as u32;
+        r[1] = buf as usize as u64;
         match swi(OS_FIND, &mut r) {
             Ok(_) => r[0],
             Err(_) => 0,
