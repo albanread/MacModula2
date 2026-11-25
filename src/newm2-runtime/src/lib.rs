@@ -161,7 +161,7 @@ pub use exceptions::{
     ASSERT_SOURCE, ExceptionPayload, GUARD_SOURCE, describe_exception, nm2_alloc_exception_source,
     nm2_assert_failed, nm2_current_message, nm2_current_number, nm2_current_source,
     nm2_exception_handled, nm2_guard_source, nm2_is_current_source, nm2_is_exceptional_execution,
-    nm2_m2_source, nm2_raise, nm2_raise_guard, nm2_raise_m2, nm2_reraise, nm2_run_protected,
+    nm2_m2_source, nm2_raise, nm2_raise_guard, nm2_raise_m2, nm2_raise_m2_at, nm2_reraise, nm2_run_protected,
 };
 
 pub use rtti::{TypeInfo, nm2_rtti_isa, nm2_typeinfo_of};

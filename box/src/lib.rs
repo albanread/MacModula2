@@ -140,6 +140,69 @@ fn entry_path(ros: &str) -> PathBuf {
     }
 }
 
+// ── Messages ─────────────────────────────────────────────────────────────
+
+/// "line L, column C: text" at the start of s (the lexer's and parser's
+/// way): L, C and the text.
+fn line_col(s: &str) -> Option<(usize, usize, &str)> {
+    let r = s.strip_prefix("line ")?;
+    let (l, r) = r.split_once(", column ")?;
+    let (c, t) = r.split_once(": ")?;
+    Some((l.trim().parse().ok()?, c.trim().parse().ok()?, t))
+}
+
+/// Where a module's name is in an IMPORT or FROM of text: its line and
+/// column, both from 1. A line with an IMPORT is looked at first, then any
+/// line but the module's header.
+fn import_at(text: &str, word: &str) -> Option<(usize, usize)> {
+    let find = |l: &str| {
+        let mut from = 0;
+        while let Some(k) = l[from..].find(word) {
+            let a = from + k;
+            let b = a + word.len();
+            let before = l[..a].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let after = l[b..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if !before && !after {
+                return Some(l[..a].chars().count() + 1);
+            }
+            from = b;
+        }
+        None
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    for want_import in [true, false] {
+        for (i, l) in lines.iter().enumerate() {
+            if want_import != l.contains("IMPORT") || (!want_import && l.contains("MODULE")) {
+                continue;
+            }
+            if let Some(c) = find(l) {
+                return Some((i + 1, c));
+            }
+        }
+    }
+    None
+}
+
+/// A loader's error as a compiler's message, "file:line:column: error: text".
+/// A parse or lex error is given at its place. A module that is not found is
+/// given at its IMPORT in the program, with where it was looked for.
+fn load_error(at: &str, program: &str, message: &str) -> String {
+    for p in ["parse: parse error at ", "parse: lex error at ", "parse error at ", "lex error at "] {
+        if let Some((l, c, t)) = message.strip_prefix(p).and_then(line_col) {
+            return format!("{at}:{l}:{c}: error: {t}\n");
+        }
+    }
+    if let Some(m) = message.strip_prefix("module \"").and_then(|r| r.strip_suffix("\" not found in search path")) {
+        let src = rosbox::file_load(program).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let (l, c) = import_at(&src, m).unwrap_or((0, 0));
+        return format!(
+            "{at}:{l}:{c}: error: module {m} not found: it is looked for beside the program as {m}/def and {m}/mod \
+             (or def.{m} and mod.{m}), then in the library\n"
+        );
+    }
+    format!("{at}:0: error: {message}\n")
+}
+
 // ── A run ────────────────────────────────────────────────────────────────
 
 fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
@@ -152,7 +215,7 @@ fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
         Ok(g) => g,
         Err(e) => {
             let at = e.path.as_deref().map(shown).unwrap_or_else(|| name.to_string());
-            out(&format!("{at}:0: error: {}\n", e.message));
+            out(&load_error(&at, name, &e.message));
             return -1;
         }
     };
@@ -171,7 +234,7 @@ fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
                 .or(node.def_path.as_deref())
                 .map(shown)
                 .unwrap_or_else(|| node.name.clone());
-            out(&format!("{file}:{}: {sev}: {}\n", d.span.start.line, d.message));
+            out(&format!("{file}:{}:{}: {sev}: {}\n", d.span.start.line, d.span.start.column, d.message));
             n += 1;
             if n >= 50 {
                 out("(more errors not shown)\n");
@@ -215,10 +278,26 @@ fn compile_and_run(name: &str, args: Vec<String>, flags: u32) -> i32 {
             out(&format!("Compiled in {ms} ms (front end {} ms)\n", t_front.as_millis()));
         }
     };
+    newm2_runtime::exceptions::take_raised_at();
     match newm2_llvm::run_modules_box(&refs, &sema, opts, &report, t0) {
         Ok(code) => code,
         Err(e) => {
-            out(&format!("{e}\n"));
+            // Where the exception was raised, if the code said: the module's
+            // file and line, as a compiler's message gives them, so that an
+            // editor can show the place.
+            match newm2_runtime::exceptions::take_raised_at() {
+                Some((module, line)) if line > 0 => {
+                    let file = graph
+                        .topo_order
+                        .iter()
+                        .map(|&m| graph.get(m))
+                        .find(|n| n.name == module)
+                        .and_then(|n| n.impl_path.as_deref().or(n.def_path.as_deref()).map(shown))
+                        .unwrap_or(module);
+                    out(&format!("{file}:{line}: error: {e}\n"));
+                }
+                _ => out(&format!("{e}\n")),
+            }
             -5
         }
     }

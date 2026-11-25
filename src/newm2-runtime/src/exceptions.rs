@@ -109,6 +109,7 @@ pub unsafe extern "C-unwind" fn nm2_raise(
     msg_ptr: *const u16,
     _msg_high: u64,
 ) -> ! {
+    RAISED_AT.with(|r| *r.borrow_mut() = None);
     install_panic_hook();
     // The M2 message is wide (UTF-16, NUL-terminated); store it as UTF-8.
     let message = if msg_ptr.is_null() {
@@ -248,6 +249,42 @@ pub extern "C-unwind" fn nm2_m2_source() -> u64 {
 /// division, …). Never returns.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn nm2_raise_m2(number: u64) -> ! {
+    RAISED_AT.with(|r| *r.borrow_mut() = None);
+    raise_m2(number)
+}
+
+thread_local! {
+    /// Where the last language exception was raised, if its code said: the
+    /// module and the line (`nm2_raise_m2_at`). Any other raise clears it.
+    static RAISED_AT: RefCell<Option<(String, u64)>> = const { RefCell::new(None) };
+}
+
+/// Where the last exception was raised, if its code said (the module and
+/// line), and forgets it. A run's report gives the place with it.
+pub fn take_raised_at() -> Option<(String, u64)> {
+    RAISED_AT.with(|r| r.borrow_mut().take())
+}
+
+/// `nm2_raise_m2` with the place: the line of the statement and the module's
+/// name (wide, `high` its last index), which a run's report gives.
+///
+/// # Safety
+/// `module` must be null or point to `high + 1` readable UTF-16 units.
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn nm2_raise_m2_at(number: u64, line: u64, module: *const u16, high: u64) -> ! {
+    let name = if module.is_null() {
+        String::new()
+    } else {
+        let n = (high as usize).saturating_add(1).min(256);
+        let units = unsafe { std::slice::from_raw_parts(module, n) };
+        let end = units.iter().position(|&u| u == 0).unwrap_or(n);
+        String::from_utf16_lossy(&units[..end])
+    };
+    RAISED_AT.with(|r| *r.borrow_mut() = Some((name, line)));
+    raise_m2(number)
+}
+
+fn raise_m2(number: u64) -> ! {
     install_panic_hook();
     let message: Vec<u8> = match number {
         m2exc::INDEX => b"array index out of range".to_vec(),

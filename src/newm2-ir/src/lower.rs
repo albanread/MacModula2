@@ -1466,6 +1466,21 @@ struct FuncLower<'c, 'g, 's> {
     /// procedure wrapper. Only ever set on the wrapper — never the outlined
     /// protected body, which RETRY re-runs and so must not free it.
     frame_to_free: Option<ValueId>,
+    /// The source line of the statement being lowered (0: none yet), given to
+    /// the runtime with a language exception so its report says where.
+    cur_line: usize,
+}
+
+/// A statement's first line.
+fn stmt_line(stmt: &ast::Stmt) -> usize {
+    use ast::Stmt::*;
+    let sp = match stmt {
+        Empty(s) | Call(_, s) | While(_, _, s) | Repeat(_, _, s) | Loop(_, s) | With(_, _, s) | Exit(s)
+        | Return(_, s) | Raise(_, s) | Retry(s) => s,
+        Assign { span, .. } | If { span, .. } | Case { span, .. } | Guard { span, .. } | For { span, .. } => span,
+        Block(b) => &b.span,
+    };
+    sp.start.line
 }
 
 impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
@@ -1493,6 +1508,7 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
             retry_target: None,
             result_slot: None,
             frame_to_free: None,
+            cur_line: 0,
         };
 
         // Pre-alloca one stack slot per parameter so that body code can
@@ -2011,6 +2027,10 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
     }
 
     fn lower_stmt(&mut self, stmt: &ast::Stmt) {
+        let line = stmt_line(stmt);
+        if line > 0 {
+            self.cur_line = line;
+        }
         match stmt {
             ast::Stmt::Empty(_) => {}
 
@@ -3067,8 +3087,22 @@ impl<'c, 'g, 's> FuncLower<'c, 'g, 's> {
         let n = self.fresh();
         self.push(Inst::Const { dst: n, val: ConstVal::Int(number) });
         let card = self.ctx.sema.types.builtin(Builtin::Cardinal);
-        let params = vec![IrParam { name: "n".into(), ty: card, is_var: false }];
-        self.call_runtime("nm2_raise_m2", params, None, vec![n]);
+        let addr = self.ctx.addr_ty();
+        // with the module and line, so that the report says where
+        let module = self.ctx.module_name().to_string();
+        let line = self.fresh();
+        self.push(Inst::Const { dst: line, val: ConstVal::Int(self.cur_line as i128) });
+        let name_ptr = self.fresh();
+        self.push(Inst::Const { dst: name_ptr, val: ConstVal::Str(module.clone()) });
+        let high = self.fresh();
+        self.push(Inst::Const { dst: high, val: ConstVal::Int((module.chars().count() as i128 - 1).max(0)) });
+        let params = vec![
+            IrParam { name: "n".into(), ty: card, is_var: false },
+            IrParam { name: "line".into(), ty: card, is_var: false },
+            IrParam { name: "module".into(), ty: addr, is_var: false },
+            IrParam { name: "high".into(), ty: card, is_var: false },
+        ];
+        self.call_runtime("nm2_raise_m2_at", params, None, vec![n, line, name_ptr, high]);
         self.terminate(Terminator::Unreachable);
     }
 

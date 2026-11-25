@@ -1256,7 +1256,7 @@ fn for_each_runtime_binding(
         nm2_alloc_exception_source, nm2_assert_failed, nm2_current_message,
         nm2_current_number, nm2_current_source, nm2_exception_handled,
         nm2_is_current_source, nm2_is_exceptional_execution, nm2_m2_source,
-        nm2_raise, nm2_raise_m2, nm2_reraise, nm2_run_protected,
+        nm2_raise, nm2_raise_m2, nm2_raise_m2_at, nm2_reraise, nm2_run_protected,
         nm2_guard_source, nm2_raise_guard, nm2_rtti_isa, nm2_typeinfo_of,
         nm2_com_query_interface, nm2_com_release,
         nm2_libc_printf, nm2_libc_exit,
@@ -1496,6 +1496,7 @@ fn for_each_runtime_binding(
     bind("nm2_exception_handled", nm2_exception_handled as *const ());
     bind("nm2_assert_failed", nm2_assert_failed as *const ());
     bind("nm2_raise_m2", nm2_raise_m2 as *const ());
+    bind("nm2_raise_m2_at", nm2_raise_m2_at as *const ());
     bind("nm2_m2_source", nm2_m2_source as *const ());
     bind("nm2_raise_guard", nm2_raise_guard as *const ());
     bind("nm2_guard_source", nm2_guard_source as *const ());
